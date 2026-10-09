@@ -31,9 +31,8 @@ jobs:
         if: startsWith(github.event.release.tag_name, 'v')
         run: |
           PROJECT_VERSION="$(uv version --short)"
-          GITHUB_EVENT_RELEASE_TAG_NAME="${{ github.event.release.tag_name }}"
-          if [ "${GITHUB_EVENT_RELEASE_TAG_NAME}" != "v${PROJECT_VERSION}" ]; then
-            echo "::error::Tag ${GITHUB_EVENT_RELEASE_TAG_NAME} does not match project version ${PROJECT_VERSION}"
+          if [ "${GITHUB_REF_NAME}" != "v${PROJECT_VERSION}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match project version ${PROJECT_VERSION}"
             exit 1
           fi
 
@@ -53,6 +52,7 @@ jobs:
     name: Publish to PyPI
     needs: build
     runs-on: ubuntu-latest
+    if: startsWith(github.event.release.tag_name, 'v')
     environment:
       name: pypi
       url: https://pypi.org/project/alai/
@@ -66,4 +66,4 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
-        if: startsWith(github.event.release.tag_name, 'v')
+
