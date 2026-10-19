@@ -12,23 +12,22 @@ from __future__ import annotations
 import collections.abc as _c
 import enum
 import os
-import re
 import sys
 
+from ._common import NAME_RE, ConfigError, Record, as_table
 from ._output import debug
 
 CONFIG_FILE_NAME = "alai.toml"
 DEFAULT_INDEX_NAME = "alai"
 DEFAULT_INDEX_URL = "https://index.alai.sh/"
+MANIFEST_PROJECT_KEYS = ("collections", "requires_ansible")
+"""Keys of ``[project]`` that are part of the manifest rather than settings."""
+MANIFEST_TABLES = ("groups", "overrides")
+"""Top-level tables that are part of the manifest."""
 
-_INDEX_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
 _INDEX_URL_SCHEMES = ("http://", "https://", "file://")
 _TRUE = frozenset(("1", "true", "yes", "on"))
 _FALSE = frozenset(("0", "false", "no", "off"))
-
-
-class ConfigError(Exception):
-    """A config file, environment variable or flag holds an invalid value."""
 
 
 class LinkMode(enum.Enum):
@@ -51,23 +50,7 @@ class Level(enum.Enum):
     SYSTEM = "system"
 
 
-class _Record:
-    """A value class with equality and repr from its ``__slots__``.
-
-    Used instead of dataclasses, which cost ~3.5 ms to import and apply on every command.
-    """
-
-    __slots__: tuple[str, ...] = ()
-
-    def __eq__(self, other: object) -> bool:
-        return type(other) is type(self) and all(getattr(self, n) == getattr(other, n) for n in self.__slots__)
-
-    def __repr__(self) -> str:
-        fields = ", ".join(f"{n}={getattr(self, n)!r}" for n in self.__slots__)
-        return f"{type(self).__name__}({fields})"
-
-
-class Index(_Record):
+class Index(Record):
     __slots__ = ("default", "name", "source", "url")
 
     def __init__(self, name: str, url: str, default: bool = False, source: str = "") -> None:
@@ -78,7 +61,7 @@ class Index(_Record):
         """Where the index was defined, for messages."""
 
 
-class Project(_Record):
+class Project(Record):
     __slots__ = ("config_file", "marker", "root")
 
     def __init__(self, root: str, config_file: str | None, marker: str | None) -> None:
@@ -89,7 +72,7 @@ class Project(_Record):
         """The marker that chose ``root``, or None when no marker was found."""
 
 
-class Overrides(_Record):
+class Overrides(Record):
     """Values given on the command line, as typed, before validation.
 
     ``settings`` holds each setting's flag value by the setting's ``name`` in ``SETTINGS``.
@@ -113,7 +96,7 @@ class Overrides(_Record):
         self.settings = settings
 
 
-class ConfigFile(_Record):
+class ConfigFile(Record):
     __slots__ = ("level", "path", "read")
 
     def __init__(self, level: Level, path: str, *, read: bool) -> None:
@@ -123,7 +106,36 @@ class ConfigFile(_Record):
         """False when alai looked for the file and it doesn't exist."""
 
 
-class Settings(_Record):
+class RawManifest(Record):
+    """The manifest keys of a project's ``alai.toml``, checked for type but not parsed.
+
+    Every command checks them this far, so a misspelt key or a wrong type fails straight away. What the values mean,
+    such as whether a requirement string is valid, is ``_manifest``'s to check when a command uses the manifest.
+    """
+
+    __slots__ = ("collections", "groups", "ignore_requires_ansible", "overrides", "path", "requires_ansible")
+
+    def __init__(
+        self,
+        path: str,
+        *,
+        collections: list[str],
+        requires_ansible: str | None,
+        groups: dict[str, list[str]],
+        overrides: dict[str, str],
+        ignore_requires_ansible: list[str],
+    ) -> None:
+        self.path = path
+        self.collections = collections
+        self.requires_ansible = requires_ansible
+        self.groups = groups
+        """Each group's ``collections``, by group name."""
+        self.overrides = overrides
+        """Version requirements by collection name, without ``ignore_requires_ansible``."""
+        self.ignore_requires_ansible = ignore_requires_ansible
+
+
+class Settings(Record):
     __slots__ = (
         "_cache_dir",
         "collections_dir",
@@ -181,7 +193,7 @@ class Settings(_Record):
         return self._cache_dir
 
 
-class _Source(_Record):
+class _Source(Record):
     __slots__ = ("base_dir", "description", "home", "level")
 
     def __init__(self, level: Level, description: str, base_dir: str, home: str | None) -> None:
@@ -193,7 +205,7 @@ class _Source(_Record):
         """What a leading ``~`` expands to, or None if the home directory is unknown."""
 
 
-class _Layer(_Record):
+class _Layer(Record):
     """The settings one level sets, by each setting's ``target``."""
 
     __slots__ = ("lists", "overridden", "sources", "values")
@@ -216,7 +228,7 @@ class _Layer(_Record):
             self.sources[setting.target] = source.description
 
 
-class SettingDefinition(_Record):
+class SettingDefinition(Record):
     """A setting read from config files, environment variables or flags.
 
     Every setting is listed once in ``SETTINGS``. Reading each level, merging them, the argparse options and
@@ -330,7 +342,7 @@ def load_settings(
     no_config = overrides.no_config or _env_bool(environ, "ALAI_NO_CONFIG")
     if config_file:
         path = _resolve_path(config_file, here)
-        layers.append(_file_layer(_read_toml(path), path, Level.EXPLICIT, home))
+        layers.append(_file_layer(read_toml(path), path, Level.EXPLICIT, home))
         searched.append(ConfigFile(Level.EXPLICIT, path, read=True))
     elif not no_config:
         levels = [
@@ -346,7 +358,7 @@ def load_settings(
                 if not os.path.isfile(path):
                     searched.append(ConfigFile(level, path, read=False))
                     continue
-                layers.append(_file_layer(_read_toml(path), path, level, home))
+                layers.append(_file_layer(read_toml(path), path, level, home))
                 searched.append(ConfigFile(level, path, read=True))
                 break
 
@@ -425,12 +437,7 @@ def default_cache_dir(environ: _c.Mapping[str, str]) -> str | None:
     return None if home is None else os.path.join(home, ".cache", "alai")
 
 
-def _as_table(value: object) -> dict[str, object] | None:
-    # TOML tables always have string keys.
-    return value if isinstance(value, dict) else None  # pyright: ignore[reportUnknownVariableType]
-
-
-def _read_toml(path: str) -> dict[str, object]:
+def read_toml(path: str) -> dict[str, object]:
     # Imported here so a command run without any config files never pays for it.
     if sys.version_info >= (3, 11):
         import tomllib  # pyright: ignore[reportUnreachable]  # checked against the 3.10 floor
@@ -447,6 +454,12 @@ def _read_toml(path: str) -> dict[str, object]:
 
 
 def _file_layer(table: _c.Mapping[str, object], path: str, level: Level, home: str | None) -> _Layer:
+    """The settings in a config file.
+
+    Only the project's own ``alai.toml`` can have ``[project]`` and the manifest's tables, which describe that one
+    project. Its manifest keys are checked here and read by ``_manifest.load_manifest``. Every other file, including a
+    ``--config-file``, holds settings only.
+    """
     description = path
     source = _Source(level, description, os.path.dirname(path), home)
     layer = _Layer()
@@ -456,21 +469,25 @@ def _file_layer(table: _c.Mapping[str, object], path: str, level: Level, home: s
         raise ConfigError(f"{description}: '{dotted[0]}' is a quoted key, not a table; use [{dotted[0].split('.')[0]}]")
     values = dict(table)
     # [tool] is left to other tools, as pyproject.toml's is: alai never reads it.
-    if "tool" in values and _as_table(values.pop("tool")) is None:
+    if "tool" in values and as_table(values.pop("tool")) is None:
         raise ConfigError(f"{description}: 'tool' must be a table ([tool.<name>])")
-    if "project" in values:
-        # What the project is, rather than how alai runs, so a user or system file can't set it for every project.
-        if level in (Level.USER, Level.SYSTEM):
-            raise ConfigError(f"{description}: [project] is only allowed in project configuration")
-        project = _as_table(values.pop("project"))
-        if project is None:
-            raise ConfigError(f"{description}: 'project' must be a table ([project])")
-        values.update((f"project.{key}", value) for key, value in project.items())
+    is_project = level is Level.PROJECT
+    if not is_project:
+        if project_only := [name for name in ("project", *MANIFEST_TABLES) if name in values]:
+            hint = "; --config-file only takes settings" if level is Level.EXPLICIT else ""
+            raise ConfigError(f"{description}: [{project_only[0]}] is only allowed in the project's alai.toml{hint}")
+    else:
+        # Also checks [project] is a table.
+        _ = raw_manifest(table, path)
+        for name in MANIFEST_TABLES:
+            _ = values.pop(name, None)
+        project = as_table(values.pop("project", None)) or {}
+        values.update((f"project.{key}", value) for key, value in project.items() if key not in MANIFEST_PROJECT_KEYS)
 
     for key, value in values.items():
         setting = FILE_SETTINGS.get(key)
         if setting is None:
-            raise ConfigError(f"{description}: unknown setting '{key}'{suggest_key(key)}")
+            raise ConfigError(f"{description}: unknown setting '{key}'{suggest_key(key, manifest=is_project)}")
 
         if setting.parse_file:
             for item in setting.parse_file(value, source):
@@ -481,6 +498,61 @@ def _file_layer(table: _c.Mapping[str, object], path: str, level: Level, home: s
     return layer
 
 
+def raw_manifest(table: _c.Mapping[str, object], path: str) -> RawManifest:
+    """Check the manifest keys of a parsed project ``alai.toml`` have the right types, and return them."""
+    project = _table_value(table, "project", path, "[project]")
+    collections = _string_list(project.get("collections", []), path, "project.collections", "requirement strings")
+    requires_ansible = project.get("requires_ansible")
+    if requires_ansible is not None and not isinstance(requires_ansible, str):
+        raise ConfigError(f"{path}: 'project.requires_ansible' must be a string")
+
+    groups: dict[str, list[str]] = {}
+    for name, value in _table_value(table, "groups", path, "[groups.<name>]").items():
+        group = as_table(value)
+        if group is None:
+            raise ConfigError(f"{path}: 'groups.{name}' must be a table ([groups.{name}])")
+        if unknown := sorted(set(group) - {"collections"}):
+            raise ConfigError(f"{path}: unknown key 'groups.{name}.{unknown[0]}'")
+        groups[name] = _string_list(
+            group.get("collections", []), path, f"groups.{name}.collections", "requirement strings"
+        )
+
+    overrides: dict[str, str] = {}
+    ignore_requires_ansible: list[str] = []
+    for key, value in _table_value(table, "overrides", path, "[overrides]").items():
+        if key == "ignore_requires_ansible":
+            ignore_requires_ansible = _string_list(value, path, f"overrides.{key}", "collection names")
+        elif isinstance(value, str):
+            overrides[key] = value
+        else:
+            raise ConfigError(f"{path}: overrides.\"{key}\" must be a version requirement string, such as '>=6'")
+
+    return RawManifest(
+        path,
+        collections=collections,
+        requires_ansible=requires_ansible,
+        groups=groups,
+        overrides=overrides,
+        ignore_requires_ansible=ignore_requires_ansible,
+    )
+
+
+def _table_value(table: _c.Mapping[str, object], key: str, path: str, form: str) -> dict[str, object]:
+    """``table[key]``, which must be a table if it's there, or an empty table if it isn't."""
+    if key not in table:
+        return {}
+    value = as_table(table[key])
+    if value is None:
+        raise ConfigError(f"{path}: '{key}' must be a table ({form})")
+    return value
+
+
+def _string_list(value: object, path: str, key: str, what: str) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):  # pyright: ignore[reportUnknownVariableType]
+        raise ConfigError(f"{path}: '{key}' must be an array of {what}")
+    return value  # pyright: ignore[reportUnknownVariableType]
+
+
 def _index_tables(value: object, source: _Source) -> _c.Iterator[Index]:
     if not isinstance(value, list):
         raise ConfigError(f"{source.description}: 'index' must be an array of tables ([[index]])")
@@ -489,7 +561,7 @@ def _index_tables(value: object, source: _Source) -> _c.Iterator[Index]:
     items: list[object] = value  # pyright: ignore[reportUnknownVariableType]
     for i, item in enumerate(items):
         where = f"{source.description}: index[{i}]"
-        entry = _as_table(item)
+        entry = as_table(item)
         if entry is None:
             raise ConfigError(f"{where}: expected a table")
         if unknown := sorted(set(entry) - {"name", "url", "default"}):
@@ -549,7 +621,7 @@ def _index_arg(value: str, source: _Source) -> Index:
 def _default_index_arg(value: str, source: _Source) -> Index:
     """Parse ``NAME=URL`` or a bare ``URL``, named ``alai``, from ``--default-index`` or ``ALAI_DEFAULT_INDEX``."""
     name, sep, url = value.partition("=")
-    if not sep or not _INDEX_NAME_RE.fullmatch(name):
+    if not sep or not NAME_RE.fullmatch(name):
         name, url = DEFAULT_INDEX_NAME, value
     return _arg_index(name, url, value, source, default=True)
 
@@ -560,7 +632,7 @@ def _arg_index(name: str, url: str, value: str, source: _Source, *, default: boo
 
 
 def _index_name(name: str, where: str) -> str:
-    if not _INDEX_NAME_RE.fullmatch(name):
+    if not NAME_RE.fullmatch(name):
         raise ConfigError(
             f"{where}: invalid index name '{name}', use lowercase letters, digits, '-' and '_', "
             + "starting with a letter or digit"
@@ -673,11 +745,17 @@ def _env_bool(environ: _c.Mapping[str, str], name: str) -> bool:
     raise ConfigError(f"{name}: expected a boolean (1, true, yes, on, 0, false, no, off), got '{value}'")
 
 
-def suggest_key(key: str) -> str:
-    """``, did you mean 'KEY'?`` for the config file key closest to ``key``, or an empty string."""
+def suggest_key(key: str, *, manifest: bool = False) -> str:
+    """``, did you mean 'KEY'?`` for the config file key closest to ``key``, or an empty string.
+
+    With ``manifest``, the manifest's keys are suggested too.
+    """
     import difflib
 
-    matches = difflib.get_close_matches(key, list(FILE_SETTINGS), n=1)
+    keys = list(FILE_SETTINGS)
+    if manifest:
+        keys += [*(f"project.{k}" for k in MANIFEST_PROJECT_KEYS), *MANIFEST_TABLES]
+    matches = difflib.get_close_matches(key, keys, n=1)
     return f", did you mean '{matches[0]}'?" if matches else ""
 
 

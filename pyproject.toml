@@ -28,6 +28,11 @@ dependencies = [
     "tomli >= 1.1.0; python_version < '3.11'",
 ]
 
+[project.urls]
+Documentation = "https://docs.alai.sh/"
+Source = "https://github.com/alai-sh/alai-cli"
+Issues = "https://github.com/alai-sh/alai-cli/issues"
+
 [project.scripts]
 alai = "alai.__main__:main"
 

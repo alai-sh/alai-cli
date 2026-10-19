@@ -10,7 +10,8 @@ import os
 
 from .. import _output
 from .._args import HelpFormatter, add_global_args, add_settings_args, settings_from_args
-from .._config import FILE_SETTINGS, SETTINGS, ConfigError, Level, Settings, suggest_key
+from .._common import ConfigError
+from .._config import FILE_SETTINGS, SETTINGS, Level, Settings, suggest_key
 
 
 def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:

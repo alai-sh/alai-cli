@@ -16,7 +16,7 @@ import sys
 from . import _output
 from ._args import HelpFormatter, add_global_args, verbose_count
 from ._commands import config, shell_completion
-from ._config import ConfigError
+from ._common import ConfigError
 
 EXIT_ERROR = 2
 

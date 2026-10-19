@@ -8,10 +8,10 @@ from pathlib import Path
 import pytest
 
 from alai import _config
+from alai._common import ConfigError
 from alai._config import (
     DEFAULT_INDEX_URL,
     SETTINGS,
-    ConfigError,
     ConfigFile,
     Index,
     Level,
@@ -235,14 +235,23 @@ class TestConfigFiles:
     def test_config_file_replaces_discovery(self, tmp_path: Path, home: Path, environ: dict[str, str]) -> None:
         write(tmp_path / "alai.toml", 'link_mode = "copy"\n')
         write(home / ".config" / "alai" / "alai.toml", 'cache_dir = "/user"\n')
-        explicit = write(tmp_path / "other" / "ci.toml", '[project]\ncollections_dir = "c"\n')
+        explicit = write(tmp_path / "other" / "ci.toml", 'link_mode = "hardlink"\n')
 
         settings = load(tmp_path, environ, Overrides(config_file="other/ci.toml"))
 
         assert settings.config_files == (str(explicit),)
-        assert settings.link_mode == LinkMode.AUTO
-        assert settings.collections_dir == str(tmp_path / "other" / "c")
+        assert settings.link_mode == LinkMode.HARDLINK
         assert settings.cache_dir == str(home / ".cache" / "alai")
+
+    @pytest.mark.parametrize("name", ["ci.toml", "alai.toml"])
+    def test_config_file_settings_only(self, tmp_path: Path, environ: dict[str, str], name: str) -> None:
+        # Even the project's own alai.toml given as --config-file: the flag takes settings, not a project.
+        write(tmp_path / name, '[project]\ncollections_dir = "c"\n')
+
+        with pytest.raises(
+            ConfigError, match=r"\[project\] is only allowed in the project's alai\.toml; --config-file"
+        ):
+            load(tmp_path, environ, Overrides(config_file=name))
 
     def test_config_file_missing(self, tmp_path: Path, environ: dict[str, str]) -> None:
         with pytest.raises(ConfigError, match=r"missing\.toml"):
@@ -323,7 +332,7 @@ class TestValidation:
         base = home / ".config" if level == "user" else tmp_path / "xdg"
         write(base / "alai" / "alai.toml", '[project]\ncollections_dir = "/shared"\n')
 
-        with pytest.raises(ConfigError, match=r"\[project\] is only allowed in project configuration"):
+        with pytest.raises(ConfigError, match=r"\[project\] is only allowed in the project's alai\.toml$"):
             load(tmp_path, environ)
 
     def test_invalid_link_mode_env(self, tmp_path: Path, environ: dict[str, str]) -> None:

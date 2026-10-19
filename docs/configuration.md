@@ -25,14 +25,17 @@ An `XDG_*` variable holding a relative path is ignored, as the XDG spec says.
 of the project, user and system files. `--no-config` (`ALAI_NO_CONFIG`)
 reads no files.
 
-All three files take the same keys, except the
-[`[project]` table](projects.md#the-project-table): settings that describe
-the project rather than how alai runs, which only the project file or a
-`--config-file` can have. Keys are snake_case, and the matching command-line options are
-kebab-case: `link_mode` in a file, `--link-mode` on the command line.
+All of these files take the same settings. The project file can also have
+the [`[project]` table](projects.md#the-project-table) and the
+[manifest](projects.md#declaring-collections), which describe that one
+project rather than how alai runs; in any other file, including a
+`--config-file`, they're an error. Keys are snake_case, and the matching
+command-line options are kebab-case: `link_mode` in a file, `--link-mode` on
+the command line.
 
-Every key is optional. A file setting all of them, with what each value
-means (see [Settings](#settings) for the details):
+Every key is optional. A project file setting all of them, with what each
+value means (see [Settings](#settings) and
+[Declaring collections](projects.md#declaring-collections) for the details):
 
 ```toml
 # alai.toml
@@ -50,12 +53,34 @@ cache_dir = "~/.cache/alai"
 # opt-in only.
 link_mode = "auto"
 
-# Settings that describe the project. Only the project's alai.toml (or
-# --config-file) can have this table.
+# Settings that describe the project. Only the project's alai.toml can have
+# this table.
 [project]
 # The directory holding ansible_collections/, relative to this file.
 # Default: "collections" next to alai.toml.
 collections_dir = "collections"
+# The rest of this table, [groups] and [overrides] are the manifest: what
+# the project needs. No command installs from them yet.
+# The ansible-core versions the project targets, as a PEP 440 specifier.
+requires_ansible = ">=2.17"
+# The collections the project needs: [INDEX:]NAMESPACE.NAME[REQUIREMENT].
+collections = [
+    "community.general>=9,<11",
+    "ansible.windows",
+    "internal:corp.tools>=1.2",
+]
+
+# Collections only some workflows need, such as tests.
+[groups.test]
+collections = ["ansible.posix", "community.crypto"]
+
+# Fixes for wrong metadata in the collections the project depends on.
+[overrides]
+# Replaces every requirement on ansible.netcommon, including those in other
+# collections' dependencies. Collection names are quoted, as they hold a dot.
+"ansible.netcommon" = ">=6"
+# Collections whose own requires_ansible is ignored.
+ignore_requires_ansible = ["some.collection"]
 
 # An index to resolve collections from. Repeat [[index]] for more; they're
 # searched in the order given, before the default index.
@@ -168,9 +193,9 @@ current directory. A leading `~` expands to the home directory in both.
 | none, see [`index`](#index) | | `--default-index` | `ALAI_DEFAULT_INDEX` | URL | `https://index.alai.sh/` |
 
 "Config files" says which files can set the key. **Project only** keys are in
-the `[project]` table, which only the project's `alai.toml` or
-`--config-file` can have; a `[project]` table in a user or system file is an
-error. Flags and environment variables can always set them.
+the `[project]` table, which only the project's `alai.toml` can have; a
+`[project]` table in any other file is an error. Flags and environment
+variables can always set them.
 
 Settings that only make sense for alai itself have no config key:
 
@@ -195,16 +220,17 @@ collection paths. See
 [Where collections are installed](projects.md#where-collections-are-installed)
 for an example layout.
 
-Unset, it's `collections` in the project root. A relative value is resolved
-like any other [path](#paths): against the directory of the file that sets
-it, or the current directory for `--collections-dir` and
-`ALAI_COLLECTIONS_DIR`. In the project's own `alai.toml` that directory is
-the project root, so the two agree; in a `--config-file` elsewhere they
-don't.
+Unset, it's `collections` in the project root. A relative value in
+`alai.toml` is relative to the project root, where that file is, and one
+from `--collections-dir` or `ALAI_COLLECTIONS_DIR` is relative to the current
+directory. It can name a directory outside the project, such as
+`../collections` for a manifest kept in a subdirectory of the repository.
 
-Only the project file, `--config-file`, the environment and the command line
-can set it. A `[project]` table in a user or system file is an error, since
-one directory shared by every project would defeat the per-project layout.
+Only the project file, the environment and the command line can set it. In a
+user or system file it would apply to every project, defeating the
+per-project layout. For a path that only makes sense on one machine, such as
+an image build installing to `/usr/share/ansible/collections`, use the flag
+or the environment variable rather than committing it to `alai.toml`.
 
 ### `cache_dir`
 
