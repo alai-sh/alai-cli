@@ -1,3 +1,7 @@
 dist/
 __pycache__/
 .venv/
+.coverage*
+coverage.xml
+.tox/
+site/

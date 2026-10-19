@@ -1,0 +1,54 @@
+# The user documentation at docs.alai.sh, built from docs/ with
+# `uv run --group docs zensical build --strict`. Design notes live in design/
+# and aren't published.
+
+[project]
+site_name = "alai"
+site_description = "A fast package and environment manager for Ansible collections."
+site_url = "https://docs.alai.sh/"
+repo_url = "https://github.com/alai-sh/alai-cli"
+repo_name = "alai-sh/alai-cli"
+copyright = "Copyright &copy; 2026 Jordan Borean"
+
+nav = [
+  { "Home" = "index.md" },
+  { "Projects" = "projects.md" },
+  { "Configuration" = "configuration.md" },
+  { "Shell completion" = "shell-completion.md" },
+]
+
+[project.theme]
+language = "en"
+features = [
+  "content.code.copy",
+  "navigation.footer",
+  "navigation.sections",
+  "navigation.top",
+  "search.highlight",
+]
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme)"
+toggle.icon = "lucide/sun-moon"
+toggle.name = "Switch to light mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to system preference"
+
+# Kept to plain Markdown plus callouts and highlighted code, so the content
+# moves to another generator without rewriting.
+[project.markdown_extensions]
+admonition = {}
+attr_list = {}
+toc.permalink = true
+pymdownx.highlight = {}
+pymdownx.superfences = {}
