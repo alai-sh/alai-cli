@@ -44,7 +44,6 @@ dev = [
     "pre-commit",
     "pytest >= 8",
     "pytest-xdist",
-    "tox-uv",
     # Lets basedpyright check the Python 3.10 import path.
     "tomli >= 1.1.0",
 ]
@@ -165,6 +164,8 @@ env_list =
     sanity
     py3{10,11,12,13,14,15}-tests
 min_version = 4.0
+requires =
+    tox-uv
 
 [testenv]
 package = wheel
