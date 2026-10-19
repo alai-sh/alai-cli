@@ -47,6 +47,26 @@ what's planned on top of it, and the questions still open.
   stay top-level, so each maps one-to-one to its flag and environment
   variable. Installing to `~/.ansible/collections` will be a flag of its
   own.
+- **`collections_dir` may point outside the project.** In `alai.toml` that's
+  for layouts true of every checkout, such as `"../collections"` for a
+  manifest kept in a subdirectory. Paths true of one machine or run go in
+  `--collections-dir` or `ALAI_COLLECTIONS_DIR`: an image build installing to
+  `/usr/share/ansible/collections`, a read-only checkout installing to a
+  temporary directory, or a project on a network filesystem keeping its
+  collections on local disk (hardlinks also need the cache and the
+  collections on one filesystem). uv makes the same split for its project
+  virtual environment: only `UV_PROJECT_ENVIRONMENT` moves it. Outside the
+  project, `ansible-playbook` finds nothing without `alai run` or
+  `ANSIBLE_COLLECTIONS_PATH`, and the installer's rule of never replacing a
+  directory it didn't install matters most there.
+- **`--config-file` holds settings only**, as uv's does: `[project]`,
+  `[groups]` and `[overrides]` there are errors, even when it names the
+  project's own `alai.toml`. So there's one rule: those tables only ever come
+  from the project's `alai.toml`, found by discovery. A CI job that needs a
+  different `collections_dir` sets `--collections-dir` or
+  `ALAI_COLLECTIONS_DIR`. This also settles a path question: with no
+  `[project]` in a `--config-file`, a relative `collections_dir` in a file is
+  always relative to the project root, so no `{root}` placeholder is needed.
 - **Settings are defined once**, in `SETTINGS` in `src/alai/_config.py`:
   reading each level, merging, the argparse options and `config show` all
   loop over it. `Settings` stays a hand-written class so code using it is
@@ -83,33 +103,61 @@ what's planned on top of it, and the questions still open.
   `collections_path = .alai` in `ansible.cfg` gives the other layout. Revisit
   before the first release if AWX and execution environments matter less than
   assumed, since changing the default later moves everyone's installs.
-- **A placeholder for the project root in paths.** A relative path in a
-  config file is relative to that file, including `[project]
-  collections_dir` in a `--config-file`, while the project root still comes
-  from discovery. So `--config-file ci/alai.toml` with
-  `collections_dir = "collections"` installs to `ci/collections`, though
-  leaving it unset gives `<root>/collections`. Kept: one rule for every path
-  in every file. A placeholder would let such a file name the root instead:
-  - `${PROJECT_ROOT}/collections`, as PDM has. Readable, but it looks like
-    environment variable expansion, so `${HOME}` or `${CI_PROJECT_DIR}` would
-    be expected to work: either alai expands any environment variable (a much
-    bigger feature, and files whose meaning depends on the environment) or it
-    rejects most `${...}`.
-  - `{root}/collections` (or `{project_root}`), like Hatch's context
-    formatting. Doesn't read as an environment variable; a literal `{` in a
-    path would need escaping.
+- **`--project` naming a manifest file.** uv takes a directory or a path to a
+  `pyproject.toml`; Cargo's `--manifest-path` must name a `Cargo.toml`.
+  Neither allows another file name: the lockfile's name and place follow the
+  manifest's, and discovery walking up from a subdirectory would never find a
+  custom name, so every command would need the flag. Accepting
+  `--project path/to/alai.toml`, as uv does, would be harmless and can be
+  added later. Other file names are left out; groups or separate directories
+  cover most reasons to want a second manifest.
 
-  Leaning towards a closed set of `{name}` placeholders, starting with
-  `{root}`, expanded only in path settings and only at the start of a value,
-  as `~` is. An unknown placeholder is an error, like an unknown key, so more
-  can be added later. Not built: it only matters for a `--config-file`
-  outside the project root that sets `[project]` paths.
+## Error positions (planned)
 
-## Project manifest (planned)
+Errors in a config file name the file, and the key path (`project.collections[2]`,
+`index[1]`) for anything past TOML syntax, but only syntax errors carry a line:
+`tomllib` reports positions for those, and returns plain dicts and lists with
+none once a file parses. uv, ruff and Cargo show a line, column and snippet,
+since Rust's `toml` crate keeps spans.
 
-The project's `alai.toml` will also list what the project needs, as
-`Cargo.toml` does, with the lockfile next to it. These tables will only be
-allowed in the project file, like `[project]` already is.
+The plan, when an error is about to be raised:
+
+- **Locate on the error path only.** Re-read the file's text and scan it for the
+  key path. The file already parsed, so the scanner only sees valid TOML, and
+  nothing costs anything on a successful run.
+- **Match keys, never values.** The text of a value can differ from what
+  `tomllib` returns (escapes, literal and multi-line strings, `1_000` or `0x3e8`),
+  so the position is the key that holds the bad value; the message already
+  shows the parsed value.
+- **`tomllib` decodes the keys.** A key has many spellings (`link_mode`,
+  `"link_mode"`, `"link\u005fmode"`, `project . collections_dir`, dotted keys,
+  `[project]` versus `project = { ... }`, `[[index]]` versus `index = [{ ... }]`).
+  Rather than reimplementing them, the scanner cuts out the text before the
+  first `=` outside quotes, or a header, and parses `<text> = 0` with `tomllib`
+  to get the exact key path. The scanner itself only finds where keys and
+  headers end, tracks the current table and `[[...]]` repeat, and skips
+  strings, comments and multi-line arrays. Array items such as
+  `project.collections[2]` are found by counting top-level items.
+- **No line rather than a wrong one.** Without exactly one match the message
+  keeps today's form, and an array item it can't place falls back to its
+  key's line.
+- **Format `path:line:col: message`**, which terminals and editors make
+  clickable, with columns in characters as `tomllib` counts them. Syntax
+  errors move to the same prefix instead of `(at line 4, column 7)`. Errors
+  from flags and environment variables keep naming the flag or variable.
+- **Tested against `tomllib`**: parse awkward documents, walk every key path
+  `tomllib` returns, and check the locator finds where each is defined, so a
+  spelling the scanner reads differently fails a test.
+
+Estimated at ~150 lines plus tests.
+
+## Project manifest
+
+The project's `alai.toml` also lists what the project needs, as `Cargo.toml`
+does, with the lockfile to go next to it. The user-facing reference is
+[docs/projects.md](../docs/projects.md#declaring-collections), implemented in
+`src/alai/_manifest.py`; the version syntax is in [versions.md](versions.md).
+Nothing uses it until `alai lock` exists.
 
 ```toml
 [project]
@@ -129,12 +177,44 @@ collections = ["ansible.posix", "community.crypto"]
 ignore_requires_ansible = ["some.collection"]
 ```
 
-| Key | |
-|---|---|
-| `project.collections` | The collections the project needs, as `NAME[SPEC]` strings with ansible-galaxy's version specifiers (`>=1.0.0,<2.0.0`, `*`, `!=`). An `INDEX:` prefix pins one to an index |
-| `project.requires_ansible` | The ansible-core versions the project targets. The resolver drops collection versions whose own `requires_ansible` doesn't overlap it, and the lock is solved for this range rather than for whatever is installed. The name follows `meta/runtime.yml` |
-| `groups.<name>.collections` | Collections only some workflows need, such as tests. Installed on request |
-| `overrides` | Fixes for wrong upstream metadata: a collection name replaces every requirement on that collection with the given spec, and `ignore_requires_ansible` skips the check for the listed collections |
+Decisions:
+
+- **The manifest is project data, not config.** `--no-config` and
+  `--config-file` choose which settings are read; they don't change what the
+  project needs. `_manifest.load_manifest` always reads the project root's
+  `alai.toml`, as uv reads `pyproject.toml` dependencies under `--no-config`.
+  Otherwise `alai lock --no-config` would see an empty project and write an
+  empty lockfile, and a CI job's `--config-file` could swap the project's
+  collections for its own while the lockfile beside `alai.toml` still
+  described the originals.
+- **Manifest keys anywhere else are errors**, as all of `[project]` is
+  outside the project file (see `--config-file` above). Since alai never
+  reads them there, accepting them would let someone believe a CI file adds
+  collections when it does nothing.
+- **Keys and types on every command, values when used.** Loading settings
+  from the project file checks the manifest's keys and types
+  (`_config.RawManifest`), so a misspelt key or a string where an array
+  belongs fails on the next command. Whether a requirement or specifier
+  string is valid, or a pinned index exists, is checked by `_manifest` when a
+  command reads the manifest. This keeps the version parsing (~1.3 ms of
+  imports, mostly compiling patterns) off every other command, and `_config`
+  never imports `_manifest`. With `--no-config` the project file isn't read
+  for settings, so nothing in it is checked until a command uses the
+  manifest. uv and Cargo do the same for manifests: both parse dependency
+  requirements when a command loads the project (`uv tree`,
+  `cargo metadata`) and leave other commands (`uv cache dir`,
+  `cargo locate-project`) alone. Settings stay checked on every command, as
+  uv checks `uv.toml`; Cargo instead reads each `.cargo/config.toml` value
+  only when used.
+- **A collection is listed once per list.** Two entries for one name in
+  `project.collections`, or in one group, are an error rather than merged.
+  The same name in the project and a group is allowed; the resolver combines
+  them.
+- **Index pins are checked when used**, by `alai lock`, like any other
+  value. Checking them on every command would also break `alai config show`,
+  the command for finding out why an index is missing.
+- **Groups are named like indexes** (`[a-z0-9][a-z0-9_-]*`), so a group is
+  spelled one way in files and on the command line.
 
 Requirements are strings rather than a Cargo-style table because collection
 names contain a dot: `community.general = ">=9"` is a TOML dotted key. They're
@@ -154,6 +234,8 @@ Planned alongside it:
 - **`alai export --format requirements.yml`** writes the lock as a
   `collections/requirements.yml` for AWX/Controller, ansible-builder and
   ansible-navigator, which can't run alai.
+- **Environments and an ansible-core pin**, with `requires_ansible` staying
+  the range: see [environments.md](environments.md).
 - **`[python]`** is reserved for Python requirements, should alai manage the
   virtual environment.
 

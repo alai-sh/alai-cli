@@ -287,7 +287,8 @@ nothing is loaded through a symlink.
 - **The installer** never replaces or removes a collection directory it
   didn't install (no alai marker, a `.git`, or a symlink). Collection repos
   depend on this; playbook projects benefit from it too.
-- **`<cache_dir>/envs/`** is reserved for test trees.
+- **`<cache_dir>/envs/`** is reserved for test trees, which should share a
+  design with named environments: see [environments.md](environments.md).
 - **Debugging.** Nothing in the layout, the installer or `alai run` should
   make breakpoints set in the checkout stop working. See
   [Debugging](#debugging).
