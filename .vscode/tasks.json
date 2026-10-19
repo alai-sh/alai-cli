@@ -1,0 +1,40 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            // Serves docs/ on port 24816 and rebuilds on save. Over Remote-SSH, VS Code forwards the port and offers to
+            // open it. Binding 127.0.0.1 explicitly keeps it to one port: "localhost" listens on IPv4 and IPv6
+            // separately. The port is fixed because a new one each run leaves a growing list of stale entries in VS
+            // Code's Ports view. If 24816 is taken, run the command by hand with another port.
+            //
+            // To open it in VS Code's integrated browser automatically, add this to your own user settings.json
+            // (Preferences: Open User Settings (JSON)) rather than this repo's:
+            //
+            //   "remote.portsAttributes": {
+            //       "24816": {
+            //           "label": "docs",
+            //           "onAutoForward": "openPreview"
+            //       }
+            //   }
+            "label": "docs: serve",
+            "type": "shell",
+            "command": "uv run --only-group docs zensical serve --dev-addr 127.0.0.1:24816",
+            "isBackground": true,
+            "problemMatcher": {
+                "owner": "zensical",
+                "pattern": {
+                    "regexp": "^(?:\\u001b\\[[0-9;]*m)?Warning:(?:\\u001b\\[[0-9;]*m)? (.*)$",
+                    "message": 1
+                },
+                "background": {
+                    "beginsPattern": "^(Serving|Build started)",
+                    "endsPattern": "^(No issues found|Build finished)"
+                }
+            },
+            "presentation": {
+                "reveal": "silent",
+                "panel": "dedicated"
+            }
+        }
+    ]
+}
