@@ -16,7 +16,7 @@ import sys
 from . import _output
 from ._args import HelpFormatter, add_global_args, verbose_count
 from ._commands import config, shell_completion
-from ._common import ConfigError
+from ._common import Error
 
 EXIT_ERROR = 2
 
@@ -49,7 +49,7 @@ def main(argv: _c.Sequence[str] | None = None) -> int:
 
     try:
         return handler(args)
-    except ConfigError as e:
+    except Error as e:
         print(f"error: {e}", file=sys.stderr)
         return EXIT_ERROR
 

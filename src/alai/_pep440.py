@@ -147,6 +147,16 @@ class Specifier:
     def __repr__(self) -> str:
         return f"Specifier({self.text!r})"
 
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, Specifier) and self._identity() == other._identity()
+
+    def __hash__(self) -> int:
+        return hash(self._identity())
+
+    def _identity(self) -> tuple[object, ...]:
+        # Equal when they accept the same versions as written: >=2.17 and >= 2.17.0 are one specifier.
+        return (self.op, self.prefix, self.version._key if self.version else self.text[3:].strip().lower())
+
 
 class SpecifierSet:
     """Comma-separated specifiers, all of which must hold, such as ``>=2.17,<2.20``."""
@@ -172,6 +182,12 @@ class SpecifierSet:
 
     def __repr__(self) -> str:
         return f"SpecifierSet({self.text!r})"
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, SpecifierSet) and self.specifiers == other.specifiers
+
+    def __hash__(self) -> int:
+        return hash(self.specifiers)
 
 
 def _prefix_match(version: Version, prefix: Version) -> bool:

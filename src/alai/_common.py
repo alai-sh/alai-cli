@@ -1,7 +1,8 @@
 # Copyright: (c) 2026, Jordan Borean (@jborean93) <jborean93@gmail.com>
 # MIT License (see LICENSE or https://opensource.org/licenses/MIT)
 
-"""What reading ``alai.toml`` needs in both ``_config``, for settings, and ``_manifest``, for the manifest."""
+"""What several modules share: the error type the CLI reports, and what reading ``alai.toml`` needs in both ``_config``
+and ``_manifest``."""
 
 from __future__ import annotations
 
@@ -11,7 +12,11 @@ NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
 """Index and group names: lowercase, so each is spelled one way in files and on the command line."""
 
 
-class ConfigError(Exception):
+class Error(Exception):
+    """A failure to report to the user as ``error: <message>``, without a traceback."""
+
+
+class ConfigError(Error):
     """A config file, environment variable or flag holds an invalid value."""
 
 

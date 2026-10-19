@@ -342,6 +342,50 @@ class TestValidation:
             load(tmp_path, environ)
 
 
+class TestBoolean:
+    """system_certs, the first true-or-false setting: on by default, and either way from any level."""
+
+    def test_default(self, tmp_path: Path, environ: dict[str, str]) -> None:
+        assert load(tmp_path, environ).system_certs is True
+
+    def test_file(self, tmp_path: Path, environ: dict[str, str]) -> None:
+        config = write(tmp_path / "alai.toml", "system_certs = false\n")
+
+        settings = load(tmp_path, environ)
+
+        assert settings.system_certs is False
+        assert settings.sources["system_certs"] == str(config)
+
+    @pytest.mark.parametrize(("value", "expected"), [("0", False), ("off", False), ("YES", True), ("1", True)])
+    def test_env(self, tmp_path: Path, environ: dict[str, str], value: str, expected: bool) -> None:
+        write(tmp_path / "alai.toml", f"system_certs = {str(not expected).lower()}\n")
+        environ["ALAI_SYSTEM_CERTS"] = value
+
+        assert load(tmp_path, environ).system_certs is expected
+
+    @pytest.mark.parametrize("flag", [True, False])
+    def test_flag_beats_env_either_way(self, tmp_path: Path, environ: dict[str, str], flag: bool) -> None:
+        environ["ALAI_SYSTEM_CERTS"] = "0" if flag else "1"
+
+        settings = load(tmp_path, environ, Overrides(system_certs=flag))
+
+        assert settings.system_certs is flag
+        assert settings.sources["system_certs"] == "--system-certs"
+
+    def test_invalid_env(self, tmp_path: Path, environ: dict[str, str]) -> None:
+        environ["ALAI_SYSTEM_CERTS"] = "maybe"
+
+        with pytest.raises(ConfigError, match=r"ALAI_SYSTEM_CERTS: expected a boolean .* got 'maybe'"):
+            load(tmp_path, environ)
+
+    @pytest.mark.parametrize("value", ['"false"', "0", "[true]"])
+    def test_file_needs_toml_boolean(self, tmp_path: Path, environ: dict[str, str], value: str) -> None:
+        write(tmp_path / "alai.toml", f"system_certs = {value}\n")
+
+        with pytest.raises(ConfigError, match="'system_certs' must be true or false"):
+            load(tmp_path, environ)
+
+
 class TestPaths:
     @pytest.mark.parametrize("value", ["collections/ansible_collections", "collections"])
     def test_collections_dir_strips_ansible_collections(
@@ -473,6 +517,7 @@ def test_sources_and_overridden(tmp_path: Path, home: Path, environ: dict[str, s
         "collections_dir": "default",
         "cache_dir": str(user),
         "link_mode": "--link-mode",
+        "system_certs": "default",
     }
     assert settings.overridden == {
         "link_mode": (
