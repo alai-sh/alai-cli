@@ -55,6 +55,11 @@ The rest is planned.
 - **Progress** (spinners, download bars) on stderr, drawn only when stderr is
   a terminal, off with `-q` and with a `--no-progress` flag (and
   `ALAI_NO_PROGRESS`) for CI logs that are terminals.
+  The parallel index fetches and artifact downloads in `alai lock` and
+  `alai sync` are the case the rich decision above leaves open: several
+  things in flight at once, in commands where network time outweighs rich's
+  import cost (see [index-client.md](index-client.md)). Deciding that is
+  separate work.
 
 ### Progress on stderr and PowerShell
 

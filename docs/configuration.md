@@ -53,6 +53,10 @@ cache_dir = "~/.cache/alai"
 # opt-in only.
 link_mode = "auto"
 
+# Verify TLS certificates with the operating system's trust store, which
+# includes roots your organisation installs. Set false to use OpenSSL's.
+system_certs = true
+
 # Settings that describe the project. Only the project's alai.toml can have
 # this table.
 [project]
@@ -157,6 +161,7 @@ Settings
   link_mode                symlink                ALAI_LINK_MODE
                            hardlink               ~/project/alai.toml, overridden
                            copy                   ~/.config/alai/alai.toml, overridden
+  system_certs             true                   default
 
 Indexes, in resolution order
   staging   https://staging.example.com/        --index
@@ -189,6 +194,7 @@ current directory. A leading `~` expands to the home directory in both.
 | [`project.collections_dir`](#projectcollections_dir) | **project only** | `--collections-dir` | `ALAI_COLLECTIONS_DIR` | [path](#paths) | `<project root>/collections` |
 | [`cache_dir`](#cache_dir) | any | `--cache-dir` | `ALAI_CACHE_DIR` | [path](#paths) | `$XDG_CACHE_HOME/alai`, default `~/.cache/alai` |
 | [`link_mode`](#link_mode) | any | `--link-mode` | `ALAI_LINK_MODE` | `auto`, `clone`, `hardlink`, `copy` or `symlink` | `auto` |
+| [`system_certs`](#system_certs) | any | `--system-certs`, `--no-system-certs` | `ALAI_SYSTEM_CERTS` | boolean | `true` |
 | [`index`](#index) | any | `--index` | `ALAI_INDEX` | array of index tables | none |
 | none, see [`index`](#index) | | `--default-index` | `ALAI_DEFAULT_INDEX` | URL | `https://index.alai.sh/` |
 
@@ -234,8 +240,16 @@ or the environment variable rather than committing it to `alai.toml`.
 
 ### `cache_dir`
 
-Where downloaded artifacts and extracted collections are kept, shared by
-every project.
+Where downloaded artifacts, extracted collections and index metadata are
+kept, shared by every project.
+
+!!! warning "Keep the cache to the users who need it"
+
+    alai trusts what's in its cache: anyone who can change it can change
+    what alai installs. The default, under your home directory, is only
+    writable by you. A `cache_dir` elsewhere, such as under `/tmp` or a
+    directory shared between users or CI jobs, may be readable and writable
+    by others, and it's up to you to restrict it to the users who need it.
 
 ### `link_mode`
 
@@ -253,6 +267,28 @@ How files get from the cache into `collections_dir`:
 Any other value uses that mode or fails. Setting `auto` at a higher level
 brings the fallback back when a lower level picks a mode, for example
 `--link-mode auto` in a project whose `alai.toml` sets `copy`.
+
+### `system_certs`
+
+How alai checks the certificates of the indexes it connects to over HTTPS:
+
+- `true`, the default: with the operating system's trust store. On macOS
+  and Windows the operating system verifies the certificate, so roots your
+  organisation installs, such as for a proxy that inspects TLS traffic, are
+  trusted as they are by your browser. On Linux and other systems it's the
+  system's CA bundle, as OpenSSL finds it.
+- `false`: with OpenSSL's default certificate paths, which on macOS and
+  Windows may not include roots your organisation installs.
+
+`SSL_CERT_FILE` or `SSL_CERT_DIR` in the environment, naming a CA bundle or
+directory, take precedence over the trust store: alai verifies against that
+bundle alone.
+
+To capture alai's TLS traffic for debugging, set `SSLKEYLOGFILE` to a file
+path in the environment, as for curl or a browser; alai writes each
+session's keys to it and warns on every run while it's set. Anyone with that
+file and a capture of the traffic can read it, so unset it when you're done.
+It's deliberately not a setting in `alai.toml`.
 
 ### `index`
 

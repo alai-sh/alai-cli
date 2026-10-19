@@ -66,10 +66,23 @@ def test_config_show_defaults(capsys: pytest.CaptureFixture[str]) -> None:
         "  project.collections_dir  ~/work/collections  default\n"
         "  cache_dir                ~/.cache/alai       default\n"
         "  link_mode                auto                default\n"
+        "  system_certs             true                default\n"
         "\n"
         "Indexes, in resolution order\n"
         "  alai  https://index.alai.sh/  built-in, default index\n"
     )
+
+
+@pytest.mark.parametrize(("argv", "expected"), [([], "true"), (["--no-system-certs"], "false")])
+def test_config_show_boolean(capsys: pytest.CaptureFixture[str], argv: list[str], expected: str) -> None:
+    assert main(["config", "show", "system_certs", *argv]) == 0
+    assert capsys.readouterr().out == f"{expected}\n"
+
+
+def test_boolean_flag_pair_in_help(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        main(["config", "show", "--help"])
+    assert "--system-certs, --no-system-certs" in capsys.readouterr().out
 
 
 def test_config_show_project(isolated: Path, capsys: pytest.CaptureFixture[str]) -> None:

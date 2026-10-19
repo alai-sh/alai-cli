@@ -106,6 +106,14 @@ class TestSpecifierSet:
     def test_iter(self) -> None:
         assert [s.op for s in SpecifierSet(">=2.17,<2.20")] == [">=", "<"]
 
+    def test_equality(self) -> None:
+        assert SpecifierSet(">=2.17, <2.20") == SpecifierSet(">=2.17.0,<2.20")
+        assert SpecifierSet(">=2.17") != SpecifierSet(">2.17")
+        assert SpecifierSet("==2.17.*") != SpecifierSet("==2.17")
+        assert SpecifierSet("===2.17.0") == SpecifierSet("=== 2.17.0")
+        assert len({SpecifierSet(">=2.17"), SpecifierSet(">= 2.17.0")}) == 1
+        assert SpecifierSet(">=2.17") != ">=2.17"
+
     def test_text(self) -> None:
         specifiers = SpecifierSet(">=2.17, <2.20")
 

@@ -86,7 +86,7 @@ class Overrides(Record):
         project: str | None = None,
         config_file: str | None = None,
         no_config: bool = False,
-        **settings: str | _c.Sequence[str] | None,
+        **settings: str | _c.Sequence[str] | bool | None,
     ) -> None:
         if unknown := sorted(settings.keys() - {s.name for s in SETTINGS if s.flag}):
             raise TypeError(f"Overrides got an unexpected keyword argument '{unknown[0]}'")
@@ -147,6 +147,7 @@ class Settings(Record):
         "project",
         "searched",
         "sources",
+        "system_certs",
     )
 
     def __init__(
@@ -158,6 +159,7 @@ class Settings(Record):
         cache_dir: str | None,
         link_mode: LinkMode,
         indexes: tuple[Index, ...],
+        system_certs: bool = True,
         searched: tuple[ConfigFile, ...] = (),
         no_config: bool = False,
         sources: dict[str, str] | None = None,
@@ -180,6 +182,8 @@ class Settings(Record):
         self.link_mode = link_mode
         self.indexes = indexes
         """The indexes in resolution order, the default index last."""
+        self.system_certs = system_certs
+        """Verify TLS certificates with the operating system's trust store rather than OpenSSL's."""
 
     @property
     def cache_dir(self) -> str:
@@ -236,6 +240,7 @@ class SettingDefinition(Record):
     """
 
     __slots__ = (
+        "boolean",
         "choices",
         "env",
         "flag",
@@ -267,6 +272,7 @@ class SettingDefinition(Record):
         global_flag: bool = False,
         many: bool = False,
         repeat: bool = False,
+        boolean: bool = False,
     ) -> None:
         """Define a setting.
 
@@ -293,6 +299,8 @@ class SettingDefinition(Record):
                 from the highest level that sets it.
             repeat: The flag can be given more than once, and the environment variable holds several values
                 separated by whitespace.
+            boolean: The setting is true or false. ``flag`` comes with a ``--no-`` form, so the command line can
+                override a file or environment variable either way.
         """
         self.name = name
         self.key = key
@@ -307,6 +315,7 @@ class SettingDefinition(Record):
         self.parse_file = parse_file
         self.many = many
         self.repeat = repeat
+        self.boolean = boolean
 
 
 def load_settings(
@@ -367,6 +376,7 @@ def load_settings(
     collections_dir = merged.values.get("collections_dir")
     cache_dir = merged.values.get("cache_dir")
     link_mode = merged.values.get("link_mode")
+    system_certs = merged.values.get("system_certs")
     indexes = [i for i in merged.lists.get("indexes", ()) if isinstance(i, Index)]
     sources = {s.target: merged.sources.get(s.target, "default") for s in SETTINGS if not s.many}
     return Settings(
@@ -382,6 +392,7 @@ def load_settings(
         cache_dir=cache_dir if isinstance(cache_dir, str) else default_cache_dir(environ),
         link_mode=link_mode if isinstance(link_mode, LinkMode) else LinkMode.AUTO,
         indexes=_resolve_indexes(indexes),
+        system_certs=system_certs if isinstance(system_certs, bool) else True,
     )
 
 
@@ -489,7 +500,12 @@ def _file_layer(table: _c.Mapping[str, object], path: str, level: Level, home: s
         if setting is None:
             raise ConfigError(f"{description}: unknown setting '{key}'{suggest_key(key, manifest=is_project)}")
 
-        if setting.parse_file:
+        if setting.boolean:
+            # TOML's true or false, not a string such as "yes".
+            if not isinstance(value, bool):
+                raise ConfigError(f"{description}: '{key}' must be true or false")
+            layer.add(setting, value, source)
+        elif setting.parse_file:
             for item in setting.parse_file(value, source):
                 layer.add(setting, item, source)
         else:
@@ -588,7 +604,10 @@ def _cli_layer(overrides: Overrides, cwd: str, home: str | None) -> _Layer:
     for setting in SETTINGS:
         value = overrides.settings.get(setting.name)
         source = _Source(Level.CLI, setting.flag, cwd, home)
-        if isinstance(value, str):
+        if isinstance(value, bool):
+            # --system-certs and --no-system-certs give the value itself.
+            layer.add(setting, value, source)
+        elif isinstance(value, str):
             # An empty value, such as --link-mode "", leaves the setting unset.
             if value:
                 layer.add(setting, setting.parse(value, source), source)
@@ -693,6 +712,16 @@ def _str_value(key: str, value: object, source: _Source) -> str:
     return value
 
 
+def _bool_arg(value: str, source: _Source) -> bool:
+    """Parse a boolean environment variable, with the words ``ALAI_NO_CONFIG`` takes."""
+    lowered = value.lower()
+    if lowered in _TRUE:
+        return True
+    if lowered in _FALSE:
+        return False
+    raise ConfigError(f"{source.description}: expected a boolean (1, true, yes, on, 0, false, no, off), got '{value}'")
+
+
 def _link_mode(value: str, source: _Source) -> LinkMode:
     try:
         return LinkMode(value)
@@ -788,6 +817,15 @@ SETTINGS = (
         choices=tuple(m.value for m in LinkMode),
         help="how files get from the cache into the collections directory",
         parse=_link_mode,
+    ),
+    SettingDefinition(
+        "system_certs",
+        key="system_certs",
+        flag="--system-certs",
+        env="ALAI_SYSTEM_CERTS",
+        help="verify TLS certificates with the operating system's trust store (the default)",
+        parse=_bool_arg,
+        boolean=True,
     ),
     SettingDefinition(
         "index",

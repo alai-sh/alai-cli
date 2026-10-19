@@ -124,6 +124,8 @@ def _source(settings: Settings, target: str) -> str:
 
 
 def _text(value: object, *, tilde: bool = False) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"  # as written in alai.toml
     text = str(getattr(value, "value", value))  # an enum's value, such as LinkMode.COPY's "copy"
     return _tilde(text) if tilde else text
 

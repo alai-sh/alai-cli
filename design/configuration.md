@@ -86,6 +86,13 @@ what's planned on top of it, and the questions still open.
   `alai.toml` fails on the next command run rather than the next install,
   as the strict loading above promises. The cost: a bad `ALAI_LINK_MODE` in
   CI breaks `alai lock` too, with an error naming the variable.
+- **Boolean settings get a flag pair**, `--system-certs` and
+  `--no-system-certs` (argparse's `BooleanOptionalAction`), so the command
+  line can override a file or environment variable either way, as `--link-mode
+  auto` undoes a file's `link_mode`. In a file the value must be TOML's
+  `true` or `false`, not a string; the environment variable takes the words
+  `ALAI_NO_CONFIG` takes (`1`, `true`, `yes`, `on`, `0`, `false`, `no`,
+  `off`). `config show` prints `true` or `false`.
 - **A default that can fail is worked out only when used.** `cache_dir`
   without a home directory has no default; `Settings.cache_dir` raises then,
   rather than `load_settings`, so commands that don't touch the cache still
