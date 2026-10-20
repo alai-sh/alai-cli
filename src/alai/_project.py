@@ -17,6 +17,7 @@ from ._progress import Live, Task
 
 if _t.TYPE_CHECKING:
     from ._resolve import Resolution
+    from ._semver import Version
 
 
 def load_project(settings: Settings, why: str) -> tuple[RawManifest, Manifest]:
@@ -38,6 +39,21 @@ def resolve_project(
 ) -> tuple[Lock, Resolution]:
     """Resolve the project against its indexes, keeping ``existing``'s versions while they fit, and warn of anything
     the resolution reported. The lock isn't written."""
+    resolution = resolve_manifest(settings, manifest, locked=existing, upgrade=upgrade)
+    return Lock(raw, resolution.collections), resolution
+
+
+def resolve_manifest(
+    settings: Settings,
+    manifest: Manifest,
+    *,
+    locked: Lock | None = None,
+    installed: _c.Mapping[str, Version] | None = None,
+    upgrade: bool | _c.Collection[str] = False,
+    origin: str = "the project",
+) -> Resolution:
+    """Resolve ``manifest`` against the configured indexes, with progress, and warn of anything the resolution
+    reported. ``origin`` names where its requirements came from, in errors."""
     from . import __version__
     from ._fetch import Fetcher
     from ._index import IndexClient
@@ -50,10 +66,18 @@ def resolve_project(
         Live(Task("Resolving collections...")) as task,
     ):
         clients = [IndexClient(index, fetcher, settings.cache_dir) for index in settings.indexes]
-        resolution = resolve(manifest, clients, locked=existing, upgrade=upgrade, report=lambda n, d: task.show(n, d))
+        resolution = resolve(
+            manifest,
+            clients,
+            locked=locked,
+            installed=installed,
+            upgrade=upgrade,
+            origin=origin,
+            report=lambda n, d: task.show(n, d),
+        )
     for message in resolution.warnings:
         warn(message)
-    return Lock(raw, resolution.collections), resolution
+    return resolution
 
 
 def lock_unchanged(existing: Lock | None, manifest: Manifest, lock: Lock) -> bool:

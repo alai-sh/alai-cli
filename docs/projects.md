@@ -324,3 +324,46 @@ Every group is locked together whichever are installed, so switching
 groups never changes `alai.lock`. Naming a group `alai.toml` doesn't have
 is an error, except `--no-group dev` and `--no-dev`, which are always
 accepted.
+
+## Installing by hand
+
+`alai collection install` installs collections without the project's
+requirements or `alai.lock`, as `uv pip install` installs packages: it
+resolves what's asked for and what that needs, keeps installed versions
+that still fit, and removes nothing else. If the project has an
+`alai.toml`, it's read as for any command: it marks the project, and its
+settings, such as the indexes and `collections_dir`, apply. Its
+`[project]` collections and `alai.lock` are neither used nor changed. `alai collection uninstall` removes the
+collections named, and only them:
+
+```console
+$ alai collection install cisco.ios
+Resolved 3 collections in 2.20s
+Prepared 3 collections in 809ms
+Installed 3 collections in 65ms
+ + ansible.netcommon==8.7.1
+ + ansible.utils==6.1.1
+ + cisco.ios==11.6.0
+$ alai collection uninstall cisco.ios
+Uninstalled 1 collection in 8ms
+ - cisco.ios==11.6.0
+```
+
+When every collection asked for is already installed at a version that
+fits, `install` says `Checked` and connects to nothing. `-U` and `-P NAME`
+upgrade, as for [`alai lock`](#locking). A collection that isn't installed
+is skipped by `uninstall` with a warning.
+
+They install to the [collections directory](#where-collections-are-installed)
+of the project alai finds, whether it has an `alai.toml`, an `ansible.cfg`
+or a `collections/ansible_collections/`. With none of those, they need
+`--collections-dir` (or `ALAI_COLLECTIONS_DIR`, or the setting) to say
+where, rather than making a `collections/` wherever alai happens to run.
+
+!!! note "`alai sync` undoes them"
+
+    In a project with an `alai.lock`, `alai sync` makes the collections
+    directory match the lock again, so it removes what was installed by hand
+    and puts back what was uninstalled, unless it's run with `--inexact`.
+    To keep a collection, [add it](#adding-and-removing-collections)
+    instead.
