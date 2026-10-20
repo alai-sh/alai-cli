@@ -274,7 +274,10 @@ class TestIndexFile:
         dl = "https://dl.example/{namespace}/{name}/{version}/{sha256-prefix}/{sha256-checksum}.tar.gz"
         parsed = IndexConfig(root=ROOT, format=1, index_url=ROOT, collections_url=ROOT, dl=dl)
 
-        assert artifact_url(parsed, version) == f"https://dl.example/ns/coll/1.0.0%2Bbuild.1/aa/{CKSUM}.tar.gz"
+        assert (
+            artifact_url(parsed, version.name, version.version, version.cksum)
+            == f"https://dl.example/ns/coll/1.0.0%2Bbuild.1/aa/{CKSUM}.tar.gz"
+        )
 
 
 @pytest.fixture

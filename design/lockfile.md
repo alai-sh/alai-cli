@@ -305,24 +305,3 @@ Paths in the lock are relative to the project root. Installing:
   edit the source. That leans on the installer never replacing a directory
   it didn't install, and on the debugging requirement in
   [collection-development.md](collection-development.md).
-
-## The cache is trusted after download
-
-uv checks a wheel's hash against its lock when it downloads it, then trusts
-the unpacked copy in its cache. Tested with uv 0.13 and a scratch
-`UV_CACHE_DIR` on 2026-10-20: after editing a cached package's file,
-`uv sync`, `uv sync --reinstall` and `uv sync --reinstall-package` all
-installed the edited copy; only clearing the cache helps. For alai's
-installer (slice 4):
-
-- **By default, as uv:** `cksum` is checked when an artifact is downloaded;
-  the extracted copy is trusted afterwards. The docs already say alai trusts
-  its cache and that a `cache_dir` outside the home directory is the user's
-  to restrict (see [index-client.md](index-client.md)).
-- **Optionally, verify against `FILES.json`.** Every published collection
-  carries a sha256 for each file, which `ansible-galaxy collection verify`
-  uses. An `alai cache verify` command, or `--verify` on `sync`, can check
-  cached or installed collections against it, which uv has no equivalent
-  for.
-- If the tarballs are kept in the cache, re-hashing one against `cksum`
-  before extracting costs milliseconds and is worth doing.

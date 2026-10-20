@@ -10,8 +10,10 @@ is in ``design/index-client.md``.
 
 from __future__ import annotations
 
+import collections.abc as _c
 import concurrent.futures
 import contextlib
+import hashlib
 import json
 import os
 import secrets
@@ -41,6 +43,7 @@ _RETRY = urllib3.Retry(
     raise_on_status=False,
 )
 _TIMEOUT = urllib3.Timeout(connect=15, read=60)
+_CHUNK = 256 * 1024
 
 
 class FetchError(Error):
@@ -120,6 +123,58 @@ class Fetcher:
         unique = f"{url}{'&' if '?' in url else '?'}r={secrets.token_hex(8)}"
         return self._executor.submit(self._get, url, cache_path, unique).result()
 
+    def download(self, url: str, path: str, *, max_size: int) -> tuple[str, int]:
+        """Download ``url`` to the new file ``path``, waiting for it, and return the SHA-256 and size of what was
+        written.
+
+        For artifacts: streamed rather than held in memory, and never cached here, since the caller keeps what it
+        extracts. It stops once more than ``max_size`` bytes arrive, so a wrong or hostile response can't fill the disk.
+        Not found and offline are FetchErrors, as the caller only asks for what a lock lists.
+        """
+        digest = hashlib.sha256()
+        size = 0
+        try:
+            with open(path, "xb") as out:
+                for chunk in self._chunks(url):
+                    size += len(chunk)
+                    if size > max_size:
+                        raise FetchError(f"{url}: larger than the {max_size} bytes the index lists")
+                    digest.update(chunk)
+                    _ = out.write(chunk)
+        except OSError as e:
+            raise FetchError(f"can't write {path}: {e.strerror or e}") from None
+        trace(f"GET {url}: {size} bytes")
+        return digest.hexdigest(), size
+
+    def _chunks(self, url: str) -> _c.Iterator[bytes]:
+        if url.startswith("file:"):
+            path = _file_path(url)
+            try:
+                with open(path, "rb") as fd:
+                    while chunk := fd.read(_CHUNK):
+                        yield chunk
+            except FileNotFoundError:
+                raise FetchError(f"{path}: not found") from None
+            except OSError as e:
+                raise FetchError(f"{path}: {e.strerror or e}") from None
+            return
+        if self.offline:
+            raise FetchError(f"{url} isn't in the cache, and alai is offline")
+        _, response = self._request(url, dict(self._headers), preload_content=False)
+        try:
+            if response.status in _NOT_FOUND:
+                raise FetchError(f"{url}: not found (HTTP {response.status})")
+            if response.status == 401:
+                raise FetchError(f"{url}: credentials required (HTTP 401)")
+            if response.status != 200:
+                raise FetchError(f"{url}: HTTP {response.status}{f' {response.reason}' if response.reason else ''}")
+            try:
+                yield from response.stream(_CHUNK)
+            except urllib3.exceptions.HTTPError as e:
+                raise FetchError(f"{url}: {_describe(e)}") from None
+        finally:
+            response.release_conn()
+
     def _get(self, url: str, cache_path: str | None, request_url: str | None = None) -> bytes | None:
         """Fetch ``url``, revalidating its cached copy. ``request_url`` is what to request, when it isn't ``url``."""
         if url.startswith("file:"):
@@ -158,11 +213,16 @@ class Fetcher:
             raise FetchError(f"{url}: credentials required (HTTP 401)")
         raise FetchError(f"{url}: HTTP {response.status}{f' {response.reason}' if response.reason else ''}")
 
-    def _request(self, url: str, headers: dict[str, str]) -> tuple[str, urllib3.BaseHTTPResponse]:
-        """GET ``url``, following redirects but never from ``https`` to anything else."""
+    def _request(
+        self, url: str, headers: dict[str, str], *, preload_content: bool = True
+    ) -> tuple[str, urllib3.BaseHTTPResponse]:
+        """GET ``url``, following redirects but never from ``https`` to anything else. Without ``preload_content``, the
+        body is left to stream and the caller releases the connection."""
         for _ in range(_MAX_REDIRECTS + 1):
             try:
-                response = self._manager(url).request("GET", url, headers=headers, redirect=False, retries=_RETRY)
+                response = self._manager(url).request(
+                    "GET", url, headers=headers, redirect=False, retries=_RETRY, preload_content=preload_content
+                )
             except urllib3.exceptions.HTTPError as e:
                 proxy = proxy_for(url)
                 raise FetchError(
@@ -171,6 +231,9 @@ class Fetcher:
             location = response.headers.get("Location")
             if response.status not in _REDIRECTS or not location:
                 return url, response
+            if not preload_content:
+                response.drain_conn()
+                response.release_conn()
             target = urllib.parse.urljoin(url, location)
             if url.startswith("https://") and not target.startswith("https://"):
                 raise FetchError(f"{url}: refusing to follow a redirect from https to {target}")
@@ -248,11 +311,15 @@ def proxy_for(url: str) -> str | None:
     return proxy if "://" in proxy else f"http://{proxy}"
 
 
-def _read_file(url: str) -> bytes | None:
+def _file_path(url: str) -> str:
     parts = urllib.parse.urlsplit(url)
     if parts.netloc not in ("", "localhost"):
         raise FetchError(f"{url}: a file URL can't name another host")
-    path = urllib.request.url2pathname(parts.path)
+    return urllib.request.url2pathname(parts.path)
+
+
+def _read_file(url: str) -> bytes | None:
+    path = _file_path(url)
     try:
         with open(path, "rb") as fd:
             data = fd.read()
