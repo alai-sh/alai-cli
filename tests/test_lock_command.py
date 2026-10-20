@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,11 @@ from index_data import make_index, v
 from alai import _output
 from alai._cli import EXIT_ERROR, main
 from alai._commands.lock import EXIT_STALE
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib
 
 COLLECTIONS: dict[str, list[dict[str, object]]] = {
     "a.a": [v("1.0.0"), v("2.0.0", {"b.b": ">=1.0.0"})],
@@ -294,6 +300,79 @@ class TestCheck:
         (tmp_path / "index" / "config.json").unlink()
 
         assert lock("--check") == EXIT_ERROR
+
+
+def versions(project: Path) -> dict[str, str]:
+    """What alai.lock locks, by name."""
+    table = tomllib.loads((project / "alai.lock").read_text())
+    return {c["name"]: c["version"] for c in table["collection"]}
+
+
+class TestUpgradeGroup:
+    def locked_old(self, project: Path) -> None:
+        """a.a 2.0.0 in group test, with its dependency b.b at 1.0.0, and b.b in group lint too, both locked old
+        while alai.toml lets b.b have 1.1.0, so only an upgrade moves it."""
+        write(
+            project,
+            [],
+            '[project.groups.test]\ncollections = ["a.a"]\n[project.groups.lint]\ncollections = ["b.b<1.1"]\n',
+        )
+        assert lock() == 0
+        write(
+            project, [], '[project.groups.test]\ncollections = ["a.a"]\n[project.groups.lint]\ncollections = ["b.b"]\n'
+        )
+        assert lock() == 0
+        assert versions(project) == {"a.a": "2.0.0", "b.b": "1.0.0"}
+
+    def test_upgrades_what_the_group_lists(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        self.locked_old(project)
+        _ = capsys.readouterr()
+
+        assert lock("--upgrade-group", "lint") == 0
+
+        assert versions(project) == {"a.a": "2.0.0", "b.b": "1.1.0"}
+        assert lines(capsys.readouterr().err) == ["Resolved 2 collections", "Updated b.b v1.0.0 -> v1.1.0"]
+
+    def test_not_what_they_depend_on(self, project: Path) -> None:
+        # As uv's --upgrade-group: test lists a.a, which needs b.b, and b.b isn't upgraded for it.
+        self.locked_old(project)
+
+        assert lock("--upgrade-group", "test") == 0
+
+        assert versions(project)["b.b"] == "1.0.0"
+
+    def test_with_upgrade_collection(self, project: Path) -> None:
+        write(project, ["c.c"], '[project.groups.test]\ncollections = ["a.a<2"]\n')
+        _ = lock()
+        write(project, ["c.c"], '[project.groups.test]\ncollections = ["a.a"]\n')
+
+        assert lock("--upgrade-group", "test", "-P", "c.c") == 0
+
+        assert versions(project) == {"a.a": "2.0.0", "b.b": "1.1.0", "c.c": "1.0.0"}
+
+    def test_check(self, project: Path) -> None:
+        self.locked_old(project)
+
+        assert lock("--check", "--upgrade-group", "test") == 0
+        assert lock("--check", "--upgrade-group", "lint") == EXIT_STALE
+
+    @pytest.mark.parametrize(
+        ("groups", "message"),
+        [
+            (
+                "[project.groups.test]\ncollections = []\n",
+                "--upgrade-group: alai.toml has no group 'nope' (it has 'test')",
+            ),
+            ("", "--upgrade-group: alai.toml has no group 'nope'"),
+        ],
+    )
+    def test_unknown_group(self, project: Path, capsys: pytest.CaptureFixture[str], groups: str, message: str) -> None:
+        write(project, ["c.c"], groups)
+
+        assert lock("--upgrade-group", "nope") == EXIT_ERROR
+
+        assert capsys.readouterr().err == f"error: {message}\n"
+        assert not (project / "alai.lock").exists()
 
 
 class TestErrors:

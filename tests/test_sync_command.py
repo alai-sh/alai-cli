@@ -334,12 +334,33 @@ class TestUpgrade:
         assert (project / "alai.lock").read_bytes() == before
         assert installed(project) == {"a.a": "2.0.0", "b.b": "1.1.0"}
 
-    def test_frozen_refuses(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    @pytest.mark.parametrize("args", [["-U"], ["--upgrade-group", "dev"]])
+    def test_frozen_refuses(self, project: Path, capsys: pytest.CaptureFixture[str], args: list[str]) -> None:
+        write(project, ["c.c"], {"dev": ["d.d"]})
+        _ = sync()
+
+        assert sync("--frozen", *args) == EXIT_ERROR
+        assert "--frozen doesn't" in capsys.readouterr().err
+
+    def test_upgrade_group(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # b.b is only in the dev group, which sync installs by default.
+        write(project, ["c.c"], {"dev": ["b.b<1.1"]})
+        _ = sync()
+        write(project, ["c.c"], {"dev": ["b.b"]})
+        _ = sync()
+        _ = capsys.readouterr()
+
+        assert sync("--upgrade-group", "dev") == 0
+
+        assert installed(project) == {"b.b": "1.1.0", "c.c": "1.0.0"}
+        assert lines(capsys.readouterr().err)[-2:] == [" - b.b==1.0.0", " + b.b==1.1.0"]
+
+    def test_unknown_group(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         write(project, ["c.c"])
         _ = sync()
 
-        assert sync("--frozen", "-U") == EXIT_ERROR
-        assert "--frozen doesn't" in capsys.readouterr().err
+        assert sync("--upgrade-group", "nope") == EXIT_ERROR
+        assert "--upgrade-group: alai.toml has no group 'nope'" in capsys.readouterr().err
 
     def test_invalid_name(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         write(project, ["c.c"])

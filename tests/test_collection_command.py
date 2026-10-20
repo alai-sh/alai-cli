@@ -203,6 +203,13 @@ class TestInstall:
         assert lines(capsys.readouterr().err)[-2:] == ["Installed 1 collection", " ~ b.b==1.1.0"]
         assert edited(cdir) == {"a.a", "c.c"}
 
+    def test_upgrade_group_not_taken(self, cdir: Path) -> None:
+        # It never reads the project's groups, so there's nothing for it to name.
+        with pytest.raises(SystemExit) as e:
+            _ = install("--upgrade-group", "dev", "c.c")
+
+        assert e.value.code == 2
+
     def test_no_version_fits(self, cdir: Path, capsys: pytest.CaptureFixture[str]) -> None:
         assert install("a.a>=3") == EXIT_ERROR
 

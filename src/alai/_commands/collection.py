@@ -9,7 +9,7 @@ import argparse
 
 from .._args import HelpFormatter, add_global_args, add_settings_args, settings_from_args
 from .._common import ConfigError
-from .lock import add_upgrade_args, upgrade_from_args
+from .lock import add_upgrade_args
 from .sync import add_reinstall_args, reinstall_from_args
 
 
@@ -66,6 +66,7 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
 
 def run_install(args: argparse.Namespace) -> int:
     from .._collection import install
+    from .._project import upgrade_from_args
 
     reinstall = reinstall_from_args(args)
     if reinstall and args.keep_unversioned:
@@ -74,7 +75,7 @@ def run_install(args: argparse.Namespace) -> int:
     install(
         settings_from_args(args),
         args.requirements,
-        upgrade=upgrade_from_args(args),
+        upgrade=upgrade_from_args(args).names(None),
         reinstall=reinstall,
         keep_unversioned=args.keep_unversioned,
     )

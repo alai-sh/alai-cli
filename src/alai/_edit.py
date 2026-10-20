@@ -21,7 +21,7 @@ from ._config import Settings, raw_manifest
 from ._lock import Lock, lock_path, read_lock, write_lock
 from ._manifest import Manifest, Requirement, collection_name, parse_manifest
 from ._output import error, home_path, shown_path, summary
-from ._project import lock_unchanged, report_changes, resolve_project
+from ._project import Upgrade, lock_unchanged, report_changes, resolve_project
 from ._sync import DEFAULT_GROUPS, install_locked
 
 if sys.version_info >= (3, 11):
@@ -38,7 +38,7 @@ def add(
     sync: bool,
     frozen: bool,
     locked: bool = False,
-    upgrade: bool | set[str] = False,
+    upgrade: Upgrade | None = None,
     reinstall: bool | set[str] = False,
 ) -> bool:
     """Add ``requirements`` to the project's collections, or ``group``'s; see ``_add``. False when ``locked`` and
@@ -65,7 +65,7 @@ def remove(
     sync: bool,
     frozen: bool,
     locked: bool = False,
-    upgrade: bool | set[str] = False,
+    upgrade: Upgrade | None = None,
     reinstall: bool | set[str] = False,
 ) -> bool:
     """Remove the collections ``names`` from the project's collections, or ``group``'s. False when ``locked`` and
@@ -84,9 +84,9 @@ def remove(
         )
 
 
-def _no_upgrade_frozen(upgrade: bool | set[str], *, frozen: bool) -> None:
+def _no_upgrade_frozen(upgrade: Upgrade | None, *, frozen: bool) -> None:
     if upgrade and frozen:
-        raise ConfigError("--upgrade and --upgrade-collection resolve, which --frozen doesn't")
+        raise ConfigError("--upgrade, --upgrade-collection and --upgrade-group resolve, which --frozen doesn't")
 
 
 @contextlib.contextmanager
@@ -109,7 +109,7 @@ def _add(
     sync: bool,
     frozen: bool,
     locked: bool = False,
-    upgrade: bool | set[str] = False,
+    upgrade: Upgrade | None = None,
     reinstall: bool | set[str] = False,
 ) -> bool:
     """Add ``requirements`` to the project's collections, or ``group``'s.
@@ -170,7 +170,7 @@ def _remove(
     sync: bool,
     frozen: bool,
     locked: bool = False,
-    upgrade: bool | set[str] = False,
+    upgrade: Upgrade | None = None,
     reinstall: bool | set[str] = False,
 ) -> bool:
     config, text = _read(settings)
@@ -210,7 +210,7 @@ def _lock_and_sync(
     group: str | None,
     sync: bool,
     locked: bool,
-    upgrade: bool | set[str],
+    upgrade: Upgrade | None,
     reinstall: bool | set[str],
 ) -> bool:
     """Resolve ``text`` as the new ``alai.toml``, let ``finish`` give its final text from the lock, and write both;

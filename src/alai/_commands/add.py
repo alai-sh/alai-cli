@@ -8,7 +8,7 @@ from __future__ import annotations
 import argparse
 
 from .._args import HelpFormatter, add_global_args, add_settings_args, settings_from_args
-from .lock import EXIT_STALE, add_upgrade_args, upgrade_from_args
+from .lock import EXIT_STALE, add_upgrade_args
 from .sync import add_reinstall_args, reinstall_from_args
 
 
@@ -42,7 +42,7 @@ def add_edit_args(parser: argparse.ArgumentParser, *, verb: str) -> None:
         action="store_true",
         help="resolve, and exit 1 without writing anything if alai.lock is missing or would change",
     )
-    add_upgrade_args(parser)
+    add_upgrade_args(parser, groups=True)
     add_reinstall_args(parser)
 
 
@@ -56,6 +56,7 @@ def check_locked(args: argparse.Namespace) -> None:
 
 def run(args: argparse.Namespace) -> int:
     from .._edit import add
+    from .._project import upgrade_from_args
 
     settings = settings_from_args(args)
     group = "dev" if args.dev else args.group

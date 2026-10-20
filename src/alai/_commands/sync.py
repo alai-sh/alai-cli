@@ -11,7 +11,7 @@ import time
 from .._args import HelpFormatter, add_global_args, add_settings_args, settings_from_args
 from .._common import ConfigError
 from .._output import error, shown_path, summary
-from .lock import EXIT_STALE, add_upgrade_args, upgrade_from_args
+from .lock import EXIT_STALE, add_upgrade_args
 
 
 def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -61,7 +61,7 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
     _ = groups.add_argument("--no-default-groups", action="store_true", help="don't install the 'dev' group")
     _ = groups.add_argument("--no-dev", action="store_true", help="the same as --no-group dev")
     _ = groups.add_argument("--only-dev", action="store_true", help="the same as --only-group dev")
-    add_upgrade_args(sync)
+    add_upgrade_args(sync, groups=True)
     add_reinstall_args(sync)
     add_global_args(sync, suppress=True)
     add_settings_args(sync, "resolve", "install")
@@ -99,7 +99,7 @@ def reinstall_from_args(args: argparse.Namespace) -> bool | set[str]:
 
 def run(args: argparse.Namespace) -> int:
     from .._lock import lock_path, read_lock, stale, write_lock
-    from .._project import load_project, lock_unchanged, report_changes, resolve_project
+    from .._project import load_project, lock_unchanged, report_changes, resolve_project, upgrade_from_args
     from .._sync import install_locked, selected_groups
 
     started = time.monotonic()
@@ -109,7 +109,7 @@ def run(args: argparse.Namespace) -> int:
     upgrade = upgrade_from_args(args)
     reinstall = reinstall_from_args(args)
     if upgrade and args.frozen:
-        raise ConfigError("--upgrade and --upgrade-collection resolve, which --frozen doesn't")
+        raise ConfigError("--upgrade, --upgrade-collection and --upgrade-group resolve, which --frozen doesn't")
     path = lock_path(settings.project.root)
     existing = read_lock(path)
 

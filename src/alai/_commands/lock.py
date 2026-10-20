@@ -9,7 +9,6 @@ import argparse
 import time
 
 from .._args import HelpFormatter, add_global_args, add_settings_args, settings_from_args
-from .._common import ConfigError
 from .._output import error, shown_path, status, summary
 
 EXIT_STALE = 1
@@ -30,14 +29,15 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         action="store_true",
         help="resolve, but don't write alai.lock; exit 1 if it's missing or would change",
     )
-    add_upgrade_args(lock)
+    add_upgrade_args(lock, groups=True)
     add_global_args(lock, suppress=True)
     add_settings_args(lock, "resolve")
     lock.set_defaults(parser=lock, handler=run)
 
 
-def add_upgrade_args(parser: argparse.ArgumentParser) -> None:
-    """``-U`` and ``-P``, for every command that locks, as uv has them on ``lock``, ``sync``, ``add`` and ``remove``."""
+def add_upgrade_args(parser: argparse.ArgumentParser, *, groups: bool = False) -> None:
+    """``-U`` and ``-P``, for every command that resolves, as uv has them on ``lock``, ``sync``, ``add`` and ``remove``;
+    with ``groups``, for the commands that resolve the project, ``--upgrade-group`` too."""
     _ = parser.add_argument(
         "-U", "--upgrade", action="store_true", help="choose the newest versions that fit, ignoring alai.lock"
     )
@@ -49,23 +49,19 @@ def add_upgrade_args(parser: argparse.ArgumentParser) -> None:
         default=[],
         help="choose the newest version of collection NAME that fits; can be repeated",
     )
-
-
-def upgrade_from_args(args: argparse.Namespace) -> bool | set[str]:
-    """What to upgrade, for the resolver: everything, the collections named, or nothing (False)."""
-    from .._manifest import collection_name
-
-    if args.upgrade:
-        return True
-    try:
-        return {collection_name(n) for n in args.upgrade_collection} or False
-    except ValueError as e:
-        raise ConfigError(f"--upgrade-collection: {e}") from None
+    if groups:
+        _ = parser.add_argument(
+            "--upgrade-group",
+            metavar="NAME",
+            action="append",
+            default=[],
+            help="choose the newest version of every collection group NAME lists that fits; can be repeated",
+        )
 
 
 def run(args: argparse.Namespace) -> int:
     from .._lock import lock_path, read_lock, write_lock
-    from .._project import load_project, lock_unchanged, report_changes, resolve_project
+    from .._project import load_project, lock_unchanged, report_changes, resolve_project, upgrade_from_args
 
     started = time.monotonic()
     settings = settings_from_args(args)
