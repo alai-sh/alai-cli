@@ -184,6 +184,20 @@ class TestCheck:
 
         assert lines(capsys.readouterr().err) == ["Resolved 2 collections", "alai.lock is up to date"]
 
+    def test_upgrade(self, project: Path) -> None:
+        # -U is allowed, unlike uv's: it passes while the lock already has the newest versions that fit.
+        write(project, ["a.a", "b.b<1.1"])
+        _ = lock()
+
+        assert lock("--check", "-U") == 0
+
+        write(project, ["a.a", "b.b"])
+        _ = lock()
+        before = (project / "alai.lock").read_bytes()
+
+        assert lock("--check", "-U") == EXIT_STALE
+        assert (project / "alai.lock").read_bytes() == before
+
     def test_manifest_changed(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         write(project, ["a.a"])
         _ = lock()
@@ -196,17 +210,54 @@ class TestCheck:
         assert lines(capsys.readouterr().err) == [
             "Resolved 3 collections",
             "Added c.c v1.0.0",
+            "alai.toml has changed since alai.lock was made:",
+            "  project.collections: added c.c",
             "error: alai.lock is out of date; run alai lock",
         ]
         assert (project / "alai.lock").read_bytes() == before
 
-    def test_inputs_changed_with_the_same_result(self, project: Path) -> None:
-        # b.b is already locked through a.a, so listing it changes only the inputs.
+    def test_inputs_changed_with_the_same_result(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # b.b is already locked through a.a, so listing it changes only the inputs, and only they say why.
         write(project, ["a.a"])
         _ = lock()
         write(project, ["a.a", "b.b"])
+        _ = capsys.readouterr()
 
         assert lock("--check") == EXIT_STALE
+
+        assert lines(capsys.readouterr().err) == [
+            "Resolved 2 collections",
+            "alai.toml has changed since alai.lock was made:",
+            "  project.collections: added b.b",
+            "error: alai.lock is out of date; run alai lock",
+        ]
+
+    def test_index_change_says_nothing_of_alai_toml(
+        self, project: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        write(project, ["b.b"])
+        _ = lock()
+        _ = make_index(tmp_path / "index", {**COLLECTIONS, "b.b": [v("1.0.0")]})
+        _ = capsys.readouterr()
+
+        assert lock("--check") == EXIT_STALE
+
+        assert lines(capsys.readouterr().err) == [
+            "Resolved 1 collection",
+            "Updated b.b v1.1.0 -> v1.0.0",
+            "error: alai.lock is out of date; run alai lock",
+        ]
+
+    def test_plain_lock_says_nothing_of_alai_toml(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # Only a failing check explains itself; alai lock reports what it changed in the lock, as before.
+        write(project, ["a.a"])
+        _ = lock()
+        write(project, ["a.a", "c.c"])
+        _ = capsys.readouterr()
+
+        assert lock() == 0
+
+        assert lines(capsys.readouterr().err) == ["Resolved 3 collections", "Added c.c v1.0.0"]
 
     def test_index_changed(self, project: Path, tmp_path: Path) -> None:
         # A new release doesn't make the lock stale, since locked versions are kept, but a removed one does.

@@ -93,15 +93,24 @@ def visible(text: str) -> str:
     return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]|\r", "", text)
 
 
+def wait_drawn(terminal: FakeTerminal, text: str, *, after: int = 0, timeout: float = 10.0) -> None:
+    """Wait until ``text`` has been drawn, after the first ``after`` characters written, rather than sleep a fixed
+    time: the first frame is drawn one interval in, by a thread a busy CI runner can hold up for far longer."""
+    deadline = time.monotonic() + timeout
+    while text not in visible(terminal.getvalue()[after:]):
+        if time.monotonic() > deadline:
+            pytest.fail(f"{text!r} wasn't drawn within {timeout}s: {terminal.getvalue()!r}")
+        time.sleep(0.005)
+
+
 class TestLive:
     def test_draws_and_clears(self, terminal: FakeTerminal, monkeypatch: pytest.MonkeyPatch) -> None:
         use(terminal, monkeypatch)
         with Live(Task("Working...")) as task:
             task.show("ns.a", 1)
-            time.sleep(0.05)
+            wait_drawn(terminal, "Working... (1) ns.a")
 
         out = terminal.getvalue()
-        assert "Working... (1) ns.a" in visible(out)
         assert out.startswith("\x1b[?25l")
         # The block is cleared and the cursor shown again at the end.
         assert out.endswith("\r\x1b[2K\x1b[?25h")
@@ -109,9 +118,9 @@ class TestLive:
     def test_messages_go_above(self, terminal: FakeTerminal, monkeypatch: pytest.MonkeyPatch) -> None:
         use(terminal, monkeypatch)
         with Live(Task("Working...")):
-            time.sleep(0.05)
+            wait_drawn(terminal, "Working...")
             _output.warn("something")
-            time.sleep(0.03)
+            wait_drawn(terminal, "Working...", after=terminal.getvalue().index("warning: something\n"))
 
         out = terminal.getvalue()
         warned = out.index("warning: something\n")
@@ -150,7 +159,10 @@ class TestLive:
             monkeypatch.setenv(name, value)
 
         with Live(Task("Working...")):
-            time.sleep(0.05)
+            if drawn:
+                wait_drawn(terminal, "Working")
+            else:
+                time.sleep(0.05)  # long enough for several frames, had any been drawn
 
         assert ("Working" in terminal.getvalue()) is drawn
 

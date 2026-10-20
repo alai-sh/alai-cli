@@ -8,7 +8,7 @@ from __future__ import annotations
 import argparse
 
 from .._args import HelpFormatter, add_global_args, add_settings_args, settings_from_args
-from .lock import add_upgrade_args, upgrade_from_args
+from .lock import EXIT_STALE, add_upgrade_args, upgrade_from_args
 from .sync import add_reinstall_args, reinstall_from_args
 
 
@@ -37,8 +37,21 @@ def add_edit_args(parser: argparse.ArgumentParser, *, verb: str) -> None:
     when = parser.add_mutually_exclusive_group()
     _ = when.add_argument("--no-sync", action="store_true", help="lock, but don't install")
     _ = when.add_argument("--frozen", action="store_true", help="only edit alai.toml, without locking or installing")
+    _ = parser.add_argument(
+        "--locked",
+        action="store_true",
+        help="resolve, and exit 1 without writing anything if alai.lock is missing or would change",
+    )
     add_upgrade_args(parser)
     add_reinstall_args(parser)
+
+
+def check_locked(args: argparse.Namespace) -> None:
+    """``--locked`` and ``--frozen`` exclude each other, as on ``sync``, but ``--no-sync`` and ``--frozen`` already
+    share a group, which argparse can't extend to say so; this is its own error for it."""
+    if args.locked and args.frozen:
+        parser: argparse.ArgumentParser = args.parser
+        parser.error("argument --locked: not allowed with argument --frozen")
 
 
 def run(args: argparse.Namespace) -> int:
@@ -46,13 +59,15 @@ def run(args: argparse.Namespace) -> int:
 
     settings = settings_from_args(args)
     group = "dev" if args.dev else args.group
-    add(
+    check_locked(args)
+    ok = add(
         settings,
         args.requirements,
         group=group,
         sync=not args.no_sync,
         frozen=args.frozen,
+        locked=args.locked,
         upgrade=upgrade_from_args(args),
         reinstall=reinstall_from_args(args),
     )
-    return 0
+    return 0 if ok else EXIT_STALE

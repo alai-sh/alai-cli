@@ -197,12 +197,31 @@ members' `requires-python`.
   carries over; the long one says "collection", the word alai uses
   everywhere else, rather than uv's `--upgrade-package`, and isn't kept as
   an alias since nothing is released.
+- **`-U` works with `lock --check` and `--locked`**, on `sync`, `add` and
+  `remove` alike (decided 2026-10-21): it fails only if the upgrade would
+  change `alai.lock`, so it checks that the lock already has the newest
+  versions that fit. uv 0.13.0 rejects `--upgrade` with `uv lock --check`,
+  `uv sync --locked` and `uv add --locked` ("the argument '--locked' cannot
+  be used with '--upgrade'"), though it takes `-P` with them. alai allows
+  both, the same on every command: an upgrade that leaves the lock as it was
+  is a valid result, not a mistake.
 - **`alai lock --check` resolves**, as `uv lock --check` does, and exits 1
   without writing when the lock is missing (checked first, without
   resolving) or would change: its copied inputs ask for something else than
   `alai.toml`, or the resolved collections differ, say because a locked
   version was removed from its index or its index is no longer configured.
-  The change lines are printed as `alai lock` would print them. It connects
+  The change lines are printed as `alai lock` would print them, then what
+  in `alai.toml` differs from the inputs the lock copied, under `alai.toml
+  has changed since alai.lock was made:`, one indented line per
+  difference named by its key (`project.collections: added b.b`,
+  `project.requires_ansible: changed >=2.17 to >=2.18`), compared as
+  parsed (`_lock.input_changes`). That's the only explanation when the
+  requirements changed but every version stayed, such as listing a
+  collection that was already locked as a dependency. `sync`, `add` and
+  `remove` with `--locked` print both the same way before their error
+  (asked for 2026-10-21; `_project.report_changes`). uv prints neither:
+  "The lockfile at `uv.lock` needs to be updated" alone. A plain `alai
+  lock` prints only the change lines, as it always did. It connects
   to the indexes unless `--offline`. A check that only compared the files,
   without the network, was the first version (2026-10-20) and was dropped
   to follow uv: it couldn't see a removed version. That comparison stays as

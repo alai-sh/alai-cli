@@ -110,6 +110,7 @@ it is.
 | `--dev` | The same as `--group dev` |
 | `--no-sync` | Lock, but don't install |
 | `--frozen` | Only edit `alai.toml`, without locking or installing; a name alone is written as it is |
+| `--locked` | Resolve, and exit 1 without writing anything if `alai.lock` is missing or the change would alter it. An `alai add` of what's already there goes on to install, so a setup script can run it every time, in CI say. Can't be used with `--frozen` |
 | `-U`, `-P NAME` | Upgrade every collection, or `NAME`, while locking, as [`alai lock`](#locking) does |
 | `--reinstall`, `--reinstall-collection NAME` | Reinstall every collection, or `NAME`, while installing, as [`alai sync`](#installing) does |
 
@@ -181,7 +182,7 @@ To move to newer versions anyway:
 |---|---|
 | `-U`, `--upgrade` | Choose the newest version of every collection that fits |
 | `-P NAME`, `--upgrade-collection NAME` | Choose the newest version of collection `NAME` that fits; can be repeated |
-| `--check` | Resolve as usual but write nothing, and exit 1 if `alai.lock` is missing or would change: `alai.toml` asks for something different, or the indexes no longer give the locked versions. A newer release alone doesn't count, since locked versions are kept while they fit. With `--offline`, it resolves from the cache |
+| `--check` | Resolve as usual but write nothing, and exit 1 if `alai.lock` is missing or would change: `alai.toml` asks for something different, or the indexes no longer give the locked versions. A newer release alone doesn't count, since locked versions are kept while they fit. On failure it lists the collections that would change and what in `alai.toml` differs from what was locked. With `--offline`, it resolves from the cache |
 
 `alai lock` also takes the index, `--system-certs` and
 [`--offline`](alai-toml.md#offline) settings.
@@ -229,7 +230,7 @@ installing links their files from there, as
 
 | Option | |
 |---|---|
-| `--locked` | Resolve, and exit 1 without installing if `alai.lock` is missing or would change, as [`alai lock --check`](#locking) does. For CI, to catch an `alai.toml` change nobody locked |
+| `--locked` | Resolve, and exit 1 without installing if `alai.lock` is missing or would change, saying why, as [`alai lock --check`](#locking) does. For CI, to catch an `alai.toml` change nobody locked |
 | `--frozen` | Install from `alai.lock` as it is, without checking it against `alai.toml`. It still needs to exist |
 | `--inexact` | Keep installed collections `alai.lock` doesn't list, rather than removing them. For a collections directory other tools also install to |
 | `-U`, `--upgrade` | Lock again choosing the newest version of every collection that fits, then install. Can't be used with `--frozen` |

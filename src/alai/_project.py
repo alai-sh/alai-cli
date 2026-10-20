@@ -10,9 +10,9 @@ import typing as _t
 
 from ._common import ConfigError
 from ._config import RawManifest, Settings, raw_manifest, read_toml
-from ._lock import Lock
+from ._lock import Lock, changes, input_changes
 from ._manifest import Manifest, parse_manifest
-from ._output import home_path, warn
+from ._output import detail, home_path, lock_change, status, warn
 from ._progress import Live, Task
 
 if _t.TYPE_CHECKING:
@@ -83,3 +83,20 @@ def resolve_manifest(
 def lock_unchanged(existing: Lock | None, manifest: Manifest, lock: Lock) -> bool:
     """Whether resolving again left ``existing`` as it was: locked from the same inputs, to the same collections."""
     return existing is not None and existing.is_current(manifest) and existing.collections == lock.collections
+
+
+def report_changes(
+    existing: Lock | None, manifest: Manifest, lock: Lock, resolution: Resolution, *, inputs: bool = False
+) -> None:
+    """Say how ``lock`` differs from ``existing``: a line per collection added, updated or removed, each with its
+    reason under it with ``-v``, as ``alai lock`` reports them. With ``inputs``, for a check that's failing, also what
+    in ``alai.toml`` differs from what ``existing`` was locked from, which is the only sign of a change that leaves
+    every version as it was."""
+    for name, line in changes(existing, lock):
+        lock_change(line)
+        if (reason := resolution.reasons.get(name)) is not None:
+            detail(reason)
+    if inputs and existing is not None and (found := input_changes(existing, manifest)):
+        status("alai.toml has changed since alai.lock was made:")
+        for line in found:
+            status(f"  {line}")

@@ -10,7 +10,7 @@ import time
 
 from .._args import HelpFormatter, add_global_args, add_settings_args, settings_from_args
 from .._common import ConfigError
-from .._output import detail, error, lock_change, shown_path, status, summary
+from .._output import error, shown_path, status, summary
 
 EXIT_STALE = 1
 """``--check`` found the lock missing, or resolving would change it."""
@@ -64,8 +64,8 @@ def upgrade_from_args(args: argparse.Namespace) -> bool | set[str]:
 
 
 def run(args: argparse.Namespace) -> int:
-    from .._lock import changes, lock_path, read_lock, write_lock
-    from .._project import load_project, lock_unchanged, resolve_project
+    from .._lock import lock_path, read_lock, write_lock
+    from .._project import load_project, lock_unchanged, report_changes, resolve_project
 
     started = time.monotonic()
     settings = settings_from_args(args)
@@ -79,10 +79,7 @@ def run(args: argparse.Namespace) -> int:
 
     lock, resolution = resolve_project(settings, manifest, raw, existing, upgrade=upgrade_from_args(args))
     summary("Resolved", len(lock.collections), time.monotonic() - started, dim=True)
-    for name, line in changes(existing, lock):
-        lock_change(line)
-        if (reason := resolution.reasons.get(name)) is not None:
-            detail(reason)
+    report_changes(existing, manifest, lock, resolution, inputs=args.check)
     if args.check:
         if not lock_unchanged(existing, manifest, lock):
             error(f"{shown_path(path)} is out of date; run alai lock")

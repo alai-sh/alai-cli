@@ -95,6 +95,16 @@ class IndexServer:
     def paths(self) -> list[str]:
         return [r.path for r in self.requests]
 
+    def wait_for(self, path: str, timeout: float = 10.0) -> bool:
+        """Whether ``path`` is requested within ``timeout`` seconds, for a request made in the background, such as a
+        prefetch nothing waits for, which can arrive after the call that started it has returned."""
+        deadline = time.monotonic() + timeout
+        while path not in self.paths():
+            if time.monotonic() > deadline:
+                return False
+            time.sleep(0.005)
+        return True
+
     def __enter__(self) -> IndexServer:
         self._thread.start()
         return self

@@ -42,8 +42,6 @@
   `exclude_newer` setting, to resolve only from versions published before a
   date or a duration ago, for reproducing an old lock or holding back
   releases until they've been out a while.
-- **`--locked` on `alai add` and `alai remove`**, as `alai sync` has it, to
-  fail rather than change `alai.lock`.
 - **JSON output** for commands that report data, such as `config show`,
   for scripts.
 - **Checking installed collections** against the checksums each one

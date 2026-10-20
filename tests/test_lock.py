@@ -17,6 +17,7 @@ from alai._lock import (
     LockedCollection,
     LockError,
     changes,
+    input_changes,
     lock_path,
     parse_lock,
     read_lock,
@@ -354,17 +355,17 @@ ignore_requires_ansible = ["some.collection"]
 "community.general" = { index = "alai" }
 """
 
-    @pytest.mark.parametrize(
-        "toml",
-        [
-            BASE,
-            BASE.replace(
-                '"community.general>=9,<11", "ansible.windows"', '"ansible.windows", "community.general >= 9, < 11"'
-            ),
-            BASE.replace(">=6", ">=6.0.0"),
-            BASE.replace(">=2.17", ">= 2.17.0"),
-        ],
+    CURRENT = (
+        BASE,
+        BASE.replace(
+            '"community.general>=9,<11", "ansible.windows"', '"ansible.windows", "community.general >= 9, < 11"'
+        ),
+        BASE.replace(">=6", ">=6.0.0"),
+        BASE.replace(">=2.17", ">= 2.17.0"),
     )
+    """Manifests that ask for what ``example()`` was locked from, only spelt or ordered differently."""
+
+    @pytest.mark.parametrize("toml", CURRENT)
     def test_current(self, toml: str) -> None:
         assert example().is_current(self.manifest(toml))  # pyright: ignore[reportArgumentType]
 
@@ -409,6 +410,73 @@ class TestChanges:
 
     def test_unchanged(self) -> None:
         assert changes(example(), example()) == []
+
+
+class TestInputChanges:
+    BASE = TestIsCurrent.BASE
+
+    @pytest.mark.parametrize("toml", TestIsCurrent.CURRENT)
+    def test_current(self, toml: str) -> None:
+        # Spelling and order aren't changes, as is_current doesn't count them.
+        assert input_changes(example(), TestIsCurrent.manifest(toml)) == []  # pyright: ignore[reportArgumentType]
+
+    @pytest.mark.parametrize(
+        ("toml", "expected"),
+        [
+            (
+                BASE.replace("<11", "<12"),
+                ["project.collections: changed community.general>=9,<11 to community.general>=9,<12"],
+            ),
+            (
+                BASE.replace('"ansible.windows"]', '"ansible.windows", "c.c"]'),
+                ["project.collections: added c.c"],
+            ),
+            (
+                BASE.replace(', "ansible.windows"', ""),
+                ["project.collections: removed ansible.windows"],
+            ),
+            (
+                BASE.replace(
+                    '"community.general" = { index = "alai" }',
+                    '"community.general" = { index = "alai" }\n"ansible.windows" = { index = "internal" }',
+                ),
+                ["project.sources: added ansible.windows from 'internal'"],
+            ),
+            (
+                BASE.replace('{ index = "alai" }', '{ index = "mirror" }'),
+                ["project.sources: changed community.general from 'alai' to community.general from 'mirror'"],
+            ),
+            (BASE.replace(">=2.17", ">=2.18"), ["project.requires_ansible: changed >=2.17 to >=2.18"]),
+            (BASE.replace('requires_ansible = ">=2.17"\n', ""), ["project.requires_ansible: removed >=2.17"]),
+            (
+                BASE.replace('["ansible.posix"]', '["ansible.posix", "community.crypto"]'),
+                ["project.groups.test.collections: added community.crypto"],
+            ),
+            (
+                BASE.replace("[project.groups.test]", "[project.groups.lint]"),
+                ["project.groups.lint: added (ansible.posix)", "project.groups.test: removed (ansible.posix)"],
+            ),
+            (BASE.replace(">=6", ">=7"), ["project.overrides: changed ansible.netcommon>=6 to ansible.netcommon>=7"]),
+            (
+                BASE.replace('["some.collection"]', "[]"),
+                ["project.overrides.ignore_requires_ansible: removed some.collection"],
+            ),
+        ],
+    )
+    def test_each_kind(self, toml: str, expected: list[str]) -> None:
+        assert input_changes(example(), TestIsCurrent.manifest(toml)) == expected  # pyright: ignore[reportArgumentType]
+
+    def test_empty_group_added(self) -> None:
+        manifest = TestIsCurrent.manifest(self.BASE + "[project.groups.lint]\ncollections = []\n")
+
+        assert input_changes(example(), manifest) == ["project.groups.lint: added (no collections)"]  # pyright: ignore[reportArgumentType]
+
+    def test_requires_ansible_added(self) -> None:
+        lock = Lock(raw(["a.a"]), [locked("a.a")])
+
+        manifest = TestIsCurrent.manifest('[project]\nrequires_ansible = ">=2.18"\ncollections = ["a.a"]\n')
+
+        assert input_changes(lock, manifest) == ["project.requires_ansible: added >=2.18"]  # pyright: ignore[reportArgumentType]
 
 
 class TestSelect:

@@ -20,8 +20,8 @@ from ._common import NAME_RE, ConfigError
 from ._config import Settings, raw_manifest
 from ._lock import Lock, lock_path, read_lock, write_lock
 from ._manifest import Manifest, Requirement, collection_name, parse_manifest
-from ._output import home_path, summary
-from ._project import resolve_project
+from ._output import error, home_path, shown_path, summary
+from ._project import lock_unchanged, report_changes, resolve_project
 from ._sync import DEFAULT_GROUPS, install_locked
 
 if sys.version_info >= (3, 11):
@@ -37,13 +37,24 @@ def add(
     group: str | None,
     sync: bool,
     frozen: bool,
+    locked: bool = False,
     upgrade: bool | set[str] = False,
     reinstall: bool | set[str] = False,
-) -> None:
-    """Add ``requirements`` to the project's collections, or ``group``'s; see ``_add``."""
+) -> bool:
+    """Add ``requirements`` to the project's collections, or ``group``'s; see ``_add``. False when ``locked`` and
+    ``alai.lock`` is missing or would change, having written nothing."""
     _no_upgrade_frozen(upgrade, frozen=frozen)
     with _editing(settings, group, "add"):
-        _add(settings, requirements, group=group, sync=sync, frozen=frozen, upgrade=upgrade, reinstall=reinstall)
+        return _add(
+            settings,
+            requirements,
+            group=group,
+            sync=sync,
+            frozen=frozen,
+            locked=locked,
+            upgrade=upgrade,
+            reinstall=reinstall,
+        )
 
 
 def remove(
@@ -53,13 +64,24 @@ def remove(
     group: str | None,
     sync: bool,
     frozen: bool,
+    locked: bool = False,
     upgrade: bool | set[str] = False,
     reinstall: bool | set[str] = False,
-) -> None:
-    """Remove the collections ``names`` from the project's collections, or ``group``'s."""
+) -> bool:
+    """Remove the collections ``names`` from the project's collections, or ``group``'s. False when ``locked`` and
+    ``alai.lock`` is missing or would change, having written nothing."""
     _no_upgrade_frozen(upgrade, frozen=frozen)
     with _editing(settings, group, "remove"):
-        _remove(settings, names, group=group, sync=sync, frozen=frozen, upgrade=upgrade, reinstall=reinstall)
+        return _remove(
+            settings,
+            names,
+            group=group,
+            sync=sync,
+            frozen=frozen,
+            locked=locked,
+            upgrade=upgrade,
+            reinstall=reinstall,
+        )
 
 
 def _no_upgrade_frozen(upgrade: bool | set[str], *, frozen: bool) -> None:
@@ -86,9 +108,10 @@ def _add(
     group: str | None,
     sync: bool,
     frozen: bool,
+    locked: bool = False,
     upgrade: bool | set[str] = False,
     reinstall: bool | set[str] = False,
-) -> None:
+) -> bool:
     """Add ``requirements`` to the project's collections, or ``group``'s.
 
     A collection already there is left as it is when given by name alone, and its requirement replaced when given
@@ -114,7 +137,7 @@ def _add(
             bare.append(requirement.name)
     if frozen:
         _write(config, text)
-        return
+        return True
 
     def bound(text: str, lock: Lock) -> str:
         # Each name added alone gets >= its locked version, as uv writes one.
@@ -126,7 +149,17 @@ def _add(
                 text = _toml_edit.replace(text, path, names.index(name), f"{name}>={locked.version}")
         return text
 
-    _lock_and_sync(settings, config, text, bound, group=group, sync=sync, upgrade=upgrade, reinstall=reinstall)
+    return _lock_and_sync(
+        settings,
+        config,
+        text,
+        bound,
+        group=group,
+        sync=sync,
+        locked=locked,
+        upgrade=upgrade,
+        reinstall=reinstall,
+    )
 
 
 def _remove(
@@ -136,9 +169,10 @@ def _remove(
     group: str | None,
     sync: bool,
     frozen: bool,
+    locked: bool = False,
     upgrade: bool | set[str] = False,
     reinstall: bool | set[str] = False,
-) -> None:
+) -> bool:
     config, text = _read(settings)
     path = _array_path(group)
     for given in names:
@@ -153,14 +187,15 @@ def _remove(
         text = _toml_edit.remove(text, path, found.index(name))
     if frozen:
         _write(config, text)
-        return
-    _lock_and_sync(
+        return True
+    return _lock_and_sync(
         settings,
         config,
         text,
         lambda text, _: text,
         group=None,
         sync=sync,
+        locked=locked,
         upgrade=upgrade,
         reinstall=reinstall,
     )
@@ -174,26 +209,44 @@ def _lock_and_sync(
     *,
     group: str | None,
     sync: bool,
+    locked: bool,
     upgrade: bool | set[str],
     reinstall: bool | set[str],
-) -> None:
+) -> bool:
     """Resolve ``text`` as the new ``alai.toml``, let ``finish`` give its final text from the lock, and write both;
     then sync, with ``group`` installed as well as the default groups, reinstalling ``reinstall``. Nothing is written
-    if resolving fails."""
+    if resolving fails.
+
+    With ``locked``, a missing ``alai.lock``, or one the edit would change, is an error that writes nothing (False),
+    checked before resolving and after, as ``alai sync --locked`` does. Otherwise ``alai.toml`` is written, as uv
+    writes ``pyproject.toml`` when the requirement is only spelt differently, and ``alai.lock`` kept as it is.
+    """
     started = time.monotonic()
     manifest = _manifest(text, config)
-    existing = read_lock(lock_path(settings.project.root))
-    lock, _ = resolve_project(settings, manifest, raw_manifest(tomllib.loads(text), config), existing, upgrade=upgrade)
+    path = lock_path(settings.project.root)
+    existing = read_lock(path)
+    if locked and existing is None:
+        error(f"there's no {shown_path(path)}, and --locked was given; run alai lock")
+        return False
+    lock, resolution = resolve_project(
+        settings, manifest, raw_manifest(tomllib.loads(text), config), existing, upgrade=upgrade
+    )
     final = finish(text, lock)
     raw = raw_manifest(tomllib.loads(final), config)
     manifest = parse_manifest(raw)
     lock = Lock(raw, lock.collections)
     summary("Resolved", len(lock.collections), time.monotonic() - started, dim=True)
+    if locked and not lock_unchanged(existing, manifest, lock):
+        report_changes(existing, manifest, lock, resolution, inputs=True)
+        error(f"{shown_path(path)} would change, and --locked was given")
+        return False
     _write(config, final)
-    _ = write_lock(lock_path(settings.project.root), lock)
+    if not locked:
+        _ = write_lock(path, lock)
     if sync:
         groups = sorted({g for g in DEFAULT_GROUPS if g in manifest.groups} | ({group} if group else set()))
         install_locked(settings, lock.select(groups), exact=True, reinstall=reinstall)
+    return True
 
 
 def _read(settings: Settings) -> tuple[str, str]:
