@@ -302,6 +302,9 @@ Paths in the lock are relative to the project root. Installing:
   an installed collection to everything else and bring development files
   along. The build is cached by commit.
 - **An editable path is linked as it is**, with no build: the point is to
-  edit the source. That leans on the installer never replacing a directory
-  it didn't install, and on the debugging requirement in
+  edit the source. The link is a symlink in `ansible_collections` to the
+  checkout, and its target is what says it's installed, as uv's `.pth` and
+  `direct_url.json` do for an editable package; replacing or removing it
+  only unlinks it ([install.md](install.md)). That leans on the debugging
+  requirement in
   [collection-development.md](collection-development.md).
