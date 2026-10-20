@@ -6,7 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from test_sync_command import installed, lines
+from test_sync_command import edit, edited, installed, lines
 
 from alai._cli import EXIT_ERROR, main
 
@@ -101,6 +101,7 @@ class TestAdd:
 
         assert '    "d.d",\n' in toml(project)
         assert not (project / "alai.lock").exists()
+        assert not (project / "collections").exists()
 
     def test_failure_writes_nothing(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         write(project)
@@ -199,6 +200,32 @@ class TestUpgrade:
         assert main(["remove", "-U", "c.c"]) == 0
 
         assert installed(project) == {"b.b": "1.1.0"}
+
+    def test_add_reinstalls(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        write(project, '[project]\ncollections = ["b.b", "c.c"]\n')
+        _ = main(["sync"])
+        cdir = project / "collections"
+        edit(cdir, "b.b", "c.c")
+        _ = capsys.readouterr()
+
+        assert main(["add", "--reinstall-collection", "c.c", "d.d"]) == 0
+
+        assert lines(capsys.readouterr().err)[-2:] == [" ~ c.c==1.0.0", " + d.d==1.0.0"]
+        assert edited(cdir) == {"b.b"}
+        assert installed(project) == {"b.b": "1.1.0", "c.c": "1.0.0", "d.d": "1.0.0"}
+
+    def test_remove_reinstalls(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        write(project, '[project]\ncollections = ["c.c", "d.d"]\n')
+        _ = main(["sync"])
+        cdir = project / "collections"
+        edit(cdir, "c.c", "d.d")
+        _ = capsys.readouterr()
+
+        assert main(["remove", "--reinstall", "d.d"]) == 0
+
+        assert lines(capsys.readouterr().err)[-2:] == [" ~ c.c==1.0.0", " - d.d==1.0.0"]
+        assert edited(cdir) == set()
+        assert installed(project) == {"c.c": "1.0.0"}
 
     @pytest.mark.parametrize("argv", [["add", "--frozen", "-U", "c.c"], ["remove", "--frozen", "-P", "c.c", "c.c"]])
     def test_frozen_refuses(self, project: Path, capsys: pytest.CaptureFixture[str], argv: list[str]) -> None:

@@ -279,21 +279,64 @@ are. Tested with uv 0.13 on 2026-10-20 in a venv:
 - **`alai sync` undoes them**, being exact: what was installed by hand goes
   and what was uninstalled comes back, unless `--inexact`. The docs say so.
 
+## Reinstalling
+
+`--reinstall` and `--reinstall-collection NAME` (asked for 2026-10-21), as
+uv's `--reinstall` and `--reinstall-package`, put a collection in the plan's
+`install` even when its installed version matches, so one edited in place
+can be put back, as ansible-galaxy's `--force` does. Tried with uv 0.13.0
+on 2026-10-21 in a project with `requests` and its four dependencies:
+
+- **On every command that installs**: `sync`, `add`, `remove` and
+  `collection install`, as uv has them on `sync`, `add`, `remove` and
+  `pip install`; not on `lock`, where uv rejects `--reinstall`. The long
+  flag says "collection" for the reason `-P` does
+  ([lockfile.md](lockfile.md)), and neither has a short flag, as uv's
+  don't.
+- **From the cache, not downloaded again**: `uv sync --reinstall --offline`
+  reinstalled all five, and an edited cached file was installed as edited
+  (above). The extracted cache is checked against the lock's `cksum` when
+  it's made and trusted after, as uv trusts its own, so nothing is
+  re-extracted. uv's summary says `Prepared 5 packages` even then, since
+  `--reinstall` implies its `--refresh`; here `Prepared` counts downloads,
+  and the index files are revalidated every run anyway
+  ([index-client.md](index-client.md)), so a reinstall from the cache has
+  no `Prepared` line.
+- **Shown as `~`**, yellow, for one replaced by the same version (`~
+  idna==3.20`), with `Uninstalled N` and `Installed N` counting it, as uv
+  does. One that changes version as well is `-` and `+` as usual (`uv sync
+  --reinstall-package idna` with 3.10 installed and 3.20 locked).
+- **`--reinstall` is everything installed this run**: on `sync` every
+  selected locked collection, on `remove` every one left
+  (`uv remove --reinstall six` reinstalled the other five), and on
+  `collection install` everything resolved, what's asked for and what that
+  needs (`uv pip install --reinstall requests` reinstalled all five).
+- **A name that isn't being installed is ignored**, with no warning:
+  `uv sync --reinstall-package nothere` said "Checked 5 packages", and so
+  did `uv pip install --reinstall-package certifi idna` with `certifi`
+  installed but not in that resolution, and `uv sync --inexact
+  --reinstall-package six` with `six` an extra. Names are compared
+  normalised (`--reinstall-package IDNA` reinstalled `idna`); here an
+  invalid name is an error, as for `-P`, and uv's is a parse error ("Not a
+  valid package or extra name", exit 2).
+- **`collection install` resolves when reinstalling**, rather than saying
+  `Checked` because everything asked for is already there, as `uv pip
+  install --reinstall-package idna requests` resolved first.
+- **No error with `--frozen` or `--no-sync`**: `uv add --frozen
+  --reinstall` and `uv add --no-sync --reinstall` were accepted and did
+  nothing to install, where `--frozen` with `--upgrade` is an error.
+  `sync --frozen --reinstall` reinstalls from the lock, as `uv sync
+  --frozen --reinstall-package idna` did.
+- **`--keep-unversioned` can't be used with either**, an error before
+  anything is resolved: keeping a collection as it is and reinstalling it
+  ask for opposite things. uv has nothing like it to compare with.
+
 ## Not done yet
 
 - **`collection install -r requirements.yml`**, ansible-galaxy's
   requirements file, as `uv pip install -r requirements.txt` takes pip's:
   shelved, see [requirements-file.md](requirements-file.md).
 
-- **Reinstalling** (asked for 2026-10-21): `--reinstall` and
-  `--reinstall-collection NAME` on `sync` and `collection install`, as uv's
-  `--reinstall` and `--reinstall-package` on `uv sync` and `uv pip install`
-  (from uv's help; not tried yet), putting a collection in the plan's
-  `install` even when its installed version matches. It's what
-  ansible-galaxy's `--force` is for; today a collection edited in place is
-  only replaced after deleting its directory. Open: whether it re-extracts
-  from the download or reuses the extracted cache, which is checked against
-  the lock's `cksum` when it's made but not after.
 - **Upgrading a group** (asked for 2026-10-20): one flag that upgrades
   every collection a group names, `--upgrade-group NAME` say, on `lock`,
   `sync`, `add` and `remove`, as `-P` does for one collection; today it

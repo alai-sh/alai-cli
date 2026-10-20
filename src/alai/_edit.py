@@ -38,11 +38,12 @@ def add(
     sync: bool,
     frozen: bool,
     upgrade: bool | set[str] = False,
+    reinstall: bool | set[str] = False,
 ) -> None:
     """Add ``requirements`` to the project's collections, or ``group``'s; see ``_add``."""
     _no_upgrade_frozen(upgrade, frozen=frozen)
     with _editing(settings, group, "add"):
-        _add(settings, requirements, group=group, sync=sync, frozen=frozen, upgrade=upgrade)
+        _add(settings, requirements, group=group, sync=sync, frozen=frozen, upgrade=upgrade, reinstall=reinstall)
 
 
 def remove(
@@ -53,11 +54,12 @@ def remove(
     sync: bool,
     frozen: bool,
     upgrade: bool | set[str] = False,
+    reinstall: bool | set[str] = False,
 ) -> None:
     """Remove the collections ``names`` from the project's collections, or ``group``'s."""
     _no_upgrade_frozen(upgrade, frozen=frozen)
     with _editing(settings, group, "remove"):
-        _remove(settings, names, group=group, sync=sync, frozen=frozen, upgrade=upgrade)
+        _remove(settings, names, group=group, sync=sync, frozen=frozen, upgrade=upgrade, reinstall=reinstall)
 
 
 def _no_upgrade_frozen(upgrade: bool | set[str], *, frozen: bool) -> None:
@@ -85,6 +87,7 @@ def _add(
     sync: bool,
     frozen: bool,
     upgrade: bool | set[str] = False,
+    reinstall: bool | set[str] = False,
 ) -> None:
     """Add ``requirements`` to the project's collections, or ``group``'s.
 
@@ -123,7 +126,7 @@ def _add(
                 text = _toml_edit.replace(text, path, names.index(name), f"{name}>={locked.version}")
         return text
 
-    _lock_and_sync(settings, config, text, bound, group=group, sync=sync, upgrade=upgrade)
+    _lock_and_sync(settings, config, text, bound, group=group, sync=sync, upgrade=upgrade, reinstall=reinstall)
 
 
 def _remove(
@@ -134,6 +137,7 @@ def _remove(
     sync: bool,
     frozen: bool,
     upgrade: bool | set[str] = False,
+    reinstall: bool | set[str] = False,
 ) -> None:
     config, text = _read(settings)
     path = _array_path(group)
@@ -150,7 +154,16 @@ def _remove(
     if frozen:
         _write(config, text)
         return
-    _lock_and_sync(settings, config, text, lambda text, _: text, group=None, sync=sync, upgrade=upgrade)
+    _lock_and_sync(
+        settings,
+        config,
+        text,
+        lambda text, _: text,
+        group=None,
+        sync=sync,
+        upgrade=upgrade,
+        reinstall=reinstall,
+    )
 
 
 def _lock_and_sync(
@@ -162,9 +175,11 @@ def _lock_and_sync(
     group: str | None,
     sync: bool,
     upgrade: bool | set[str],
+    reinstall: bool | set[str],
 ) -> None:
     """Resolve ``text`` as the new ``alai.toml``, let ``finish`` give its final text from the lock, and write both;
-    then sync, with ``group`` installed as well as the default groups. Nothing is written if resolving fails."""
+    then sync, with ``group`` installed as well as the default groups, reinstalling ``reinstall``. Nothing is written
+    if resolving fails."""
     started = time.monotonic()
     manifest = _manifest(text, config)
     existing = read_lock(lock_path(settings.project.root))
@@ -178,7 +193,7 @@ def _lock_and_sync(
     _ = write_lock(lock_path(settings.project.root), lock)
     if sync:
         groups = sorted({g for g in DEFAULT_GROUPS if g in manifest.groups} | ({group} if group else set()))
-        install_locked(settings, lock.select(groups), exact=True)
+        install_locked(settings, lock.select(groups), exact=True, reinstall=reinstall)
 
 
 def _read(settings: Settings) -> tuple[str, str]:

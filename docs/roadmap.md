@@ -34,15 +34,16 @@
   `alai collection install -r`. Waiting on how people use the file's
   `source:` and `signatures:` entries; if you depend on them, say so in the
   issue tracker.
-- **Reinstalling collections**: `--reinstall`, and
-  `--reinstall-collection NAME` for one, on `alai sync` and
-  `alai collection install`, to replace a collection that's already at the
-  right version, such as one whose files were edited, as ansible-galaxy's
-  `--force` does. Today that means deleting its directory first.
 - **Upgrading a whole group** with one flag, rather than `-P` for each of
   its collections.
 - **A pre-release setting**, to always allow or never allow pre-releases,
   for the whole project or one collection.
+- **Excluding newer versions**: `--exclude-newer DATE`, and an
+  `exclude_newer` setting, to resolve only from versions published before a
+  date or a duration ago, for reproducing an old lock or holding back
+  releases until they've been out a while.
+- **`--locked` on `alai add` and `alai remove`**, as `alai sync` has it, to
+  fail rather than change `alai.lock`.
 - **JSON output** for commands that report data, such as `config show`,
   for scripts.
 - **Checking installed collections** against the checksums each one

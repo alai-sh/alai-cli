@@ -62,9 +62,39 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
     _ = groups.add_argument("--no-dev", action="store_true", help="the same as --no-group dev")
     _ = groups.add_argument("--only-dev", action="store_true", help="the same as --only-group dev")
     add_upgrade_args(sync)
+    add_reinstall_args(sync)
     add_global_args(sync, suppress=True)
     add_settings_args(sync, "resolve", "install")
     sync.set_defaults(parser=sync, handler=run)
+
+
+def add_reinstall_args(parser: argparse.ArgumentParser) -> None:
+    """``--reinstall`` and ``--reinstall-collection``, for every command that installs, as uv has them on ``sync``,
+    ``add``, ``remove`` and ``pip install``."""
+    _ = parser.add_argument(
+        "--reinstall",
+        action="store_true",
+        help="reinstall every collection, even those already at the right version",
+    )
+    _ = parser.add_argument(
+        "--reinstall-collection",
+        metavar="NAME",
+        action="append",
+        default=[],
+        help="reinstall collection NAME, even if it's already at the right version; can be repeated",
+    )
+
+
+def reinstall_from_args(args: argparse.Namespace) -> bool | set[str]:
+    """What to reinstall: everything, the collections named, or nothing (False)."""
+    from .._manifest import collection_name
+
+    if args.reinstall:
+        return True
+    try:
+        return {collection_name(n) for n in args.reinstall_collection} or False
+    except ValueError as e:
+        raise ConfigError(f"--reinstall-collection: {e}") from None
 
 
 def run(args: argparse.Namespace) -> int:
@@ -77,6 +107,7 @@ def run(args: argparse.Namespace) -> int:
     raw, manifest = load_project(settings, "alai sync installs what it lists")
     project, groups = selected_groups(args, manifest)
     upgrade = upgrade_from_args(args)
+    reinstall = reinstall_from_args(args)
     if upgrade and args.frozen:
         raise ConfigError("--upgrade and --upgrade-collection resolve, which --frozen doesn't")
     path = lock_path(settings.project.root)
@@ -101,5 +132,5 @@ def run(args: argparse.Namespace) -> int:
         lock = existing
         summary("Resolved", len(lock.collections), time.monotonic() - started, dim=True)
 
-    install_locked(settings, lock.select(groups, project=project), exact=not args.inexact)
+    install_locked(settings, lock.select(groups, project=project), exact=not args.inexact, reinstall=reinstall)
     return 0

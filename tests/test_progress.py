@@ -218,6 +218,7 @@ class TestColor:
         _output.summary("Installed", 1, 0.01)
         _output.change("+", "ns.a", "==1.0.0")
         _output.change("-", "ns.b", "==1.0.0")
+        _output.change("~", "ns.c", "==1.0.0")
         _output.lock_change("Removed ns.b v1.0.0")
         _output.warn("careful")
         _output.error("broken")
@@ -227,6 +228,7 @@ class TestColor:
             "Installed \x1b[1m1 collection\x1b[0m \x1b[2min 10ms\x1b[0m",
             " \x1b[32m+\x1b[0m \x1b[1mns.a\x1b[0m\x1b[2m==1.0.0\x1b[0m",
             " \x1b[31m-\x1b[0m \x1b[1mns.b\x1b[0m\x1b[2m==1.0.0\x1b[0m",
+            " \x1b[33m~\x1b[0m \x1b[1mns.c\x1b[0m\x1b[2m==1.0.0\x1b[0m",
             "\x1b[1;31mRemoved\x1b[0m ns.b v1.0.0",
             "\x1b[1;33mwarning\x1b[0m\x1b[1m:\x1b[0m \x1b[1mcareful\x1b[0m",
             "\x1b[1;31merror\x1b[0m\x1b[1m:\x1b[0m broken",

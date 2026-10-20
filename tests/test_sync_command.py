@@ -149,6 +149,7 @@ class TestSync:
         assert main(["-q", "sync"]) == 0
 
         assert capsys.readouterr() == ("", "")
+        assert installed(project) == {"c.c": "1.0.0"}
 
 
 class TestGroups:
@@ -255,6 +256,7 @@ class TestLockFlags:
         assert sync(flag) == EXIT_STALE
 
         assert f"error: there's no alai.lock, and {flag} was given; run alai lock" in capsys.readouterr().err
+        assert not (project / "collections").exists()
 
     def test_frozen_ignores_alai_toml(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         write(project, ["c.c"])
@@ -329,6 +331,116 @@ class TestUpgrade:
 
         assert sync("-P", "nope") == EXIT_ERROR
         assert "--upgrade-collection: invalid collection name 'nope'" in capsys.readouterr().err
+
+
+def edit(cdir: Path, *names: str) -> None:
+    """Edit each collection's installed README.md. The file is replaced rather than written to, since a hardlinked
+    install shares it with the cache, which an edit through it would change too."""
+    for name in names:
+        readme = cdir / "ansible_collections" / name.replace(".", "/") / "README.md"
+        readme.unlink()
+        _ = readme.write_text("edited\n")
+
+
+def edited(cdir: Path) -> set[str]:
+    """The installed collections whose README.md is still edited."""
+    root = cdir / "ansible_collections"
+    return {
+        f"{p.parent.parent.name}.{p.parent.name}" for p in root.glob("*/*/README.md") if p.read_text() == "edited\n"
+    }
+
+
+class TestReinstall:
+    def test_all(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        write(project, ["a.a"])
+        _ = sync()
+        cdir = project / "collections"
+        edit(cdir, "a.a", "b.b")
+        _ = capsys.readouterr()
+
+        assert sync("--reinstall") == 0
+
+        # From the cache, so nothing is prepared, and each is a ~ line, as uv shows a reinstall.
+        assert lines(capsys.readouterr().err) == [
+            "Resolved 2 collections",
+            "Uninstalled 2 collections",
+            "Installed 2 collections",
+            " ~ a.a==2.0.0",
+            " ~ b.b==1.1.0",
+        ]
+        assert edited(cdir) == set()
+        assert installed(project) == {"a.a": "2.0.0", "b.b": "1.1.0"}
+
+    def test_named(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        write(project, ["a.a", "c.c"])
+        _ = sync()
+        cdir = project / "collections"
+        edit(cdir, "a.a", "c.c")
+        _ = capsys.readouterr()
+
+        assert sync("--reinstall-collection", "c.c") == 0
+
+        assert lines(capsys.readouterr().err)[-2:] == ["Installed 1 collection", " ~ c.c==1.0.0"]
+        assert edited(cdir) == {"a.a"}
+
+    def test_with_other_changes(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        write(project, ["a.a", "c.c"])
+        _ = sync()
+        write(project, ["a.a", "b.b<1.1", "d.d"])
+        _ = capsys.readouterr()
+
+        assert sync("--reinstall-collection", "a.a", "--reinstall-collection", "b.b") == 0
+
+        assert lines(capsys.readouterr().err)[-5:] == [
+            " ~ a.a==2.0.0",
+            " - b.b==1.1.0",
+            " + b.b==1.0.0",
+            " - c.c==1.0.0",
+            " + d.d==1.0.0",
+        ]
+        assert installed(project) == {"a.a": "2.0.0", "b.b": "1.0.0", "d.d": "1.0.0"}
+
+    def test_not_locked_ignored(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        write(project, ["c.c"])
+        _ = sync()
+        cdir = project / "collections"
+        edit(cdir, "c.c")
+        _ = capsys.readouterr()
+
+        assert sync("--reinstall-collection", "d.d") == 0
+
+        assert lines(capsys.readouterr().err) == ["Resolved 1 collection", "Checked 1 collection"]
+        assert edited(cdir) == {"c.c"}
+        assert installed(project) == {"c.c": "1.0.0"}
+
+    def test_frozen(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        write(project, ["c.c"])
+        _ = sync()
+        cdir = project / "collections"
+        edit(cdir, "c.c")
+        _ = capsys.readouterr()
+
+        assert sync("--frozen", "--offline", "--reinstall") == 0
+
+        assert lines(capsys.readouterr().err)[-1] == " ~ c.c==1.0.0"
+        assert edited(cdir) == set()
+
+    def test_without_reinstall_edits_kept(self, project: Path) -> None:
+        # The baseline the others rely on: an edit survives a plain sync, so it's the reinstall that undoes it.
+        write(project, ["c.c"])
+        _ = sync()
+        cdir = project / "collections"
+        edit(cdir, "c.c")
+
+        assert sync() == 0
+
+        assert edited(cdir) == {"c.c"}
+
+    def test_invalid_name(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        write(project, ["c.c"])
+
+        assert sync("--reinstall-collection", "nope") == EXIT_ERROR
+        assert "--reinstall-collection: invalid collection name 'nope'" in capsys.readouterr().err
 
 
 class TestErrors:

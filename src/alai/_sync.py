@@ -55,14 +55,26 @@ def selected_groups(args: argparse.Namespace, manifest: Manifest) -> tuple[bool,
 
 
 def install_locked(
-    settings: Settings, wanted: list[LockedCollection], *, exact: bool, keep_unversioned: bool = False
+    settings: Settings,
+    wanted: list[LockedCollection],
+    *,
+    exact: bool,
+    keep_unversioned: bool = False,
+    reinstall: bool | set[str] = False,
 ) -> None:
     """Make the collections directory hold ``wanted``: download what isn't cached, then remove and install. With
-    ``keep_unversioned``, a collection whose version can't be read is left as it is."""
+    ``keep_unversioned``, a collection whose version can't be read is left as it is. ``reinstall``, all of ``wanted``
+    or the names given, replaces those already at their version from the cache, as uv reinstalls from its own."""
 
     started = time.monotonic()
     cdir = settings.collections_dir
-    todo = plan(cdir, {c.name: c.version for c in wanted}, exact=exact, keep_unversioned=keep_unversioned)
+    todo = plan(
+        cdir,
+        {c.name: c.version for c in wanted},
+        exact=exact,
+        keep_unversioned=keep_unversioned,
+        reinstall=reinstall,
+    )
     by_name = {c.name: c for c in wanted}
     if not (todo.install or todo.remove or todo.unlink):
         summary("Checked", len(wanted), time.monotonic() - started, dim=True)
@@ -97,12 +109,16 @@ def install_locked(
     lines: list[tuple[str, str, str]] = []
     for path, target in links.items():
         lines.append(("-", os.path.basename(path), f" (namespace link to {target})"))
+    # One replaced by the same version is a single ~ line, as uv shows a reinstall.
+    same = {c.name for c in todo.replace if c.version == by_name[c.name].version}
     for collection in [*todo.remove, *todo.replace]:
+        if collection.name in same:
+            continue
         version = f"=={collection.version}" if collection.version is not None else " (unknown version)"
         lines.append(("-", collection.name, version))
-    lines.extend(("+", name, f"=={by_name[name].version}") for name in todo.install)
+    lines.extend(("~" if name in same else "+", name, f"=={by_name[name].version}") for name in todo.install)
     # By name, a removal before its replacement, as uv lists them.
-    for sign, name, rest in sorted(lines, key=lambda line: (line[1], line[0] == "+")):
+    for sign, name, rest in sorted(lines, key=lambda line: (line[1], line[0] != "-")):
         change(sign, name, rest)
 
 

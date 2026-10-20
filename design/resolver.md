@@ -145,3 +145,20 @@ How alai chooses one version of every collection a project needs, in
   [environments.md](environments.md).
 - **Other sources** (git, path, URL) as candidates; see
   [lockfile.md](lockfile.md#planned-other-sources).
+- **Excluding newer versions** (asked for 2026-10-21): `--exclude-newer
+  DATE` on the commands that resolve, and an `exclude_newer` setting, so a
+  resolution only considers versions published before `DATE`, for
+  reproducing an old lock or holding back versions too new to trust. In
+  uv 0.13.0's help (not tried yet), `--exclude-newer` takes an RFC 3339
+  timestamp, a local date (`2006-12-02`), a "friendly" duration (`1 week`,
+  `30 days`) or an ISO 8601 one (`P7D`), with no months or years; it's
+  `exclude-newer` in `uv.toml` and `UV_EXCLUDE_NEWER`, and
+  `--exclude-newer-package PACKAGE=DATE` sets it for one package. uv
+  compares each artifact's upload time; here the index gives each version
+  a `published` time (`_index.py` already reads it), with the caveat in the
+  index spec that a Galaxy version from before its 2023-05 migration has
+  the migration time instead. Open: whether the cut-off is recorded in
+  `alai.lock`, as uv records it in `uv.lock`'s `[options]`, so `lock
+  --check` and `sync` know the lock was made with it; whether a duration is
+  stored as given or as the date it resolved to; and whether it's a
+  project setting in `alai.toml` as well as a user one.
