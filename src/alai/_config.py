@@ -20,10 +20,8 @@ from ._output import debug
 CONFIG_FILE_NAME = "alai.toml"
 DEFAULT_INDEX_NAME = "alai"
 DEFAULT_INDEX_URL = "https://index.alai.sh/"
-MANIFEST_PROJECT_KEYS = ("collections", "requires_ansible")
-"""Keys of ``[project]`` that are part of the manifest rather than settings."""
-MANIFEST_TABLES = ("groups", "overrides")
-"""Top-level tables that are part of the manifest."""
+MANIFEST_PROJECT_KEYS = ("collections", "requires_ansible", "groups", "overrides", "sources")
+"""Keys of ``[project]`` that are the manifest, read by ``_manifest``; the rest of ``[project]`` are settings."""
 
 _INDEX_URL_SCHEMES = ("http://", "https://", "file://")
 _TRUE = frozenset(("1", "true", "yes", "on"))
@@ -113,7 +111,7 @@ class RawManifest(Record):
     such as whether a requirement string is valid, is ``_manifest``'s to check when a command uses the manifest.
     """
 
-    __slots__ = ("collections", "groups", "ignore_requires_ansible", "overrides", "path", "requires_ansible")
+    __slots__ = ("collections", "groups", "ignore_requires_ansible", "overrides", "path", "requires_ansible", "sources")
 
     def __init__(
         self,
@@ -124,6 +122,7 @@ class RawManifest(Record):
         groups: dict[str, list[str]],
         overrides: dict[str, str],
         ignore_requires_ansible: list[str],
+        sources: dict[str, dict[str, object]] | None = None,
     ) -> None:
         self.path = path
         self.collections = collections
@@ -133,6 +132,8 @@ class RawManifest(Record):
         self.overrides = overrides
         """Version requirements by collection name, without ``ignore_requires_ansible``."""
         self.ignore_requires_ansible = ignore_requires_ansible
+        self.sources = sources or {}
+        """Each ``[project.sources]`` entry's table, such as ``{"index": "internal"}``, by collection name."""
 
 
 class Settings(Record):
@@ -482,16 +483,15 @@ def _file_layer(table: _c.Mapping[str, object], path: str, level: Level, home: s
     # [tool] is left to other tools, as pyproject.toml's is: alai never reads it.
     if "tool" in values and as_table(values.pop("tool")) is None:
         raise ConfigError(f"{description}: 'tool' must be a table ([tool.<name>])")
+    # Everything under [project] describes the project; everything else is a setting.
     is_project = level is Level.PROJECT
     if not is_project:
-        if project_only := [name for name in ("project", *MANIFEST_TABLES) if name in values]:
+        if "project" in values:
             hint = "; --config-file only takes settings" if level is Level.EXPLICIT else ""
-            raise ConfigError(f"{description}: [{project_only[0]}] is only allowed in the project's alai.toml{hint}")
+            raise ConfigError(f"{description}: [project] is only allowed in the project's alai.toml{hint}")
     else:
         # Also checks [project] is a table.
         _ = raw_manifest(table, path)
-        for name in MANIFEST_TABLES:
-            _ = values.pop(name, None)
         project = as_table(values.pop("project", None)) or {}
         values.update((f"project.{key}", value) for key, value in project.items() if key not in MANIFEST_PROJECT_KEYS)
 
@@ -523,25 +523,33 @@ def raw_manifest(table: _c.Mapping[str, object], path: str) -> RawManifest:
         raise ConfigError(f"{path}: 'project.requires_ansible' must be a string")
 
     groups: dict[str, list[str]] = {}
-    for name, value in _table_value(table, "groups", path, "[groups.<name>]").items():
+    for name, value in _table_value(project, "groups", path, "[project.groups.<name>]", "project.").items():
+        where = f"project.groups.{name}"
         group = as_table(value)
         if group is None:
-            raise ConfigError(f"{path}: 'groups.{name}' must be a table ([groups.{name}])")
+            raise ConfigError(f"{path}: '{where}' must be a table ([{where}])")
         if unknown := sorted(set(group) - {"collections"}):
-            raise ConfigError(f"{path}: unknown key 'groups.{name}.{unknown[0]}'")
-        groups[name] = _string_list(
-            group.get("collections", []), path, f"groups.{name}.collections", "requirement strings"
-        )
+            raise ConfigError(f"{path}: unknown key '{where}.{unknown[0]}'")
+        groups[name] = _string_list(group.get("collections", []), path, f"{where}.collections", "requirement strings")
 
     overrides: dict[str, str] = {}
     ignore_requires_ansible: list[str] = []
-    for key, value in _table_value(table, "overrides", path, "[overrides]").items():
+    for key, value in _table_value(project, "overrides", path, "[project.overrides]", "project.").items():
         if key == "ignore_requires_ansible":
-            ignore_requires_ansible = _string_list(value, path, f"overrides.{key}", "collection names")
+            ignore_requires_ansible = _string_list(value, path, f"project.overrides.{key}", "collection names")
         elif isinstance(value, str):
             overrides[key] = value
         else:
-            raise ConfigError(f"{path}: overrides.\"{key}\" must be a version requirement string, such as '>=6'")
+            raise ConfigError(
+                f"{path}: project.overrides.\"{key}\" must be a version requirement string, such as '>=6'"
+            )
+
+    sources: dict[str, dict[str, object]] = {}
+    for key, value in _table_value(project, "sources", path, "[project.sources]", "project.").items():
+        source = as_table(value)
+        if source is None:
+            raise ConfigError(f'{path}: project.sources."{key}" must be a table, such as {{ index = "internal" }}')
+        sources[key] = source
 
     return RawManifest(
         path,
@@ -550,16 +558,18 @@ def raw_manifest(table: _c.Mapping[str, object], path: str) -> RawManifest:
         groups=groups,
         overrides=overrides,
         ignore_requires_ansible=ignore_requires_ansible,
+        sources=sources,
     )
 
 
-def _table_value(table: _c.Mapping[str, object], key: str, path: str, form: str) -> dict[str, object]:
-    """``table[key]``, which must be a table if it's there, or an empty table if it isn't."""
+def _table_value(table: _c.Mapping[str, object], key: str, path: str, form: str, prefix: str = "") -> dict[str, object]:
+    """``table[key]``, which must be a table if it's there, or an empty table if it isn't. ``prefix`` is the path to
+    ``table`` for messages, such as ``project.``."""
     if key not in table:
         return {}
     value = as_table(table[key])
     if value is None:
-        raise ConfigError(f"{path}: '{key}' must be a table ({form})")
+        raise ConfigError(f"{path}: '{prefix}{key}' must be a table ({form})")
     return value
 
 
@@ -783,7 +793,7 @@ def suggest_key(key: str, *, manifest: bool = False) -> str:
 
     keys = list(FILE_SETTINGS)
     if manifest:
-        keys += [*(f"project.{k}" for k in MANIFEST_PROJECT_KEYS), *MANIFEST_TABLES]
+        keys += [f"project.{k}" for k in MANIFEST_PROJECT_KEYS]
     matches = difflib.get_close_matches(key, keys, n=1)
     return f", did you mean '{matches[0]}'?" if matches else ""
 

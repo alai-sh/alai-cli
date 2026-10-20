@@ -9,7 +9,7 @@ import pytest
 
 from alai._common import ConfigError
 from alai._config import LinkMode, Overrides, find_project, load_settings
-from alai._manifest import Manifest, Requirement, collection_name, load_manifest
+from alai._manifest import IndexPin, Manifest, Requirement, collection_name, load_manifest
 from alai._pep440 import Version as AnsibleVersion
 from alai._semver import Version, VersionReq
 
@@ -37,22 +37,20 @@ def manifest(cwd: Path) -> Manifest:
 
 class TestRequirement:
     @pytest.mark.parametrize(
-        ("text", "name", "index", "clauses"),
+        ("text", "name", "clauses"),
         [
-            ("ansible.windows", "ansible.windows", None, ()),
-            ("community.general>=9,<11", "community.general", None, ((">=", "9.0.0"), ("<", "11.0.0"))),
-            ("community.general >= 9", "community.general", None, ((">=", "9.0.0"),)),
-            ("internal:corp.tools>=1.2", "corp.tools", "internal", ((">=", "1.2.0"),)),
-            (" internal : corp.tools ==1.0.0 ", "corp.tools", "internal", (("==", "1.0.0"),)),
-            ("ns._private_1*", "ns._private_1", None, ()),
-            ("ns.name!=1.0.0", "ns.name", None, (("!=", "1.0.0"),)),
+            ("ansible.windows", "ansible.windows", ()),
+            ("community.general>=9,<11", "community.general", ((">=", "9.0.0"), ("<", "11.0.0"))),
+            ("community.general >= 9", "community.general", ((">=", "9.0.0"),)),
+            (" corp.tools ==1.0.0 ", "corp.tools", (("==", "1.0.0"),)),
+            ("ns._private_1*", "ns._private_1", ()),
+            ("ns.name!=1.0.0", "ns.name", (("!=", "1.0.0"),)),
         ],
     )
-    def test_parse(self, text: str, name: str, index: str | None, clauses: tuple[tuple[str, str], ...]) -> None:
+    def test_parse(self, text: str, name: str, clauses: tuple[tuple[str, str], ...]) -> None:
         requirement = Requirement.parse(text)
 
         assert requirement.name == name
-        assert requirement.index == index
         assert [(op, v.text) for op, v in requirement.req.clauses] == list(clauses)
         assert str(requirement) == text
 
@@ -67,7 +65,7 @@ class TestRequirement:
             ("community.class", "'class' must be a Python identifier that isn't a keyword"),
             ("community.1abc", "'1abc' must be a Python identifier"),
             ("community-x.general", "'community-x' must be a Python identifier"),
-            ("Bad:ns.name", "'Bad' isn't a valid index name"),
+            ("internal:corp.tools>=1.2", "'internal:corp' must be a Python identifier"),
             ("ns.name 1.0.0", "needs an operator"),
             ("ns.name^1.0.0", "ranges aren't supported"),
             ("ns.name>=1,", "empty clause"),
@@ -92,18 +90,22 @@ requires_ansible = ">=2.17"
 collections = [
     "community.general>=9,<11",
     "ansible.windows",
-    "internal:corp.tools>=1.2",
+    "corp.tools>=1.2",
 ]
 
-[groups.test]
+[project.groups.test]
 collections = ["ansible.posix", "community.crypto"]
 
-[groups.lint-only]
+[project.groups.lint-only]
 
-[overrides]
+[project.overrides]
 "ansible.netcommon" = ">=6"
 "community.crypto" = "*"
 ignore_requires_ansible = ["some.collection"]
+
+[project.sources]
+"corp.tools" = { index = "internal" }
+"ansible.netcommon" = { index = "internal" }
 """,
         )
 
@@ -113,8 +115,10 @@ ignore_requires_ansible = ["some.collection"]
         assert [r.text for r in result.collections] == [
             "community.general>=9,<11",
             "ansible.windows",
-            "internal:corp.tools>=1.2",
+            "corp.tools>=1.2",
         ]
+        # A source can name a collection the project doesn't list, here a dependency of corp.tools.
+        assert result.sources == {"corp.tools": IndexPin("internal"), "ansible.netcommon": IndexPin("internal")}
         assert result.requires_ansible is not None
         assert result.requires_ansible.contains(AnsibleVersion("2.18.1"))
         assert not result.requires_ansible.contains(AnsibleVersion("2.16.0"))
@@ -140,7 +144,7 @@ ignore_requires_ansible = ["some.collection"]
         assert load_manifest(find_project(str(tmp_path))) is None
 
     def test_ignore_requires_ansible_deduplicated(self, tmp_path: Path) -> None:
-        write(tmp_path / "alai.toml", '[overrides]\nignore_requires_ansible = ["a.b", "c.d", "a.b"]\n')
+        write(tmp_path / "alai.toml", '[project.overrides]\nignore_requires_ansible = ["a.b", "c.d", "a.b"]\n')
 
         assert manifest(tmp_path).ignore_requires_ansible == ("a.b", "c.d")
 
@@ -155,12 +159,12 @@ class TestTypes:
             ('[project]\ncollections = "ns.name"', "'project.collections' must be an array of requirement strings"),
             ("[project]\ncollections = [1]", "'project.collections' must be an array of requirement strings"),
             ("[project]\nrequires_ansible = 2.17", "'project.requires_ansible' must be a string"),
-            ('groups = "x"', r"'groups' must be a table \(\[groups\.<name>\]\)"),
-            ('[groups]\ntest = "x"', r"'groups\.test' must be a table \(\[groups\.test\]\)"),
-            ('[groups.test]\ncollection = ["a.b"]', "unknown key 'groups.test.collection'"),
-            ('overrides = "x"', r"'overrides' must be a table \(\[overrides\]\)"),
-            ('[overrides]\n"a.b" = 1', r'overrides\."a\.b" must be a version requirement string'),
-            ('[overrides]\nignore_requires_ansible = "a.b"', "must be an array of collection names"),
+            ('[project]\ngroups = "x"', r"'project\.groups' must be a table \(\[project\.groups\.<name>\]\)"),
+            ('[project.groups]\ntest = "x"', r"'project\.groups\.test' must be a table \(\[project\.groups\.test\]\)"),
+            ('[project.groups.test]\ncollection = ["a.b"]', "unknown key 'project.groups.test.collection'"),
+            ('[project]\noverrides = "x"', r"'project\.overrides' must be a table \(\[project\.overrides\]\)"),
+            ('[project.overrides]\n"a.b" = 1', r'project\.overrides\."a\.b" must be a version requirement string'),
+            ('[project.overrides]\nignore_requires_ansible = "a.b"', "must be an array of collection names"),
         ],
     )
     def test_invalid(self, tmp_path: Path, environ: dict[str, str], content: str, match: str) -> None:
@@ -178,7 +182,10 @@ class TestTypes:
                 '[project]\ncollection = ["a.b"]',
                 "unknown setting 'project.collection', did you mean 'project.collections'",
             ),
-            ('[group.test]\ncollections = ["a.b"]', "unknown setting 'group', did you mean 'groups'"),
+            (
+                '[project.group.test]\ncollections = ["a.b"]',
+                "unknown setting 'project.group', did you mean 'project.groups'",
+            ),
         ],
     )
     def test_suggests_manifest_keys(self, tmp_path: Path, environ: dict[str, str], content: str, match: str) -> None:
@@ -204,11 +211,14 @@ class TestValues:
                 '[project]\nrequires_ansible = "2.17"',
                 "project.requires_ansible: invalid specifier '2.17', expected PEP",
             ),
-            ("[groups.Test]", "invalid group name 'Test'"),
-            ('[groups.test]\ncollections = ["a.b", "a.b"]', r"groups\.test\.collections\[1\]: 'a\.b' is already"),
-            ('[overrides]\n"ansible" = ">=1"', r'overrides\."ansible": invalid collection name'),
-            ('[overrides]\n"a.b" = "1.0"', r'overrides\."a\.b": .*needs an operator'),
-            ('[overrides]\nignore_requires_ansible = ["A.b"]', r"ignore_requires_ansible\[0\]: .*lowercase"),
+            ("[project.groups.Test]", "invalid group name 'Test'"),
+            (
+                '[project.groups.test]\ncollections = ["a.b", "a.b"]',
+                r"project\.groups\.test\.collections\[1\]: 'a\.b' is already",
+            ),
+            ('[project.overrides]\n"ansible" = ">=1"', r'project\.overrides\."ansible": invalid collection name'),
+            ('[project.overrides]\n"a.b" = "1.0"', r'project\.overrides\."a\.b": .*needs an operator'),
+            ('[project.overrides]\nignore_requires_ansible = ["A.b"]', r"ignore_requires_ansible\[0\]: .*lowercase"),
         ],
     )
     def test_invalid(self, tmp_path: Path, environ: dict[str, str], content: str, match: str) -> None:
@@ -248,8 +258,8 @@ class TestManifestAndConfig:
         ("content", "match"),
         [
             ('[project]\ncollections = ["a.b"]', r"\[project\] is only allowed in the project's alai\.toml"),
-            ("[groups.test]", r"\[groups\] is only allowed in the project's alai\.toml"),
-            ('[overrides]\n"a.b" = ">=1"', r"\[overrides\] is only allowed in the project's alai\.toml"),
+            ("[project.groups.test]", r"\[project\] is only allowed in the project's alai\.toml"),
+            ('[project.overrides]\n"a.b" = ">=1"', r"\[project\] is only allowed in the project's alai\.toml"),
         ],
     )
     def test_not_in_config_file(self, tmp_path: Path, environ: dict[str, str], content: str, match: str) -> None:
@@ -259,9 +269,72 @@ class TestManifestAndConfig:
             load_settings(Overrides(config_file="ci.toml"), cwd=tmp_path, environ=environ)
         assert str(e.value).startswith(str(tmp_path / "ci.toml"))
 
-    @pytest.mark.parametrize("table", ["[groups.test]", '[overrides]\n"a.b" = ">=1"'])
+    @pytest.mark.parametrize("table", ["[project.groups.test]", '[project.overrides]\n"a.b" = ">=1"'])
     def test_not_in_user_file(self, tmp_path: Path, environ: dict[str, str], table: str) -> None:
         write(Path(environ["HOME"]) / ".config" / "alai" / "alai.toml", table)
 
         with pytest.raises(ConfigError, match=r"is only allowed in the project's alai\.toml"):
             load_settings(cwd=tmp_path, environ=environ)
+
+
+class TestProjectSubTables:
+    """Everything that describes the project is under [project]."""
+
+    @pytest.mark.parametrize(
+        ("content", "match"),
+        [
+            ('[groups.test]\ncollections = ["a.b"]', r"unknown setting 'groups', did you mean 'project\.groups'\?"),
+            ('[overrides]\n"a.b" = ">=1"', r"unknown setting 'overrides', did you mean 'project\.overrides'\?"),
+            ('[sources]\n"a.b" = { index = "x" }', r"unknown setting 'sources', did you mean 'project\.sources'\?"),
+        ],
+    )
+    def test_top_level_is_unknown(self, tmp_path: Path, environ: dict[str, str], content: str, match: str) -> None:
+        write(tmp_path / "alai.toml", content)
+
+        with pytest.raises(ConfigError, match=match):
+            load_settings(cwd=tmp_path, environ=environ)
+
+    def test_sub_tables_without_project_header(self, tmp_path: Path) -> None:
+        # TOML defines [project] implicitly from its sub-tables.
+        write(
+            tmp_path / "alai.toml", '[project.groups.test]\ncollections = ["a.b"]\n[project.overrides]\n"c.d" = "*"\n'
+        )
+
+        result = manifest(tmp_path)
+
+        assert [r.name for r in result.groups["test"]] == ["a.b"]
+        assert list(result.overrides) == ["c.d"]
+
+
+class TestSources:
+    @pytest.mark.parametrize(
+        ("content", "match"),
+        [
+            ('[project]\nsources = "x"', r"'project\.sources' must be a table \(\[project\.sources\]\)"),
+            ('[project.sources]\n"a.b" = "internal"', r'project\.sources\."a\.b" must be a table, such as'),
+        ],
+    )
+    def test_types(self, tmp_path: Path, environ: dict[str, str], content: str, match: str) -> None:
+        write(tmp_path / "alai.toml", content)
+
+        for load in (lambda: load_settings(cwd=tmp_path, environ=environ), lambda: manifest(tmp_path)):
+            with pytest.raises(ConfigError, match=match):
+                load()
+
+    @pytest.mark.parametrize(
+        ("content", "match"),
+        [
+            ('[project.sources]\n"ansible" = { index = "x" }', r'project\.sources\."ansible": invalid collection name'),
+            ('[project.sources]\n"a.b" = { index = "Bad Name" }', "'Bad Name' isn't a valid index name"),
+            ('[project.sources]\n"a.b" = { index = 1 }', r'only \{ index = "<name>" \} is supported so far, got index'),
+            ('[project.sources]\n"a.b" = { git = "https://x" }', "is supported so far, got git"),
+            ('[project.sources]\n"a.b" = { index = "x", path = "p" }', "got index, path"),
+            ('[project.sources]\n"a.b" = {}', "got none"),
+        ],
+    )
+    def test_values(self, tmp_path: Path, environ: dict[str, str], content: str, match: str) -> None:
+        write(tmp_path / "alai.toml", content)
+
+        _ = load_settings(cwd=tmp_path, environ=environ)
+        with pytest.raises(ConfigError, match=match):
+            _ = manifest(tmp_path)

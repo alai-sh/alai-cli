@@ -13,9 +13,10 @@ itself, in `collections/ansible_collections/` next to your playbooks, where
 from the alai index, a static mirror of Galaxy with a few changes to improve
 the time it takes to retrieve the collection metadata before downloading.
 
-- [Projects](projects.md): how alai finds your project and where it installs
-  collections.
-- [Configuration](configuration.md): where alai reads its settings from, and
-  every setting.
+- [Projects](projects.md): how alai finds your project, where it installs
+  collections, and declaring the ones it needs.
+- [Configuration](configuration.md): where alai reads its settings from,
+  and how files, environment variables and flags combine.
+- [alai.toml](alai-toml.md): every key and table the file can hold.
 - [Shell completion](shell-completion.md): Tab completion for alai's commands
   and options.

@@ -234,13 +234,17 @@ nothing is loaded through a symlink.
     apart, and only the warning tells anyone.
   - **be an error.** This leaves one source of truth: the collection files.
 
-  Leaning towards an error. Test-only collections go in `[groups.<name>]`.
-  Overriding a dependency's metadata goes in `[overrides]`, which does that
+  Leaning towards an error. Test-only collections go in `[project.groups.<name>]`.
+  Overriding a dependency's metadata goes in `[project.overrides]`, which does that
   for playbook projects already. What `galaxy.yml` can't express, such as
-  pinning a dependency to an index (`internal:corp.tools`), could be added
-  by an alai table that refers to entries in `galaxy.yml` without repeating
-  them, the way `[tool.uv.sources]` adds to `[project] dependencies` in uv.
+  pinning a dependency to an index, goes in `[project.sources]`, which refers
+  to collections by name without repeating `galaxy.yml`'s requirements, the
+  way `[tool.uv.sources]` adds to `[project] dependencies` in uv.
   This leaning assumes `galaxy.yml` stays; see the next question.
+  Raised on 2026-10-20: overriding has a real use, testing against a
+  different `requires_ansible` or dependency than the collection publishes,
+  so `[project]` there may become the way to override rather than an error.
+  Still open.
 - **Whether `alai build` replaces `ansible-galaxy collection build`.** Two
   directions:
   - **A drop-in for `ansible-galaxy collection build`.** It reads
@@ -282,7 +286,7 @@ nothing is loaded through a symlink.
   recognised from `alai.toml` instead.
 - **`[project] collections_dir`** will mean the test tree for a collection
   repo, not `<root>/collections`.
-- **`[groups.<name>]`** in `alai.toml` will hold a collection repo's test-only
+- **`[project.groups.<name>]`** in `alai.toml` will hold a collection repo's test-only
   collections. `tests/*/requirements.yml` could be imported into groups once.
 - **The installer** never replaces or removes a collection directory it
   didn't install (no alai marker, a `.git`, or a symlink). Collection repos

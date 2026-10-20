@@ -1,10 +1,14 @@
 # Projects
 
 Most alai commands act on a project: a directory of playbooks and the
-collections they use. A project has a root, found from the directory alai
-runs in, and a collections directory inside it that collections are
-installed into. Its `alai.toml`, the project file, holds settings for that
-project alone.
+collections they use. alai finds the project's root by walking up from the
+directory it runs in: the root is where the nearest `alai.toml` is, or with
+none, the nearest `ansible.cfg`, then the nearest
+`collections/ansible_collections/` (see
+[Finding the project root](#finding-the-project-root)). Collections are
+installed into a collections directory inside it, and the root's
+[`alai.toml`](alai-toml.md), the project file, says what the project needs
+and holds settings for that project alone.
 
 ## Finding the project root
 
@@ -38,7 +42,7 @@ with playbooks at the project root, `ansible-playbook` finds them with no
 extra configuration.
 
 A project that keeps its playbooks in a subdirectory sets
-[`collections_dir`](configuration.md#projectcollections_dir) to install next
+[`collections_dir`](alai-toml.md#projectcollections_dir) to install next
 to them instead:
 
 ```toml
@@ -67,19 +71,18 @@ same tree; it doesn't add a second `ansible_collections/` level.
 
 ## The `[project]` table
 
-Settings that describe the project, rather than how alai runs, go in the
-`[project]` table of the project file. Today that's
-[`collections_dir`](configuration.md#projectcollections_dir), plus the
-[collections the project needs](#declaring-collections).
+Everything that describes the project, rather than how alai runs, goes in
+the [`[project]`](alai-toml.md#project) table of the project's `alai.toml`
+and its sub-tables: where collections are installed, which ones the project
+needs, and fixes for their metadata.
 
-Only the project's `alai.toml` can have a `[project]` table. In a user or
-system file it would apply to every project, and a `--config-file` only
-holds settings, so in any other file it's an error.
-`--collections-dir` and `ALAI_COLLECTIONS_DIR` can still set
-`collections_dir` for a single run.
+Only the project's own `alai.toml` can have `[project]`. In a user or system
+file it would apply to every project, and a `--config-file` only holds
+settings, so in any other file it's an error. `--collections-dir` and
+`ALAI_COLLECTIONS_DIR` can still set `collections_dir` for a single run.
 
-See [Configuration](configuration.md) for the other settings and how the
-config files combine.
+See [Configuration](configuration.md) for settings and how the config files
+combine.
 
 ## Declaring collections
 
@@ -89,7 +92,9 @@ config files combine.
     that they're spelt right and have the right types, but the requirements
     themselves are only checked by the commands that use them.
 
-The project's `alai.toml` lists the collections the project needs:
+The project's `alai.toml` lists the collections the project needs, the
+ansible-core versions it targets, collections only some workflows need, and
+fixes for wrong metadata upstream:
 
 ```toml
 # alai.toml
@@ -98,81 +103,32 @@ requires_ansible = ">=2.17"
 collections = [
     "community.general>=9,<11",
     "ansible.windows",
-    "internal:corp.tools>=1.2",
+    "corp.tools>=1.2",
 ]
 
 # Collections only some workflows need, such as tests.
-[groups.test]
+[project.groups.test]
 collections = ["ansible.posix", "community.crypto"]
 
 # Fixes for wrong metadata in the collections you depend on.
-[overrides]
+[project.overrides]
 "ansible.netcommon" = ">=6"
 ignore_requires_ansible = ["some.collection"]
+
+# Where particular collections come from: corp.tools only from the internal index.
+[project.sources]
+"corp.tools" = { index = "internal" }
 ```
+
+Each requirement is a collection name and an optional version requirement,
+such as `corp.tools>=1.2`, as in ansible-galaxy's `requirements.yml`. Where a
+collection comes from is set in `[project.sources]`, which can also name
+collections the project doesn't list itself, such as a dependency's
+dependency. The [`alai.toml` reference](alai-toml.md#project) has every key
+and the [requirement syntax](alai-toml.md#requirements).
 
 These keys are only read from the project's own `alai.toml`, the one that
 [fixes the project root](#finding-the-project-root). `--no-config` and
 `--config-file` change which settings alai reads, not what the project
 needs: a command that uses these keys reads them from the project's
-`alai.toml` either way. In any other file, including a `--config-file`,
-they're an error, rather than being silently ignored.
-
-| Key | Type | |
-|---|---|---|
-| `project.collections` | array of [requirements](#requirements) | The collections the project needs. A collection can be listed once |
-| `project.requires_ansible` | string | The ansible-core versions the project targets, as a [PEP 440](https://peps.python.org/pep-0440/#version-specifiers) specifier such as `>=2.17` or `>=2.17,<2.20`: the same syntax as `requires_ansible` in a collection's `meta/runtime.yml` |
-| `groups.<name>.collections` | array of [requirements](#requirements) | Collections only some workflows need. Group names use lowercase letters, digits, `-` and `_`, starting with a letter or digit |
-| `overrides."<namespace.name>"` | [version requirement](#version-requirements) | Replaces every requirement on that collection, including those in other collections' dependencies. `"*"` accepts any version |
-| `overrides.ignore_requires_ansible` | array of collection names | Collections whose own `requires_ansible` is ignored |
-
-Collection names in `[overrides]` contain a dot, so they're quoted:
-`"ansible.netcommon" = ">=6"`. Unquoted, TOML reads `ansible.netcommon` as a
-table.
-
-### Requirements
-
-A requirement is a collection name, optionally pinned to an
-[index](configuration.md#index) and followed by a version requirement:
-
-```text
-[INDEX:]NAMESPACE.NAME[VERSION REQUIREMENT]
-```
-
-| Requirement | Means |
-|---|---|
-| `ansible.windows` | Any version |
-| `community.general>=9,<11` | 9.0.0 or later, but before 11.0.0 |
-| `community.general >= 9` | The same as `community.general>=9`: spaces are allowed around each part |
-| `internal:corp.tools>=1.2` | 1.2.0 or later, from the `internal` index only |
-
-Collection names are lowercase: each of the namespace and the name is a
-Python identifier that isn't a Python keyword.
-
-### Version requirements
-
-A version requirement is `*`, for any version, or one or more clauses
-separated by commas, all of which must hold. A clause is an operator and a
-version:
-
-| Operator | Means |
-|---|---|
-| `==` | Exactly this version |
-| `!=` | Any version but this one |
-| `>=`, `>` | This version or later, or only later |
-| `<=`, `<` | This version or earlier, or only earlier |
-
-Collection versions are [semantic versions](https://semver.org/). A version
-in a clause can leave out its minor and patch parts, which count as `0`:
-`>=9` is `>=9.0.0`, and `==9` is exactly `9.0.0`. It can have a pre-release
-part, as in `>=2.0.0-rc.1`, but not build metadata, since comparisons ignore
-it: `==1.0.0` already matches `1.0.0+build1`.
-
-This is the syntax ansible-galaxy uses for collection dependencies, with a
-few forms left out because they read as something else:
-
-| Written | Write instead |
-|---|---|
-| `1.2.3` or `=1.2.3` | `==1.2.3` |
-| `^1.2.0`, `~1.2.0` | `>=1.2.0,<2.0.0`, `>=1.2.0,<1.3.0` |
-| `==1.0.0+build1` | `==1.0.0` |
+`alai.toml` either way.
