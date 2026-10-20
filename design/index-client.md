@@ -8,6 +8,12 @@ from a machine ~250 ms (TCP plus TLS) from Cloudflare.
 
 ## Decisions
 
+- **Galaxy servers are never a source** (2026-10-21): not Galaxy itself,
+  Automation Hub or a private Galaxy (Galaxy NG). Their API's caching and
+  reliability aren't good enough to resolve and install from directly, which
+  is why there's an index at all. Content from one could still be used
+  through an index built from it, if a way to set that up is added; the
+  client only ever reads indexes. The docs say so without "yet".
 - **urllib3, on a pool of threads, with synchronous code.** Fetching 60 real
   index files in parallel took about the same with every option tried (median
   of 5 runs):

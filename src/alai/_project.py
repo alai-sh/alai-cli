@@ -12,7 +12,7 @@ from ._common import ConfigError
 from ._config import RawManifest, Settings, raw_manifest, read_toml
 from ._lock import Lock
 from ._manifest import Manifest, parse_manifest
-from ._output import warn
+from ._output import home_path, warn
 from ._progress import Live, Task
 
 if _t.TYPE_CHECKING:
@@ -24,7 +24,7 @@ def load_project(settings: Settings, why: str) -> tuple[RawManifest, Manifest]:
     """The project's ``alai.toml`` as written and as parsed; ``why`` says, in the error, why a command needs one."""
     project = settings.project
     if project.config_file is None:
-        raise ConfigError(f"there's no alai.toml in {project.root}: {why}")
+        raise ConfigError(f"there's no alai.toml in {home_path(project.root)}: {why}")
     raw = raw_manifest(read_toml(project.config_file), project.config_file)
     return raw, parse_manifest(raw)
 

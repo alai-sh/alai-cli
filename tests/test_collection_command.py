@@ -44,10 +44,55 @@ class TestWhere:
         assert "no project found from" in capsys.readouterr().err
         assert not (project / "collections").exists()
 
+    def test_error_shortens_home(
+        self, project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        assert install("c.c") == EXIT_ERROR
+
+        assert "no project found from ~/project (" in capsys.readouterr().err
+
     def test_explicit_directory(self, project: Path, tmp_path: Path) -> None:
         assert install("--collections-dir", str(tmp_path / "out"), "c.c") == 0
 
         assert installed(tmp_path / "out") == {"c.c": "1.0.0"}
+
+    def test_default_directory_not_named(self, cdir: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # collections/ in the current directory is the one a user would assume, as uv pip names no ./.venv.
+        assert install("c.c") == 0
+
+        assert "Using collections directory" not in capsys.readouterr().err
+
+    def test_other_directory_named(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        assert install("--collections-dir", "out", "c.c") == 0
+
+        assert lines(capsys.readouterr().err)[0] == "Using collections directory at: out"
+
+    def test_directory_found_above_named(
+        self, cdir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (cdir.parent / "playbooks").mkdir()
+        monkeypatch.chdir(cdir.parent / "playbooks")
+
+        assert install("c.c") == 0
+
+        assert installed(cdir) == {"c.c": "1.0.0"}
+        assert lines(capsys.readouterr().err)[0] == "Using collections directory at: ~/project/collections"
+
+    def test_named_when_already_installed(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        _ = install("--collections-dir", "out", "c.c")
+        _ = capsys.readouterr()
+
+        assert install("--collections-dir", "out", "c.c") == 0
+
+        assert lines(capsys.readouterr().err) == ["Using collections directory at: out", "Checked 1 collection"]
+
+    def test_quiet(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        assert install("-q", "--collections-dir", "out", "c.c") == 0
+
+        assert capsys.readouterr().err == ""
 
     def test_environment_variable(self, project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("ALAI_COLLECTIONS_DIR", str(tmp_path / "env"))
@@ -138,6 +183,58 @@ class TestInstall:
         assert "invalid collection name 'nope'" in capsys.readouterr().err
 
 
+def checkout(cdir: Path, name: str) -> Path:
+    """A source checkout at ``name``'s place in ``cdir``: a galaxy.yml and no MANIFEST.json, so no version alai reads."""
+    namespace, short = name.split(".")
+    path = cdir / "ansible_collections" / namespace / short
+    path.mkdir(parents=True)
+    _ = (path / "galaxy.yml").write_text(f"namespace: {namespace}\nname: {short}\nversion: 1.0.0\n")
+    return path
+
+
+class TestUnversioned:
+    def test_replaced_by_default(self, cdir: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        path = checkout(cdir, "c.c")
+
+        assert install("c.c") == 0
+
+        assert installed(cdir) == {"c.c": "1.0.0"}
+        assert not (path / "galaxy.yml").exists()
+        assert lines(capsys.readouterr().err)[-2:] == [" - c.c (unknown version)", " + c.c==1.0.0"]
+
+    def test_kept_when_asked_for(self, cdir: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        path = checkout(cdir, "c.c")
+
+        assert install("--keep-unversioned", "c.c>=9") == 0
+
+        assert (path / "galaxy.yml").exists()
+        assert lines(capsys.readouterr().err) == ["Checked 1 collection"]
+
+    def test_kept_as_a_dependency(self, cdir: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        path = checkout(cdir, "b.b")
+
+        assert install("--keep-unversioned", "a.a") == 0
+
+        assert installed(cdir) == {"a.a": "2.0.0"}
+        assert (path / "galaxy.yml").exists()
+        assert lines(capsys.readouterr().err) == [
+            "Resolved 2 collections",
+            "Prepared 1 collection",
+            "Installed 1 collection",
+            " + a.a==2.0.0",
+        ]
+
+    def test_others_still_installed(self, cdir: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # x.x is on no index: a kept collection isn't looked for.
+        path = checkout(cdir, "x.x")
+
+        assert install("--keep-unversioned", "x.x", "d.d") == 0
+
+        assert installed(cdir) == {"d.d": "1.0.0"}
+        assert (path / "galaxy.yml").exists()
+        assert lines(capsys.readouterr().err)[-1] == " + d.d==1.0.0"
+
+
 class TestUninstall:
     def test_only_what_is_named(self, cdir: Path, capsys: pytest.CaptureFixture[str]) -> None:
         _ = install("a.a")
@@ -155,8 +252,20 @@ class TestUninstall:
         assert uninstall("d.d", "c.c") == 0
 
         err = capsys.readouterr().err
-        assert "warning: skipping d.d, which isn't installed in" in err
+        assert "warning: skipping d.d, which isn't installed in collections" in err
         assert " - c.c==1.0.0" in err
+
+    def test_other_directory_named(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        _ = install("--collections-dir", "out", "c.c")
+        _ = capsys.readouterr()
+
+        assert uninstall("--collections-dir", "out", "c.c") == 0
+
+        assert lines(capsys.readouterr().err) == [
+            "Using collections directory at: out",
+            "Uninstalled 1 collection",
+            " - c.c==1.0.0",
+        ]
 
     def test_nothing_to_uninstall(self, cdir: Path, capsys: pytest.CaptureFixture[str]) -> None:
         assert uninstall("d.d") == 0

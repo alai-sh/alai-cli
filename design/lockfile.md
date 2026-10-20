@@ -4,7 +4,7 @@
 `alai.lock` beside the project's `alai.toml`; `alai sync` installs
 exactly what it lists ([install.md](install.md)). The format is read and written by `src/alai/_lock.py`,
 resolution is in [resolver.md](resolver.md). The user documentation is
-`docs/projects.md#locking`.
+`docs/managing-collections.md#locking`.
 
 ## The format
 

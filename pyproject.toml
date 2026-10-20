@@ -5,7 +5,7 @@ build-backend = "uv_build"
 [project]
 name = "alai"
 version = "0.0.1"
-description = "A fast package and environment manager for Ansible collections (in development)."
+description = "A fast package and environment manager for Ansible collections."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -13,7 +13,7 @@ authors = [{ name = "Jordan Borean" }]
 requires-python = ">=3.10"
 keywords = ["ansible", "collections", "galaxy", "package-manager"]
 classifiers = [
-    "Development Status :: 1 - Planning",
+    "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Intended Audience :: System Administrators",
@@ -200,4 +200,15 @@ commands_post =
 [testenv:sanity]
 # As sanity has no pyXY factor in the name, we tell it what intepreter to use
 base_python = py315
+
+[testenv:docs]
+# Checks the CLI reference matches alai's parser and records its terminal recordings, builds the published docs
+# strictly, then checks every link between them, anchors included, which the build doesn't.
+base_python = py315
+dependency_groups = docs
+commands =
+    python scripts/cli_reference.py --check
+    python scripts/cli_recordings.py
+    zensical build --strict
+    python scripts/check_doc_links.py
 """

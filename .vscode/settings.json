@@ -9,6 +9,16 @@
         120
     ],
     "files.trimTrailingWhitespace": true,
+    // Directories tools write, which VS Code needn't watch: .tox alone is ~17,000 directories, and watching
+    // them uses up the user's inotify watches (fs.inotify.max_user_watches).
+    "files.watcherExclude": {
+        "**/.cache/**": true,
+        "**/.tox/**": true,
+        "**/.venv/**": true,
+        "**/dist/**": true,
+        "**/scratch/**": true,
+        "**/site/**": true
+    },
     "editor.trimAutoWhitespace": true,
     "ruff.importStrategy": "fromEnvironment",
     "mypy-type-checker.ignorePatterns": ["*"],

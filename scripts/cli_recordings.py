@@ -1,0 +1,238 @@
+# Copyright: (c) 2026, Jordan Borean (@jborean93) <jborean93@gmail.com>
+# MIT License (see LICENSE or https://opensource.org/licenses/MIT)
+
+"""Record the terminal recordings in the CLI reference as asciinema files, ``docs/casts/<name>.cast``.
+
+Each recording in ``scripts/cli_recordings.toml`` runs in a new project directory against a local index, in a
+pseudo-terminal, so alai colours its output and draws its progress as it would for a user. The commands are typed
+out at a steady pace, then run, keeping the time each one really takes. Run from the repository root, with alai
+installed in the environment:
+
+    python scripts/cli_recordings.py [NAME ...]
+"""
+
+from __future__ import annotations
+
+import codecs
+import concurrent.futures
+import fcntl
+import json
+import os
+import pathlib
+import pty
+import re
+import select
+import shlex
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+import termios
+import time
+
+import tomllib
+
+sys.path.insert(0, "tests")
+
+from index_data import make_index, v
+from index_server import IndexServer
+
+SCENARIOS = pathlib.Path("scripts/cli_recordings.toml")
+OUTPUT = pathlib.Path("docs/casts")
+COLUMNS = 100
+ROWS = 40
+"""The terminal's size while recording; the file's height is cut to the rows the recording uses."""
+
+PROMPT = "\x1b[1;34m{cwd}\x1b[0m \x1b[1;32m$\x1b[0m "
+"""The shell's prompt: the working directory, with the home directory as ~, as most shells show it."""
+TYPING = 0.04
+"""Seconds between each character typed."""
+BEFORE_ENTER = 0.5
+AFTER_OUTPUT = 1.5
+"""Seconds to hold on each command's output before typing the next."""
+
+# Seconds the index takes to answer, so the progress shows as it would over a network. Downloads take longest.
+INDEX_DELAY = 0.15
+DOWNLOAD_DELAY = 0.4
+
+
+def main(names: list[str]) -> int:
+    scenarios = tomllib.loads(SCENARIOS.read_text(encoding="utf-8"))
+    recordings = scenarios["recording"]
+    unknown = set(names) - {r["name"] for r in recordings}
+    if unknown:
+        _ = sys.stderr.write(f"no recording named {', '.join(sorted(unknown))} in {SCENARIOS}\n")
+        return 1
+    alai = shutil.which("alai")
+    if alai is None:
+        _ = sys.stderr.write("alai isn't installed in this environment\n")
+        return 1
+
+    OUTPUT.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="alai-casts-") as temp:
+        root = pathlib.Path(temp)
+        collections = {
+            name: [v(str(s["vers"]), s.get("deps")) for s in versions] for name, versions in scenarios["index"].items()
+        }
+        _ = make_index(root / "index", collections, artifacts=True)
+        with IndexServer(root / "index") as server:
+            # The index points at its artifacts as file:// URLs; served over HTTP, they take time as downloads do.
+            config = root / "index" / "config.json"
+            settings = json.loads(config.read_text())
+            settings["dl"] = server.url + "dl/{sha256-checksum}.tar.gz"
+            _ = config.write_text(json.dumps(settings))
+            server.delay = INDEX_DELAY
+            server.delays = {f"/dl/{p.name}": DOWNLOAD_DELAY for p in (root / "index" / "dl").iterdir()}
+
+            # Every recording has its own home and cache, so they run at once: most of each is spent waiting on alai
+            # and the index's delays. They're written as they finish.
+            selected = [r for r in recordings if not names or r["name"] in names]
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(selected)) as pool:
+                jobs = [pool.submit(_write, r, server.url, pathlib.Path(alai).parent) for r in selected]
+                for job in concurrent.futures.as_completed(jobs):
+                    _ = sys.stderr.write(f"recorded {job.result()}\n")
+    return 0
+
+
+def _write(recording: dict[str, object], index: str, bin_dir: pathlib.Path) -> str:
+    """Record one recording into its file, returning its name."""
+    home = pathlib.Path(tempfile.mkdtemp(prefix="alai-cast-")).resolve()
+    try:
+        cast = _record(recording, home, _environment(home, index, bin_dir))
+    finally:
+        shutil.rmtree(home)
+    _ = (OUTPUT / f"{recording['name']}.cast").write_text(cast, encoding="utf-8")
+    return str(recording["name"])
+
+
+def _environment(home: pathlib.Path, index: str, bin_dir: pathlib.Path) -> dict[str, str]:
+    """A clean environment for alai, with nothing from the user's: an empty home, cache and config."""
+    return {
+        "PATH": os.pathsep.join([str(bin_dir), "/usr/bin", "/bin"]),
+        "HOME": str(home),
+        "XDG_CONFIG_DIRS": str(home / ".xdg"),
+        "ALAI_DEFAULT_INDEX": index,
+        "LANG": "C.UTF-8",
+        "TERM": "xterm-256color",
+    }
+
+
+def _record(recording: dict[str, object], home: pathlib.Path, env: dict[str, str]) -> str:
+    project = home / str(recording.get("directory", "project"))
+    project.mkdir()
+    for path, content in _as_dict(recording.get("files")).items():
+        target = project / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _ = target.write_text(str(content).lstrip("\n"), encoding="utf-8")
+    for command in _as_list(recording.get("setup")):
+        result = subprocess.run(  # noqa: S602 - the commands are the recording's own
+            command, shell=True, cwd=project, env=env, capture_output=True, text=True, check=False
+        )
+        if result.returncode:
+            msg = f"{recording['name']}: setup command {command!r} failed:\n{result.stdout}{result.stderr}"
+            raise RuntimeError(msg)
+
+    events: list[tuple[float, str]] = []
+    clock = 0.0
+    cwd = project
+    for command in _as_list(recording.get("commands")):
+        events.append((clock, _prompt(cwd, home)))
+        for char in command:
+            clock += TYPING
+            events.append((clock, char))
+        clock += BEFORE_ENTER
+        events.append((clock, "\r\n"))
+        args = shlex.split(command)
+        if args[0] == "cd":
+            # Each command runs in a shell of its own, so a cd is followed here and shown by the next prompt.
+            cwd = (cwd / args[1]).resolve()
+            if not cwd.is_dir() or not cwd.is_relative_to(home):
+                msg = f"{recording['name']}: {command!r} isn't a directory in the recording's home"
+                raise RuntimeError(msg)
+        output, status = ([], 0) if args[0] == "cd" else _run(command, cwd, env)
+        if status == 127:  # the shell couldn't find the command, rather than it failing on purpose
+            msg = f"{recording['name']}: {command!r} wasn't found:\n{''.join(data for _, data in output)}"
+            raise RuntimeError(msg)
+        for offset, data in output:
+            events.append((clock + offset, data))
+        clock = events[-1][0] + AFTER_OUTPUT
+    events.append((clock, _prompt(cwd, home)))
+
+    header = {
+        "version": 2,
+        "width": COLUMNS,
+        "height": _rows_used("".join(data for _, data in events)),
+        "title": recording["title"],
+        "env": {"TERM": env["TERM"], "SHELL": "/bin/sh"},
+    }
+    lines = [json.dumps(header)]
+    lines += [json.dumps([round(t, 3), "o", data], ensure_ascii=False) for t, data in events]
+    return "\n".join(lines) + "\n"
+
+
+def _prompt(cwd: pathlib.Path, home: pathlib.Path) -> str:
+    relative = cwd.relative_to(home) if cwd.is_relative_to(home) else None
+    shown = str(cwd) if relative is None else "~" if relative == pathlib.Path() else f"~/{relative}"
+    return PROMPT.format(cwd=shown)
+
+
+def _run(command: str, cwd: pathlib.Path, env: dict[str, str]) -> tuple[list[tuple[float, str]], int]:
+    """Run a command in a pseudo-terminal, returning what it wrote and when, in seconds from its start, and its exit
+    status."""
+    controller, terminal = pty.openpty()
+    fcntl.ioctl(terminal, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLUMNS, 0, 0))
+    start = time.monotonic()
+    process = subprocess.Popen(  # noqa: S602 - the commands are the recording's own
+        command,
+        shell=True,
+        cwd=cwd,
+        env=env,
+        stdin=terminal,
+        stdout=terminal,
+        stderr=terminal,
+        start_new_session=True,
+    )
+    os.close(terminal)
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    output: list[tuple[float, str]] = []
+    try:
+        while True:
+            ready, _, _ = select.select([controller], [], [], 0.05)
+            if not ready:
+                if process.poll() is not None:
+                    break
+                continue
+            try:
+                data = os.read(controller, 65536)
+            except OSError:  # EIO: every process holding the terminal has exited
+                break
+            if not data:
+                break
+            if text := decoder.decode(data):
+                output.append((time.monotonic() - start, text))
+    finally:
+        os.close(controller)
+        status = process.wait()
+    return output, status
+
+
+def _rows_used(output: str) -> int:
+    """The rows the output reaches, following the newlines and the cursor moving up as progress redraws."""
+    row = deepest = 0
+    for match in re.finditer(r"\n|\x1b\[(\d*)A", output):
+        row = row + 1 if match.group() == "\n" else max(0, row - int(match.group(1) or 1))
+        deepest = max(deepest, row)
+    return min(deepest + 1, ROWS)
+
+
+def _as_dict(value: object) -> dict[str, object]:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_list(value: object) -> list[str]:
+    return [str(item) for item in value] if isinstance(value, list) else []
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -5,3 +5,6 @@ __pycache__/
 coverage.xml
 .tox/
 site/
+
+# Recorded on every docs build by scripts/cli_recordings.py.
+docs/casts/

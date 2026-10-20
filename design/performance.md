@@ -24,6 +24,45 @@ Warm, it's under a second: 0.3 s to resolve with the cache and no lock,
 4 ms with a lock, about 0.5 s to install. With nothing to change, a whole
 `alai sync` run is 0.02 s, as it imports neither the fetcher nor urllib3.
 
+## Against ansible-galaxy
+
+`design/benchmarks/ansible_galaxy.py` runs this comparison, printing a table
+to paste here; rerun it after a change that could affect it, and before the
+landing page quotes new numbers:
+
+```console
+$ uv run python design/benchmarks/ansible_galaxy.py community.general
+$ uv run python design/benchmarks/ansible_galaxy.py cisco.ios
+```
+
+The docs' landing page compares `alai sync` with ansible-core 2.20.0's
+`ansible-galaxy collection install -r requirements.yml -p ./collections`
+(2026-10-21, this machine, alai on Python 3.15, ansible-core on 3.14). Each
+of five runs per tool started with a new, empty `HOME`, so neither tool's
+cache carried over: ansible-galaxy keeps everything under
+`~/.ansible` (its API response cache in `galaxy_cache/api.json`), alai under
+`~/.cache/alai`. Per run: a first install into a new project (ansible-galaxy
+with `--clear-response-cache`), the same command again with nothing to
+change, then a first install into a second project with the cache kept.
+alai ran with a committed `alai.lock`, and again without one, which
+resolves as ansible-galaxy always does. Medians:
+
+| | `community.general` | `cisco.ios` (4 collections) |
+|---|---|---|
+| ansible-galaxy, first install | 16.5 s | 27.8 s |
+| ansible-galaxy, again into another project | 12.8 s | 15.1 s |
+| ansible-galaxy, nothing to change | 0.23 s | 0.25 s |
+| ansible-galaxy `--no-cache`, first install | 43.6 s | not run |
+| alai without a lock, first install | 1.38 s | 0.87 s |
+| alai with a lock, first install | 0.88 s | 0.56 s |
+| alai without a lock, again into another project | 0.23 s | 0.20 s |
+| alai with a lock, again into another project | 0.08 s | 0.07 s |
+| alai, nothing to change | 0.03 s | 0.03 s |
+
+Galaxy dominated ansible-galaxy's times and varied widely (15.7 to 78 s for
+a first install of `community.general`), so they're medians, and worth
+measuring again before quoting new numbers.
+
 ## Extraction
 
 Downloading all 97 tarballs takes 1.4 s; extracting them was the 21 s.

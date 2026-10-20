@@ -3,7 +3,7 @@
 How `alai add` and `alai remove` change the project's requirements, in
 `src/alai/_edit.py` (the commands) and `src/alai/_toml_edit.py` (the
 editor). The user documentation is
-`docs/projects.md#adding-and-removing-collections`.
+`docs/managing-collections.md#adding-and-removing-collections`.
 
 ## The commands
 
@@ -58,6 +58,19 @@ Tested against `uv add` and `uv remove` (uv 0.13) on 2026-10-20, with a
   check rejects, such as a new `[project.groups.test]` header for a table
   dotted keys already define. The error names the array to edit by hand.
 - **A removed item's comment stays**, on its own line, as uv keeps it.
+- **Layout inside the array isn't always kept** (checked 2026-10-21; the
+  docs say to check the diff):
+  - A comment on its own line above an entry: a new entry sorting before
+    that entry goes between the comment and it, so the comment then sits
+    above the new entry. uv 0.13.0 treats the comment as the next entry's:
+    `uv add --frozen certifi` put `"certifi"` above `# networking`, which
+    stayed above `"requests"`. Following uv here is the fix if it matters.
+  - A list with no trailing comma gains one when an entry is appended at
+    the end, or the last one is removed. uv goes further: it gave every
+    entry a trailing comma on any `uv add`, even inserting at the front.
+  - Two entries on one line in a multi-line array: removing the second
+    joins the next line's entry onto that line (`"b.b", "f.f",`). Not
+    checked against uv.
 - **tomlkit was considered and not used** (0.15.2, 2026-10-20). It
   round-trips an untouched file exactly and handled every form tried, but
   it re-serialises the document, and its own docs give one case where that

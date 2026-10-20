@@ -2,6 +2,19 @@
     "version": "2.0.0",
     "tasks": [
         {
+            // Writes the CLI reference (docs/cli.md) from alai's parser and records its terminal recordings into
+            // docs/casts/, which isn't in git. "docs: serve" runs it first; run it again after changing a command's
+            // help or scripts/cli_recordings.toml, and the server picks the changes up.
+            "label": "docs: generate",
+            "type": "shell",
+            "command": "uv run python scripts/cli_reference.py && uv run python scripts/cli_recordings.py",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "silent",
+                "panel": "dedicated"
+            }
+        },
+        {
             // Serves docs/ on port 24816 and rebuilds on save. Over Remote-SSH, VS Code forwards the port and offers to
             // open it. Binding 127.0.0.1 explicitly keeps it to one port: "localhost" listens on IPv4 and IPv6
             // separately. The port is fixed because a new one each run leaves a growing list of stale entries in VS
@@ -19,6 +32,7 @@
             "label": "docs: serve",
             "type": "shell",
             "command": "uv run --only-group docs zensical serve --dev-addr 127.0.0.1:24816",
+            "dependsOn": "docs: generate",
             "isBackground": true,
             "problemMatcher": {
                 "owner": "zensical",
