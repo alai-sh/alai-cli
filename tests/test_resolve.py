@@ -4,12 +4,11 @@
 from __future__ import annotations
 
 import collections.abc as _c
-import hashlib
-import json
 import sys
 from pathlib import Path
 
 import pytest
+from index_data import cksum, make_index, v
 from index_server import serve
 
 from alai import _resolve
@@ -27,72 +26,6 @@ if sys.version_info >= (3, 11):
     import tomllib
 else:
     import tomli as tomllib
-
-
-def v(
-    vers: str,
-    deps: dict[str, str] | None = None,
-    *,
-    yanked: bool = False,
-    ra: str | None = None,
-    **extra: object,
-) -> dict[str, object]:
-    """One index line's worth: a version, its dependencies, and anything else to set or override."""
-    line: dict[str, object] = {"vers": vers, "deps": deps or {}, "yanked": yanked}
-    if ra is not None:
-        line["requires_ansible"] = ra
-    line.update(extra)
-    return line
-
-
-def cksum(name: str, vers: str) -> str:
-    return hashlib.sha256(f"{name} {vers}".encode()).hexdigest()
-
-
-def make_index(
-    root: Path, collections: dict[str, list[dict[str, object]]], *, raw_lines: dict[str, str] | None = None
-) -> str:
-    """Write an index in the spec's layout, returning its file:// root URL."""
-    (root / "index").mkdir(parents=True)
-    _ = (root / "config.json").write_text(
-        json.dumps(
-            {
-                "formats": {"1": {"index": "index/", "collections": "collections.json"}},
-                "dl": "https://dl.example/{sha256-checksum}.tar.gz",
-                "moved-to": None,
-            }
-        )
-    )
-    listing: dict[str, dict[str, dict[str, str]]] = {}
-    for name, versions in collections.items():
-        namespace, short = name.split(".")
-        lines: list[str] = []
-        for spec in versions:
-            line: dict[str, object] = {
-                "v": 1,
-                "name": name,
-                "vers": spec["vers"],
-                "deps": [{"name": d, "req": r} for d, r in spec["deps"].items()],  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownVariableType]
-                "cksum": cksum(name, str(spec["vers"])),
-                "size": 100,
-                "yanked": spec["yanked"],
-                "origin": "native",
-                "published": "2026-01-01T00:00:00Z",
-            }
-            line.update({k: val for k, val in spec.items() if k not in ("vers", "deps", "yanked")})
-            lines.append(json.dumps(line))
-        if raw_lines and name in raw_lines:
-            lines.append(raw_lines[name])
-        path = root / "index" / namespace / f"{short}.jsonl"
-        path.parent.mkdir(exist_ok=True)
-        data = ("\n".join(lines) + "\n").encode()
-        _ = path.write_bytes(data)
-        listing.setdefault(namespace, {})[short] = {
-            "updated": "2026-01-01T00:00:00Z",
-            "sha256": hashlib.sha256(data).hexdigest(),
-        }
-    _ = (root / "collections.json").write_text(json.dumps({"v": 1, "namespaces": listing}))
-    return root.as_uri() + "/"
 
 
 def manifest(toml: str) -> Manifest:
@@ -260,6 +193,14 @@ class TestFailures:
 
         with pytest.raises(ResolutionError, match="gave up after 1 rounds"):
             _ = resolve(manifest(PROJECT), indexes.clients)
+
+
+def test_bare_dependency_version_shown_exact(indexes: Indexes) -> None:
+    # An index allows a bare version for an exact one; messages show it as a manifest would.
+    indexes.add("alai", {"a.a": [v("1.0.0", {"b.b": "1.0.0"})], "b.b": [v("2.0.0")]})
+
+    with pytest.raises(ResolutionError, match=r"b\.b==1\.0\.0 \(from a\.a 1\.0\.0\)"):
+        _ = resolve(manifest(PROJECT), indexes.clients)
 
 
 class TestCandidates:
@@ -652,6 +593,103 @@ class TestPreferences:
         result = resolve(manifest(PROJECT), indexes.clients, locked=lock_of(indexes, {"a.a": "1.0.0"}, index="old"))
 
         assert chosen(result) == {"a.a": "2.0.0"}
+
+
+class TestReasons:
+    def test_kept_has_none(self, indexes: Indexes) -> None:
+        indexes.add("alai", {"a.a": [v("1.0.0"), v("2.0.0")]})
+
+        result = resolve(manifest(PROJECT), indexes.clients, locked=lock_of(indexes, {"a.a": "1.0.0"}))
+
+        assert result.reasons == {}
+
+    def test_added(self, indexes: Indexes) -> None:
+        indexes.add("alai", {"a.a": [v("1.0.0", {"b.b": "*"})], "b.b": [v("1.0.0")]})
+
+        result = resolve(manifest(PROJECT), indexes.clients, locked=lock_of(indexes, {}))
+
+        assert result.reasons == {"a.a": "a.a is needed by the project", "b.b": "b.b is needed by a.a 1.0.0"}
+
+    def test_removed(self, indexes: Indexes) -> None:
+        indexes.add("alai", {"a.a": [v("1.0.0")], "c.c": [v("1.0.0")]})
+
+        result = resolve(manifest(PROJECT), indexes.clients, locked=lock_of(indexes, {"a.a": "1.0.0", "c.c": "1.0.0"}))
+
+        assert result.reasons == {"c.c": "nothing needs c.c any more"}
+
+    def test_requirement_not_met(self, indexes: Indexes) -> None:
+        indexes.add("alai", {"a.a": [v("1.0.0"), v("2.0.0")]})
+        toml = '[project]\ncollections = ["a.a>=2"]\n'
+
+        result = resolve(manifest(toml), indexes.clients, locked=lock_of(indexes, {"a.a": "1.0.0"}))
+
+        assert result.reasons == {"a.a": "a.a 1.0.0 doesn't meet a.a>=2 (from the project)"}
+
+    @pytest.mark.parametrize("upgrade", [True, {"a.a"}])
+    def test_upgrade(self, indexes: Indexes, upgrade: bool | set[str]) -> None:
+        indexes.add("alai", {"a.a": [v("1.0.0"), v("2.0.0")]})
+
+        result = resolve(manifest(PROJECT), indexes.clients, locked=lock_of(indexes, {"a.a": "1.0.0"}), upgrade=upgrade)
+
+        assert result.reasons == {"a.a": "upgrading a.a was asked for"}
+
+    def test_index_changed(self, indexes: Indexes) -> None:
+        indexes.add("alai", {"a.a": [v("1.0.0")]}).add("old", {"a.a": [v("1.0.0")]})
+
+        result = resolve(manifest(PROJECT), indexes.clients, locked=lock_of(indexes, {"a.a": "1.0.0"}, index="old"))
+
+        assert result.reasons == {"a.a": "a.a now comes from index 'alai'"}
+
+    def test_no_longer_on_the_index(self, indexes: Indexes) -> None:
+        indexes.add("alai", {"a.a": [v("1.0.0")]})
+
+        result = resolve(manifest(PROJECT), indexes.clients, locked=lock_of(indexes, {"a.a": "1.5.0"}))
+
+        assert result.reasons == {"a.a": "a.a 1.5.0 is no longer on index 'alai'"}
+
+    def test_left_out(self, indexes: Indexes) -> None:
+        indexes.add("alai", {"a.a": [v("1.0.0"), v("2.0.0", ra=">=2.19")]})
+        toml = '[project]\nrequires_ansible = ">=2.17"\ncollections = ["a.a"]\n'
+
+        result = resolve(manifest(toml), indexes.clients, locked=lock_of(indexes, {"a.a": "2.0.0"}))
+
+        assert result.reasons == {
+            "a.a": "a.a 2.0.0 is left out (needing a newer ansible-core than the project's >=2.17)"
+        }
+
+    def test_dependency_conflict(self, indexes: Indexes) -> None:
+        # A bundle pinning everything exactly: pinning one of its collections lower moves the bundle back, and with it
+        # every other collection it pins. The bundle's reason is the pin, not c.c, which only followed it.
+        indexes.add(
+            "alai",
+            {
+                "b.b": [v("1.0.0", {"c.c": "1.0.0", "w.w": "1.0.0"}), v("2.0.0", {"c.c": "2.0.0", "w.w": "2.0.0"})],
+                "c.c": [v("1.0.0"), v("2.0.0")],
+                "w.w": [v("1.0.0"), v("2.0.0")],
+            },
+        )
+        toml = '[project]\ncollections = ["b.b", "w.w==1.0.0"]\n'
+        locked = lock_of(indexes, {"b.b": "2.0.0", "c.c": "2.0.0", "w.w": "2.0.0"})
+
+        result = resolve(manifest(toml), indexes.clients, locked=locked)
+
+        assert result.reasons == {
+            "b.b": "b.b 2.0.0 needs w.w==2.0.0, which conflicts with w.w==1.0.0 (from the project)",
+            "c.c": "c.c 2.0.0 doesn't meet c.c==1.0.0 (from b.b 1.0.0)",
+            "w.w": "w.w 2.0.0 doesn't meet w.w==1.0.0 (from the project), w.w==1.0.0 (from b.b 1.0.0)",
+        }
+
+    def test_dependency_override_applies(self, indexes: Indexes) -> None:
+        indexes.add(
+            "alai",
+            {"a.a": [v("1.0.0", {"b.b": "<2"}), v("2.0.0", {"b.b": "<2"})], "b.b": [v("1.0.0"), v("2.0.0")]},
+        )
+        toml = '[project]\ncollections = ["a.a", "b.b>=2"]\n[project.overrides]\n"b.b" = ">=1"\n'
+
+        result = resolve(manifest(toml), indexes.clients, locked=lock_of(indexes, {"a.a": "1.0.0", "b.b": "2.0.0"}))
+
+        # The override replaces a.a's <2, so a.a 1.0.0 is kept.
+        assert "a.a" not in result.reasons
 
 
 def test_prefetches_every_named_dependency(tmp_path: Path) -> None:

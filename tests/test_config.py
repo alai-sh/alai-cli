@@ -518,6 +518,7 @@ def test_sources_and_overridden(tmp_path: Path, home: Path, environ: dict[str, s
         "cache_dir": str(user),
         "link_mode": "--link-mode",
         "system_certs": "default",
+        "offline": "default",
     }
     assert settings.overridden == {
         "link_mode": (

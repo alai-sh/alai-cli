@@ -144,6 +144,7 @@ class Settings(Record):
         "indexes",
         "link_mode",
         "no_config",
+        "offline",
         "overridden",
         "project",
         "searched",
@@ -161,6 +162,7 @@ class Settings(Record):
         link_mode: LinkMode,
         indexes: tuple[Index, ...],
         system_certs: bool = True,
+        offline: bool = False,
         searched: tuple[ConfigFile, ...] = (),
         no_config: bool = False,
         sources: dict[str, str] | None = None,
@@ -184,6 +186,8 @@ class Settings(Record):
         self.indexes = indexes
         """The indexes in resolution order, the default index last."""
         self.system_certs = system_certs
+        self.offline = offline
+        """Read only what's cached, never the network."""
         """Verify TLS certificates with the operating system's trust store rather than OpenSSL's."""
 
     @property
@@ -246,6 +250,7 @@ class SettingDefinition(Record):
         "env",
         "flag",
         "global_flag",
+        "group",
         "help",
         "key",
         "many",
@@ -274,6 +279,7 @@ class SettingDefinition(Record):
         many: bool = False,
         repeat: bool = False,
         boolean: bool = False,
+        group: str | None = None,
     ) -> None:
         """Define a setting.
 
@@ -294,14 +300,16 @@ class SettingDefinition(Record):
             metavar: The value's placeholder in ``--help``, such as ``DIR``. A ``DIR`` option also completes only
                 directories.
             choices: The values the flag accepts, for argparse to check and for completion.
-            global_flag: The flag is accepted by every command, rather than only those that resolve or install
-                collections.
+            global_flag: The flag is accepted by every command, rather than only those that ask for its ``group``.
             many: The value is a list, concatenated across levels highest first, rather than a single value taken
                 from the highest level that sets it.
             repeat: The flag can be given more than once, and the environment variable holds several values
                 separated by whitespace.
             boolean: The setting is true or false. ``flag`` comes with a ``--no-`` form, so the command line can
                 override a file or environment variable either way.
+            group: Which commands take the flag: ``resolve`` for those that read indexes, ``install`` for those that
+                install collections. A command asks for the groups it uses, so a flag it doesn't use is an argparse
+                error. Every setting but a ``global_flag`` one has a group.
         """
         self.name = name
         self.key = key
@@ -317,6 +325,7 @@ class SettingDefinition(Record):
         self.many = many
         self.repeat = repeat
         self.boolean = boolean
+        self.group = group
 
 
 def load_settings(
@@ -378,6 +387,7 @@ def load_settings(
     cache_dir = merged.values.get("cache_dir")
     link_mode = merged.values.get("link_mode")
     system_certs = merged.values.get("system_certs")
+    offline = merged.values.get("offline")
     indexes = [i for i in merged.lists.get("indexes", ()) if isinstance(i, Index)]
     sources = {s.target: merged.sources.get(s.target, "default") for s in SETTINGS if not s.many}
     return Settings(
@@ -394,6 +404,7 @@ def load_settings(
         link_mode=link_mode if isinstance(link_mode, LinkMode) else LinkMode.AUTO,
         indexes=_resolve_indexes(indexes),
         system_certs=system_certs if isinstance(system_certs, bool) else True,
+        offline=offline if isinstance(offline, bool) else False,
     )
 
 
@@ -808,6 +819,7 @@ SETTINGS = (
         metavar="DIR",
         help="install collections under DIR/ansible_collections",
         parse=_collections_dir,
+        group="install",
     ),
     SettingDefinition(
         "cache_dir",
@@ -827,6 +839,7 @@ SETTINGS = (
         choices=tuple(m.value for m in LinkMode),
         help="how files get from the cache into the collections directory",
         parse=_link_mode,
+        group="install",
     ),
     SettingDefinition(
         "system_certs",
@@ -836,6 +849,17 @@ SETTINGS = (
         help="verify TLS certificates with the operating system's trust store (the default)",
         parse=_bool_arg,
         boolean=True,
+        group="resolve",
+    ),
+    SettingDefinition(
+        "offline",
+        key="offline",
+        flag="--offline",
+        env="ALAI_OFFLINE",
+        help="use only what's cached, without connecting to any index",
+        parse=_bool_arg,
+        boolean=True,
+        group="resolve",
     ),
     SettingDefinition(
         "index",
@@ -849,6 +873,7 @@ SETTINGS = (
         parse_file=_index_tables,
         many=True,
         repeat=True,
+        group="resolve",
     ),
     SettingDefinition(
         "default_index",
@@ -860,6 +885,7 @@ SETTINGS = (
         help="replace the default index",
         parse=_default_index_arg,
         many=True,
+        group="resolve",
     ),
 )
 FILE_SETTINGS = {s.key: s for s in SETTINGS if s.key}

@@ -86,11 +86,10 @@ combine.
 
 ## Declaring collections
 
-!!! note "Not used yet"
+!!! note "Not installed yet"
 
-    No command installs from these keys yet. Every command already checks
-    that they're spelt right and have the right types, but the requirements
-    themselves are only checked by the commands that use them.
+    [`alai lock`](#locking) resolves these keys into `alai.lock`, but no
+    command installs from it yet.
 
 The project's `alai.toml` lists the collections the project needs, the
 ansible-core versions it targets, collections only some workflows need, and
@@ -132,3 +131,63 @@ These keys are only read from the project's own `alai.toml`, the one that
 `--config-file` change which settings alai reads, not what the project
 needs: a command that uses these keys reads them from the project's
 `alai.toml` either way.
+
+## Locking
+
+`alai lock` resolves what the project's `alai.toml` asks for, its groups
+included, to one version of each collection and its dependencies, and
+writes them to `alai.lock` beside it. Commit `alai.lock` with the project,
+so everyone gets the same versions:
+
+```console
+$ alai lock
+Resolved 5 collections in 1.91s
+```
+
+Running it again keeps every locked version that still fits, so the lock
+only changes when `alai.toml` does or a locked version no longer fits; each
+change is listed:
+
+```console
+$ alai lock
+Resolved 6 collections in 412ms
+Added ansible.windows v3.2.0
+Updated community.general v10.7.9 -> v11.1.0
+```
+
+With `-v`, each change is followed by why it happened, indented under it:
+what needs an added collection, the requirement a locked version no longer meets, or, for a
+collection whose dependencies are pinned exactly, the pin that conflicts:
+
+```console
+$ alai -v lock
+...
+Updated sivel.acd v11.9.0 -> v11.3.0
+  sivel.acd 11.9.0 needs ansible.windows==2.8.0, which conflicts with ansible.windows==2.7.0 (from the project)
+```
+
+To move to newer versions anyway:
+
+| Option | |
+|---|---|
+| `-U`, `--upgrade` | Choose the newest version of every collection that fits |
+| `-P NAME`, `--upgrade-package NAME` | Choose the newest version of collection `NAME` that fits; can be repeated |
+| `--check` | Resolve as usual but write nothing, and exit 1 if `alai.lock` is missing or would change: `alai.toml` asks for something different, or the indexes no longer give the locked versions. A newer release alone doesn't count, since locked versions are kept while they fit. With `--offline`, it resolves from the cache |
+
+`alai lock` also takes the index, `--system-certs` and
+[`--offline`](alai-toml.md#offline) settings.
+
+For each collection, alai chooses the newest version that every requirement
+on it accepts, with these exceptions:
+
+- A pre-release is only chosen when no stable version fits.
+- A yanked version is only chosen when the project pins it exactly with
+  `==`, or `alai.lock` already has it, and `alai lock` warns about it.
+- When `requires_ansible` is set, a version whose own `requires_ansible`
+  starts later than the project's isn't chosen; one whose range ends inside
+  the project's is, with a warning.
+- A collection comes from its [`[project.sources]`](alai-toml.md#projectsources)
+  index, or the first configured index that has it.
+
+When no version fits, `alai lock` lists every requirement on the
+collection and where it came from, and writes nothing.

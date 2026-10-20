@@ -32,13 +32,20 @@ class ResolutionError(Error):
 
 
 class Resolution(Record):
-    __slots__ = ("collections", "warnings")
+    __slots__ = ("collections", "reasons", "warnings")
 
-    def __init__(self, collections: tuple[LockedCollection, ...], warnings: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        collections: tuple[LockedCollection, ...],
+        warnings: tuple[str, ...],
+        reasons: _c.Mapping[str, str] | None = None,
+    ) -> None:
         self.collections = collections
         """One per collection, sorted by name."""
         self.warnings = warnings
         """Things to tell the user that didn't stop resolution, such as versions skipped for unreadable metadata."""
+        self.reasons = dict(reasons or {})
+        """By name, why a collection was added or its locked version not kept, where that can be told."""
 
 
 class _Requirement(Record):
@@ -127,7 +134,8 @@ def resolve(
         )
         for c in sorted(chosen.values(), key=lambda c: c.name)
     )
-    return Resolution(collections, tuple(provider.warnings(chosen)))
+    reasons = provider.reasons(chosen, result.criteria, locked, upgrade)
+    return Resolution(collections, tuple(provider.warnings(chosen)), reasons)
 
 
 def admits_lower_bound(collection: SpecifierSet, project: SpecifierSet) -> bool:
@@ -283,7 +291,7 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
     def get_dependencies(self, candidate: _Candidate) -> list[_Requirement]:
         dependencies: list[_Requirement] = []
         for name, req in candidate.version.deps:
-            text = f"{name}{req.text}" if req.clauses else name
+            text = _dependency_text(name, req)
             overridden = name in self._manifest.overrides
             req, text = self._overridden(name, req, text)
             dependencies.append(
@@ -326,6 +334,86 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
                     + f"{project}"
                 )
         return out
+
+    def reasons(
+        self,
+        chosen: _c.Mapping[str, _Candidate],
+        criteria: _c.Mapping[str, resolvelib.resolvers.Criterion[_Requirement, _Candidate]],
+        locked: Lock | None,
+        upgrade: bool | _c.Collection[str],
+    ) -> dict[str, str]:
+        """Why each collection that's new, or whose locked version wasn't kept, is in the resolution as it is.
+
+        Worked out once the resolution is known, from the requirements on each collection and the locked version's
+        own metadata. A locked version resolvelib passed over without any of these reasons gets none.
+        """
+        out: dict[str, str] = {}
+        for name, candidate in sorted(chosen.items()):
+            reqs = [info.requirement for info in criteria[name].information]
+            was = locked.get(name) if locked is not None else None
+            if was is None:
+                parents = ", ".join(sorted({r.parent for r in reqs}))
+                out[name] = f"{name} is needed by {parents}"
+                continue
+            root = self._indexes[candidate.index].config().root
+            if was.version == candidate.version.version and was.source.url == root:
+                continue
+            reason = self._not_kept(name, was, candidate, reqs, chosen, criteria, upgrade)
+            if reason is not None:
+                out[name] = reason
+        for was in locked.collections if locked is not None else ():
+            if was.name not in chosen:
+                out[was.name] = f"nothing needs {was.name} any more"
+        return out
+
+    def _not_kept(
+        self,
+        name: str,
+        was: LockedCollection,
+        candidate: _Candidate,
+        reqs: _c.Sequence[_Requirement],
+        chosen: _c.Mapping[str, _Candidate],
+        criteria: _c.Mapping[str, resolvelib.resolvers.Criterion[_Requirement, _Candidate]],
+        upgrade: bool | _c.Collection[str],
+    ) -> str | None:
+        locked = f"{name} {was.version}"
+        if upgrade is True or (upgrade is not False and name in upgrade):
+            return f"upgrading {name} was asked for"
+        if was.source.url != self._indexes[candidate.index].config().root:
+            return f"{name} now comes from index '{candidate.index}'"
+        unmet = [r for r in reqs if not r.req.contains(was.version)]
+        if unmet:
+            return f"{locked} doesn't meet " + ", ".join(f"{r.text} (from {r.parent})" for r in unmet)
+        file = self._files.get((candidate.index, name))
+        version = next((v for v in file.versions if v.version == was.version), None) if file is not None else None
+        if version is None:
+            return f"{locked} is no longer on index '{candidate.index}'"
+        left_out = self._left_out_because(name, version, allow_yanked=True)
+        if left_out is not None:
+            return f"{locked} is left out ({left_out})"
+        # A dependency it can't have. Prefer one that conflicts with a requirement from something else, the project
+        # or another collection, over one only its replacement asks differently for, which is a consequence, not the
+        # cause.
+        fallback: str | None = None
+        for dep, req in version.deps:
+            req, text = self._overridden(dep, req, _dependency_text(dep, req))
+            other = chosen.get(dep)
+            if other is None:
+                if self._index_for(dep) is None:
+                    return f"{locked} needs {dep}, which no configured index has"
+                continue
+            if req.contains(other.version.version):
+                continue
+            file = self._files.get((other.index, dep))
+            versions = file.versions if file is not None else ()
+            for info in criteria[dep].information:
+                if info.parent is not None and info.parent.name == name:
+                    continue
+                theirs = info.requirement
+                if not any(req.contains(v.version) and theirs.req.contains(v.version) for v in versions):
+                    return f"{locked} needs {text}, which conflicts with {theirs.text} (from {theirs.parent})"
+            fallback = fallback or f"{locked} needs {text}, but {other} was chosen"
+        return fallback
 
     def explain(
         self, causes: _c.Collection[resolvelib.resolvers.RequirementInformation[_Requirement, _Candidate]]
@@ -409,6 +497,14 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
         if project is not None and not admits_lower_bound(theirs, project):
             return f"needing a newer ansible-core than the project's {project}"
         return None
+
+
+def _dependency_text(name: str, req: VersionReq) -> str:
+    """A dependency's requirement as it reads in a manifest: a bare version, which the index allows for an exact one,
+    shown with its ``==``."""
+    if not req.clauses:
+        return name
+    return f"{name}=={req.text}" if req.text[:1].isdigit() else f"{name}{req.text}"
 
 
 def _did_you_mean(name: str, known: _c.Iterable[str]) -> str:
