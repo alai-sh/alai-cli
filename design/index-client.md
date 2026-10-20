@@ -71,10 +71,10 @@ from a machine ~250 ms (TCP plus TLS) from Cloudflare.
   custom `cache_dir`'s ownership or mode, as neither pip nor uv does; the
   docs tell users that one outside their home directory is theirs to
   restrict. `0700` directories and a warning for a `cache_dir` writable by
-  others are possible later. Extracted collections (slice 4) must not
-  inherit `0600`: they're hardlinked into `collections/`, so they need the
-  tarball's mode masked by the umask, or execution environments and other
-  users can't read installed collections.
+  others are possible later. Extracted collections don't inherit `0600`:
+  they're hardlinked into `collections/`, so they get ansible-galaxy's
+  modes masked by the umask, or execution environments and other users
+  couldn't read installed collections ([install.md](install.md)).
 - **`config.json` and `collections.json` are revalidated every run**, as the
   index spec asks for every resolve, each URL at most once per run.
   `max-age` isn't used to skip revalidation. The listing is requested

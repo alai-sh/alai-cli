@@ -16,6 +16,7 @@ rather than `<index>:ns.name`, say), the decision here holds.
 | [versions.md](versions.md) | Collection and ansible-core versions and requirement syntax, and how they were checked against ansible-core |
 | [environments.md](environments.md) | `requires_ansible` as a range versus an ansible-core pin, several environments per project, and how one lock covers a range: future work |
 | [resolver.md](resolver.md) | Choosing one version of every collection: resolvelib, where each collection comes from, which versions are candidates, `requires_ansible`, and failures |
+| [install.md](install.md) | Installing locked collections: downloading artifacts, the extracted-collection cache, and how extraction matches ansible-galaxy |
 | [index-client.md](index-client.md) | Fetching and caching the index: the HTTP library, cache layout, revalidation, proxies, errors, and what `index.alai.sh` does |
 | [output.md](output.md) | Verbosity, what goes to stdout and stderr, JSON, colour and progress |
 | [documentation.md](documentation.md) | What the published docs cover, the generator, and how they're deployed |

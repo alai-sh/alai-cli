@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import collections.abc as _c
+import hashlib
 import json
 import socket
 import sys
@@ -184,6 +185,68 @@ class TestHttp:
 
         with pytest.raises(FetchError, match=rf"127\.0\.0\.1:{port}/a\.json: can't connect"):
             _ = fetcher.get(f"http://127.0.0.1:{port}/a.json", None)
+
+
+class TestDownload:
+    BODY = bytes(range(256)) * 4096
+
+    @pytest.fixture
+    def artifact(self, site: Path) -> str:
+        _ = (site / "a.tar.gz").write_bytes(self.BODY)
+        return hashlib.sha256(self.BODY).hexdigest()
+
+    @pytest.mark.parametrize("compress", [True, False])
+    def test_streams_to_file(
+        self, server: IndexServer, fetcher: Fetcher, tmp_path: Path, artifact: str, compress: bool
+    ) -> None:
+        # Content-Encoding is the transport's: what's hashed and written is the file itself.
+        server.compress = compress
+
+        result = fetcher.download(f"{server.url}a.tar.gz", str(tmp_path / "out"), max_size=len(self.BODY))
+
+        assert result == (artifact, len(self.BODY))
+        assert (tmp_path / "out").read_bytes() == self.BODY
+
+    def test_follows_redirects(self, server: IndexServer, fetcher: Fetcher, tmp_path: Path, artifact: str) -> None:
+        server.responses["/dl"] = [(302, {"Location": "/a.tar.gz"}, b"moved")]
+
+        assert fetcher.download(f"{server.url}dl", str(tmp_path / "out"), max_size=len(self.BODY))[0] == artifact
+
+    def test_too_large(self, server: IndexServer, fetcher: Fetcher, tmp_path: Path, artifact: str) -> None:
+        with pytest.raises(FetchError, match="larger than the 1000 bytes the index lists"):
+            _ = fetcher.download(f"{server.url}a.tar.gz", str(tmp_path / "out"), max_size=1000)
+
+    def test_not_found(self, server: IndexServer, fetcher: Fetcher, tmp_path: Path) -> None:
+        with pytest.raises(FetchError, match=r"not found \(HTTP 404\)"):
+            _ = fetcher.download(f"{server.url}nope.tar.gz", str(tmp_path / "out"), max_size=1)
+
+    def test_error_status(self, server: IndexServer, fetcher: Fetcher, tmp_path: Path) -> None:
+        server.responses["/a.tar.gz"] = [(403, {}, b"no")]
+
+        with pytest.raises(FetchError, match="HTTP 403 Forbidden"):
+            _ = fetcher.download(f"{server.url}a.tar.gz", str(tmp_path / "out"), max_size=1)
+
+    def test_connection_reused(self, server: IndexServer, fetcher: Fetcher, tmp_path: Path, artifact: str) -> None:
+        # Each download releases its connection, so a pool of one isn't exhausted.
+        with Fetcher(user_agent="t", max_connections=1) as one:
+            for i in range(3):
+                _ = one.download(f"{server.url}a.tar.gz", str(tmp_path / f"out{i}"), max_size=len(self.BODY))
+
+    def test_file_url(self, site: Path, fetcher: Fetcher, tmp_path: Path, artifact: str) -> None:
+        url = (site / "a.tar.gz").as_uri()
+
+        assert fetcher.download(url, str(tmp_path / "out"), max_size=len(self.BODY)) == (artifact, len(self.BODY))
+
+    def test_offline(self, tmp_path: Path) -> None:
+        with Fetcher(user_agent="t", offline=True) as offline, pytest.raises(FetchError, match="offline"):
+            _ = offline.download("https://dl.example/a.tar.gz", str(tmp_path / "out"), max_size=1)
+
+    def test_existing_file_not_overwritten(self, site: Path, fetcher: Fetcher, tmp_path: Path, artifact: str) -> None:
+        _ = (tmp_path / "out").write_bytes(b"mine")
+
+        with pytest.raises(FetchError, match="can't write"):
+            _ = fetcher.download((site / "a.tar.gz").as_uri(), str(tmp_path / "out"), max_size=len(self.BODY))
+        assert (tmp_path / "out").read_bytes() == b"mine"
 
 
 class TestErrors:

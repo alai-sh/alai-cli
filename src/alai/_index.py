@@ -380,15 +380,16 @@ def parse_index_file(data: bytes, name: str, url: str) -> IndexFile:
     return IndexFile(name, tuple(versions), newer=newer, invalid=tuple(invalid))
 
 
-def artifact_url(config: IndexConfig, version: CollectionVersion) -> str:
-    """Where to download ``version``'s artifact, from the ``dl`` template."""
-    namespace, name = version.name.split(".")
+def artifact_url(config: IndexConfig, name: str, version: Version, cksum: str) -> str:
+    """Where to download a collection version's artifact, from the ``dl`` template: ``name`` is ``ns.name`` and
+    ``cksum`` the artifact's SHA-256, as an index line or a lock gives them."""
+    namespace, short = name.split(".")
     return (
-        config.dl.replace("{sha256-checksum}", version.cksum)
-        .replace("{sha256-prefix}", version.cksum[:2])
+        config.dl.replace("{sha256-checksum}", cksum)
+        .replace("{sha256-prefix}", cksum[:2])
         .replace("{namespace}", namespace)
-        .replace("{name}", name)
-        .replace("{version}", urllib.parse.quote(version.version.text, safe=""))
+        .replace("{name}", short)
+        .replace("{version}", urllib.parse.quote(version.text, safe=""))
     )
 
 
