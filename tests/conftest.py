@@ -3,7 +3,11 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import pytest
+from index_data import make_index, v
 
 from alai import _output
 
@@ -12,3 +16,31 @@ from alai import _output
 def no_color(monkeypatch: pytest.MonkeyPatch) -> None:
     """Plain output, whatever NO_COLOR or FORCE_COLOR the environment running the tests sets; colour tests ask."""
     monkeypatch.setattr(_output, "color", "never")
+
+
+COLLECTIONS: dict[str, list[dict[str, object]]] = {
+    "a.a": [v("1.0.0"), v("2.0.0", {"b.b": ">=1.0.0"})],
+    "b.b": [v("1.0.0"), v("1.1.0")],
+    "c.c": [v("1.0.0")],
+    "d.d": [v("1.0.0")],
+}
+
+
+@pytest.fixture
+def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """An empty project directory as the working directory, with only a local index of real artifacts configured:
+    ``COLLECTIONS``. A test module with a ``project`` fixture of its own uses that instead."""
+    for name in [n for n in os.environ if n.startswith(("ALAI_", "XDG_"))]:
+        monkeypatch.delenv(name)
+    home = tmp_path / "home"
+    home.mkdir()
+    (tmp_path / "xdg").mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_DIRS", str(tmp_path / "xdg"))
+    monkeypatch.setenv("ALAI_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("ALAI_DEFAULT_INDEX", make_index(tmp_path / "index", COLLECTIONS, artifacts=True))
+    root = tmp_path / "project"
+    root.mkdir()
+    monkeypatch.chdir(root)
+    monkeypatch.setattr(_output, "verbosity", 0)
+    return root

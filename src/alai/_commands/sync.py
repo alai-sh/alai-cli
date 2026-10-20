@@ -9,8 +9,9 @@ import argparse
 import time
 
 from .._args import HelpFormatter, add_global_args, add_settings_args, settings_from_args
+from .._common import ConfigError
 from .._output import error, shown_path, summary
-from .lock import EXIT_STALE
+from .lock import EXIT_STALE, add_upgrade_args, upgrade_from_args
 
 
 def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -60,6 +61,7 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
     _ = groups.add_argument("--no-default-groups", action="store_true", help="don't install the 'dev' group")
     _ = groups.add_argument("--no-dev", action="store_true", help="the same as --no-group dev")
     _ = groups.add_argument("--only-dev", action="store_true", help="the same as --only-group dev")
+    add_upgrade_args(sync)
     add_global_args(sync, suppress=True)
     add_settings_args(sync, "resolve", "install")
     sync.set_defaults(parser=sync, handler=run)
@@ -74,6 +76,9 @@ def run(args: argparse.Namespace) -> int:
     settings = settings_from_args(args)
     raw, manifest = load_project(settings, "alai sync installs what it lists")
     project, groups = selected_groups(args, manifest)
+    upgrade = upgrade_from_args(args)
+    if upgrade and args.frozen:
+        raise ConfigError("--upgrade and --upgrade-collection resolve, which --frozen doesn't")
     path = lock_path(settings.project.root)
     existing = read_lock(path)
 
@@ -83,8 +88,8 @@ def run(args: argparse.Namespace) -> int:
         return EXIT_STALE
     if args.frozen and existing is not None:
         lock = existing
-    elif args.locked or existing is None or stale(existing, manifest, {i.url for i in settings.indexes}):
-        lock, _ = resolve_project(settings, manifest, raw, existing)
+    elif upgrade or args.locked or existing is None or stale(existing, manifest, {i.url for i in settings.indexes}):
+        lock, _ = resolve_project(settings, manifest, raw, existing, upgrade=upgrade)
         summary("Resolved", len(lock.collections), time.monotonic() - started, dim=True)
         if args.locked:
             if not lock_unchanged(existing, manifest, lock):

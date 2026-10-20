@@ -176,7 +176,11 @@ members' `requires-python`.
 - **Written by our own emitter**, not a TOML library. The stdlib only reads
   TOML, and tomli-w can't write `source` as an inline table or give control
   over the layout; the schema is small and alai writes all of it. Tests read
-  every written lock back with `tomllib`.
+  every written lock back with `tomllib`. The layout being alai's own also
+  keeps the bytes stable: with a library such as tomlkit, its formatting
+  choices could change between its releases, and two people with different
+  versions would rewrite each other's locks with whitespace-only diffs. uv
+  and cargo write their lock formats themselves too.
 - **Each root's inputs are copied in**, so `alai sync` can tell the lock
   is out of date without resolving, and `lock --check` can tell the inputs
   changed even when the result didn't. They're
@@ -187,8 +191,12 @@ members' `requires-python`.
   current `alai.lock` as the preference, and writes the lock atomically, as
   `uv lock` does. An unchanged result leaves the file untouched, and a failed
   resolution leaves the lock untouched. `-U` / `--upgrade` and `-P` /
-  `--upgrade-package NAME` drop the locked preference for every collection
-  or the named ones, as uv's flags of the same names.
+  `--upgrade-collection NAME` drop the locked preference for every
+  collection or the named ones, as uv's `-U` and `-P` do, on `lock`,
+  `sync`, `add` and `remove` alike. The short flags are uv's, so the habit
+  carries over; the long one says "collection", the word alai uses
+  everywhere else, rather than uv's `--upgrade-package`, and isn't kept as
+  an alias since nothing is released.
 - **`alai lock --check` resolves**, as `uv lock --check` does, and exits 1
   without writing when the lock is missing (checked first, without
   resolving) or would change: its copied inputs ask for something else than

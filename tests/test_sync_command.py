@@ -4,41 +4,13 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
 from index_data import make_index, v
 
-from alai import _output
 from alai._cli import EXIT_ERROR, main
 from alai._commands.lock import EXIT_STALE
-
-COLLECTIONS: dict[str, list[dict[str, object]]] = {
-    "a.a": [v("1.0.0"), v("2.0.0", {"b.b": ">=1.0.0"})],
-    "b.b": [v("1.0.0"), v("1.1.0")],
-    "c.c": [v("1.0.0")],
-    "d.d": [v("1.0.0")],
-}
-
-
-@pytest.fixture
-def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """An empty project directory as the working directory, with only a local index of real artifacts configured."""
-    for name in [n for n in os.environ if n.startswith(("ALAI_", "XDG_"))]:
-        monkeypatch.delenv(name)
-    home = tmp_path / "home"
-    home.mkdir()
-    (tmp_path / "xdg").mkdir()
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("XDG_CONFIG_DIRS", str(tmp_path / "xdg"))
-    monkeypatch.setenv("ALAI_CACHE_DIR", str(tmp_path / "cache"))
-    monkeypatch.setenv("ALAI_DEFAULT_INDEX", make_index(tmp_path / "index", COLLECTIONS, artifacts=True))
-    root = tmp_path / "project"
-    root.mkdir()
-    monkeypatch.chdir(root)
-    monkeypatch.setattr(_output, "verbosity", 0)
-    return root
 
 
 def write(project: Path, collections: list[str], groups: dict[str, list[str]] | None = None) -> None:
@@ -289,6 +261,55 @@ class TestLockFlags:
         assert e.value.code == 2
 
 
+class TestUpgrade:
+    def locked_old(self, project: Path) -> None:
+        """b.b locked at 1.0.0 while alai.toml lets it have 1.1.0, so only an upgrade moves it."""
+        write(project, ["a.a", "b.b<1.1"])
+        _ = sync()
+        write(project, ["a.a", "b.b"])
+
+    @pytest.mark.parametrize("args", [["-U"], ["-P", "b.b"], ["--upgrade-collection", "b.b"]])
+    def test_upgrades(self, project: Path, capsys: pytest.CaptureFixture[str], args: list[str]) -> None:
+        self.locked_old(project)
+        _ = sync()  # Not stale for b.b's sake: the locked 1.0.0 still fits, so it's kept.
+        assert installed(project)["b.b"] == "1.0.0"
+        _ = capsys.readouterr()
+
+        assert sync(*args) == 0
+
+        assert installed(project)["b.b"] == "1.1.0"
+        assert 'name = "b.b"\nversion = "1.1.0"' in (project / "alai.lock").read_text()
+        assert " + b.b==1.1.0" in capsys.readouterr().err
+
+    def test_other_package_kept(self, project: Path) -> None:
+        self.locked_old(project)
+        _ = sync()
+
+        assert sync("-P", "a.a") == 0
+
+        assert installed(project)["b.b"] == "1.0.0"
+
+    def test_locked_refuses_an_upgrade_that_changes_the_lock(self, project: Path) -> None:
+        self.locked_old(project)
+        _ = sync()
+
+        assert sync("--locked", "-U") == EXIT_STALE
+        assert installed(project)["b.b"] == "1.0.0"
+
+    def test_frozen_refuses(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        write(project, ["c.c"])
+        _ = sync()
+
+        assert sync("--frozen", "-U") == EXIT_ERROR
+        assert "--frozen doesn't" in capsys.readouterr().err
+
+    def test_invalid_name(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        write(project, ["c.c"])
+
+        assert sync("-P", "nope") == EXIT_ERROR
+        assert "--upgrade-collection: invalid collection name 'nope'" in capsys.readouterr().err
+
+
 class TestErrors:
     def test_no_project_file(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         assert sync() == EXIT_ERROR
@@ -307,8 +328,8 @@ class TestErrors:
 
         assert "alai is offline" in capsys.readouterr().err
 
-    @pytest.mark.parametrize("flag", ["--check", "-U"])
-    def test_lock_flags_not_taken(self, project: Path, flag: str) -> None:
+    def test_check_not_taken(self, project: Path) -> None:
+        # lock's --check isn't sync's; -U and -P are shared, as uv shares them.
         with pytest.raises(SystemExit) as e:
-            _ = sync(flag)
+            _ = sync("--check")
         assert e.value.code == 2
