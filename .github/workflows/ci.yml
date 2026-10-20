@@ -66,12 +66,14 @@ jobs:
           if-no-files-found: error
 
   test:
-    name: Test (Python ${{ matrix.python-version }})
+    name: Test (${{ matrix.os }}, Python ${{ matrix.python-version }})
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os:
+          - ubuntu-latest
         python-version:
           - "3.10"
           - "3.11"
@@ -79,6 +81,14 @@ jobs:
           - "3.13"
           - "3.14"
           - "3.15"
+        # macOS has its own code (clonefile for link_mode clone, which APFS always supports, where the Linux runners'
+        # ext4 can't clone at all) and TLS verification through the Security framework; the oldest and newest Python
+        # cover it.
+        include:
+          - os: macos-latest
+            python-version: "3.10"
+          - os: macos-latest
+            python-version: "3.15"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

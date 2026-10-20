@@ -9,6 +9,8 @@ import hashlib
 import json
 from pathlib import Path
 
+from artifact_data import build_artifact
+
 
 def v(
     vers: str,
@@ -31,15 +33,28 @@ def cksum(name: str, vers: str) -> str:
 
 
 def make_index(
-    root: Path, collections: dict[str, list[dict[str, object]]], *, raw_lines: dict[str, str] | None = None
+    root: Path,
+    collections: dict[str, list[dict[str, object]]],
+    *,
+    raw_lines: dict[str, str] | None = None,
+    artifacts: bool = False,
 ) -> str:
-    """Write an index in the spec's layout, returning its file:// root URL."""
+    """Write an index in the spec's layout, returning its file:// root URL.
+
+    With ``artifacts``, each version gets a real tarball under ``root/dl``, which ``dl`` points at, and its line the
+    tarball's ``cksum`` and ``size``, so it can be installed.
+    """
     (root / "index").mkdir(parents=True, exist_ok=True)
+    dl = (
+        (root / "dl").as_uri() + "/{sha256-checksum}.tar.gz"
+        if artifacts
+        else "https://dl.example/{sha256-checksum}.tar.gz"
+    )
     _ = (root / "config.json").write_text(
         json.dumps(
             {
                 "formats": {"1": {"index": "index/", "collections": "collections.json"}},
-                "dl": "https://dl.example/{sha256-checksum}.tar.gz",
+                "dl": dl,
                 "moved-to": None,
             }
         )
@@ -60,6 +75,8 @@ def make_index(
                 "origin": "native",
                 "published": "2026-01-01T00:00:00Z",
             }
+            if artifacts:
+                line["cksum"], line["size"] = _artifact(root / "dl", name, str(spec["vers"]))
             line.update({k: val for k, val in spec.items() if k not in ("vers", "deps", "yanked")})
             lines.append(json.dumps(line))
         if raw_lines and name in raw_lines:
@@ -74,3 +91,11 @@ def make_index(
         }
     _ = (root / "collections.json").write_text(json.dumps({"v": 1, "namespaces": listing}))
     return root.as_uri() + "/"
+
+
+def _artifact(directory: Path, name: str, version: str) -> tuple[str, int]:
+    directory.mkdir(parents=True, exist_ok=True)
+    temp = directory / "building.tar.gz"
+    cksum, size = build_artifact(temp, name, version, {"README.md": f"{name} {version}\n".encode()})
+    _ = temp.rename(directory / f"{cksum}.tar.gz")
+    return cksum, size

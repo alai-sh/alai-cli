@@ -14,7 +14,7 @@ import enum
 import os
 import sys
 
-from ._common import NAME_RE, ConfigError, Record, as_table
+from ._common import FALSE_WORDS, NAME_RE, TRUE_WORDS, ConfigError, Record, as_table, env_bool
 from ._output import debug
 
 CONFIG_FILE_NAME = "alai.toml"
@@ -24,8 +24,6 @@ MANIFEST_PROJECT_KEYS = ("collections", "requires_ansible", "groups", "overrides
 """Keys of ``[project]`` that are the manifest, read by ``_manifest``; the rest of ``[project]`` are settings."""
 
 _INDEX_URL_SCHEMES = ("http://", "https://", "file://")
-_TRUE = frozenset(("1", "true", "yes", "on"))
-_FALSE = frozenset(("0", "false", "no", "off"))
 
 
 class LinkMode(enum.Enum):
@@ -358,7 +356,7 @@ def load_settings(
     searched: list[ConfigFile] = []
 
     config_file = overrides.config_file or _env(environ, "ALAI_CONFIG_FILE")
-    no_config = overrides.no_config or _env_bool(environ, "ALAI_NO_CONFIG")
+    no_config = overrides.no_config or env_bool(environ, "ALAI_NO_CONFIG")
     if config_file:
         path = _resolve_path(config_file, here)
         layers.append(_file_layer(read_toml(path), path, Level.EXPLICIT, home))
@@ -736,9 +734,9 @@ def _str_value(key: str, value: object, source: _Source) -> str:
 def _bool_arg(value: str, source: _Source) -> bool:
     """Parse a boolean environment variable, with the words ``ALAI_NO_CONFIG`` takes."""
     lowered = value.lower()
-    if lowered in _TRUE:
+    if lowered in TRUE_WORDS:
         return True
-    if lowered in _FALSE:
+    if lowered in FALSE_WORDS:
         return False
     raise ConfigError(f"{source.description}: expected a boolean (1, true, yes, on, 0, false, no, off), got '{value}'")
 
@@ -784,15 +782,6 @@ def _xdg_dir(environ: _c.Mapping[str, str], name: str) -> str | None:
 
 def _env(environ: _c.Mapping[str, str], name: str, default: str = "") -> str:
     return environ.get(name) or default
-
-
-def _env_bool(environ: _c.Mapping[str, str], name: str) -> bool:
-    value = _env(environ, name).lower()
-    if not value or value in _FALSE:
-        return False
-    if value in _TRUE:
-        return True
-    raise ConfigError(f"{name}: expected a boolean (1, true, yes, on, 0, false, no, off), got '{value}'")
 
 
 def suggest_key(key: str, *, manifest: bool = False) -> str:

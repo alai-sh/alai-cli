@@ -15,7 +15,7 @@ import sys
 
 from . import _output
 from ._args import HelpFormatter, add_global_args, verbose_count
-from ._commands import config, lock, shell_completion
+from ._commands import config, lock, shell_completion, sync
 from ._common import Error
 
 EXIT_ERROR = 2
@@ -33,6 +33,8 @@ def main(argv: _c.Sequence[str] | None = None) -> int:
     if verbose > 2:
         args.parser.error("-v/--verbose can be given at most twice (-vv)")
     _output.verbosity = -1 if args.quiet else verbose
+    _output.progress = not args.no_progress
+    _output.color = args.color
 
     if args.version:
         # Not argparse's version action, which needs the version up front: looking it up costs ~25 ms.
@@ -50,7 +52,7 @@ def main(argv: _c.Sequence[str] | None = None) -> int:
     try:
         return handler(args)
     except Error as e:
-        print(f"error: {e}", file=sys.stderr)
+        _output.error(str(e))
         return EXIT_ERROR
 
 
@@ -66,6 +68,7 @@ def _build_parser() -> argparse.ArgumentParser:
     config.register(commands)
     lock.register(commands)
     shell_completion.register(commands)
+    sync.register(commands)
 
     return parser
 

@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import collections.abc as _c
+import errno
 import hashlib
 import json
+import os
+import re
 import socket
 import sys
 from pathlib import Path
@@ -376,7 +379,7 @@ class TestFile:
             _ = fetcher.get("file://server/share/a.json", None)
 
     def test_unreadable(self, site: Path, fetcher: Fetcher) -> None:
-        with pytest.raises(FetchError, match="Is a directory"):
+        with pytest.raises(FetchError, match=re.escape(os.strerror(errno.EISDIR))):
             _ = fetcher.get(site.as_uri(), None)
 
     def test_offline_reads_files(self, site: Path) -> None:

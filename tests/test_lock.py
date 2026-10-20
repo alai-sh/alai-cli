@@ -411,6 +411,38 @@ class TestChanges:
         assert changes(example(), example()) == []
 
 
+class TestSelect:
+    LOCK = Lock(
+        raw(["a.a"], groups={"dev": ["c.c"], "docs": ["d.d"]}),
+        [
+            locked("a.a", dependencies=("b.b",)),
+            locked("b.b"),
+            locked("c.c", dependencies=("b.b", "e.e")),
+            locked("d.d"),
+            locked("e.e"),
+        ],
+    )
+
+    @staticmethod
+    def names(collections: list[LockedCollection]) -> list[str]:
+        return [c.name for c in collections]
+
+    def test_project_with_dependencies(self) -> None:
+        assert self.names(self.LOCK.select([])) == ["a.a", "b.b"]
+
+    def test_groups(self) -> None:
+        assert self.names(self.LOCK.select(["dev"])) == ["a.a", "b.b", "c.c", "e.e"]
+
+    def test_groups_without_the_project(self) -> None:
+        assert self.names(self.LOCK.select(["docs"], project=False)) == ["d.d"]
+
+    def test_missing_entry(self) -> None:
+        lock = Lock(raw(["a.a"]), [locked("a.a", dependencies=("gone.gone",))])
+
+        with pytest.raises(LockError, match=r"no entry for gone\.gone"):
+            _ = lock.select([])
+
+
 class TestStale:
     MANIFEST = parse_manifest(raw(["a.a"]))
 

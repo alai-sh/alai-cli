@@ -21,12 +21,15 @@ import shutil
 import stat
 import tarfile
 import tempfile
+import threading
 import typing as _t
 
 from ._common import Error, Record
-from ._fetch import MAX_CONNECTIONS, Fetcher, FetchError
 from ._output import trace
 from ._semver import Version
+
+if _t.TYPE_CHECKING:
+    from ._fetch import Fetcher
 
 LAYOUT = "collections-v1"
 """The cache directory for extracted collections; a new name if what's extracted, or how, ever changes."""
@@ -55,14 +58,28 @@ class Artifact(Record):
         return f"{self.name} {self.version}"
 
 
-class ArtifactCache:
-    """Extracted collections under ``cache_dir``, downloading with ``fetcher`` what isn't there yet."""
+Report = _c.Callable[[Artifact, "str | None"], None]
+"""Progress for an artifact: what it's doing (``downloading``, ``extracting``), or None when it's done."""
 
-    def __init__(self, cache_dir: str, fetcher: Fetcher) -> None:
+
+def _ignore(_artifact: Artifact, _state: str | None) -> None:
+    pass
+
+
+class ArtifactCache:
+    """Extracted collections under ``cache_dir``, downloading with ``fetcher`` what isn't there yet.
+
+    Without a ``fetcher`` it can only say what's cached, and doesn't load the HTTP library (``_fetch``) to do it.
+    """
+
+    def __init__(self, cache_dir: str, fetcher: Fetcher | None = None) -> None:
         self.root = os.path.join(cache_dir, LAYOUT)
         self._fetcher = fetcher
         # Read once, here, before any thread starts: reading the umask means setting it, which isn't thread-safe.
         self._umask = _umask()
+        # One extraction at a time: it's CPU-bound Python, so under the GIL more at once is slower, not faster
+        # (13.3 s for 97 collections on 16 threads, 7.0 s on one). Downloads still run in parallel meanwhile.
+        self._extracting = threading.Lock()
 
     def path(self, cksum: str) -> str:
         """Where the collection with this artifact SHA-256 is, or would be, extracted."""
@@ -70,12 +87,30 @@ class ArtifactCache:
             raise ArtifactError(f"'{cksum}' isn't a SHA-256 checksum")
         return os.path.join(self.root, cksum)
 
-    def get(self, artifact: Artifact) -> str:
-        """The directory ``artifact`` is extracted to, downloading and extracting it first if it isn't cached."""
+    def cached(self, cksum: str) -> str | None:
+        """Where the collection with this artifact SHA-256 is extracted, or None if it isn't cached."""
+        path = self.path(cksum)
+        return path if os.path.isdir(path) else None
+
+    def get(self, artifact: Artifact, report: Report | None = None) -> str:
+        """The directory ``artifact`` is extracted to, downloading and extracting it first if it isn't cached.
+
+        ``report``, for progress, is called with ``downloading``, ``waiting`` (downloaded, for its turn to extract) and
+        ``extracting`` as each starts, and None once the artifact is done with, whether it worked or not.
+        """
         target = self.path(artifact.cksum)
         if os.path.isdir(target):
             trace(f"{artifact}: cached at {target}")
+            if report is not None:
+                report(artifact, None)
             return target
+        try:
+            return self._fetch(artifact, target, report or _ignore)
+        finally:
+            if report is not None:
+                report(artifact, None)
+
+    def _fetch(self, artifact: Artifact, target: str, report: Report) -> str:
         try:
             os.makedirs(self.root, exist_ok=True)
             work = tempfile.mkdtemp(dir=self.root, prefix=".tmp-")
@@ -83,6 +118,11 @@ class ArtifactCache:
             raise ArtifactError(f"can't write to the cache at {self.root}: {e.strerror or e}") from None
         try:
             tarball = os.path.join(work, "artifact.tar.gz")
+            from ._fetch import FetchError
+
+            if self._fetcher is None:
+                raise ArtifactError(f"{artifact} isn't in the cache, and there's no fetcher to download it")
+            report(artifact, "downloading")
             try:
                 digest, size = self._fetcher.download(artifact.url, tarball, max_size=artifact.size)
             except FetchError as e:
@@ -93,7 +133,10 @@ class ArtifactCache:
                     + f"{size} bytes, where the lock has {artifact.cksum} and {artifact.size} bytes"
                 )
             extracted = os.path.join(work, "collection")
-            extract(tarball, extracted, artifact.name, artifact.version, umask=self._umask)
+            report(artifact, "waiting")
+            with self._extracting:
+                report(artifact, "extracting")
+                extract(tarball, extracted, artifact.name, artifact.version, umask=self._umask)
             try:
                 os.rename(extracted, target)
             except OSError:
@@ -107,14 +150,17 @@ class ArtifactCache:
         trace(f"{artifact}: extracted to {target}")
         return target
 
-    def get_all(self, artifacts: _c.Iterable[Artifact]) -> dict[str, str]:
+    def get_all(self, artifacts: _c.Iterable[Artifact], report: Report | None = None) -> dict[str, str]:
         """Each artifact's extracted directory, by collection name, fetching those that aren't cached in parallel.
 
-        Every one is attempted; if any fails, the first by name is raised once the rest have finished.
+        Every one is attempted; if any fails, the first by name is raised once the rest have finished. ``report`` is
+        as for ``get``.
         """
+        from ._fetch import MAX_CONNECTIONS
+
         wanted = sorted(artifacts, key=lambda a: a.name)
         with concurrent.futures.ThreadPoolExecutor(MAX_CONNECTIONS, thread_name_prefix="alai-artifact") as pool:
-            futures = {a.name: pool.submit(self.get, a) for a in wanted}
+            futures = {a.name: pool.submit(self.get, a, report) for a in wanted}
         return {name: future.result() for name, future in futures.items()}
 
 
@@ -132,21 +178,29 @@ def extract(tarball: str, dest: str, name: str, version: Version, *, umask: int)
     out = _Target(dest, umask, where)
     try:
         with tarfile.open(tarball, "r:*") as tar:
-            _check_manifest(_read_json(tar, "MANIFEST.json", where), name, version, where)
-            entries = _files_json(_read_json(tar, "FILES.json", where), where)
-            for special in ("MANIFEST.json", "FILES.json"):
-                _extract_file(tar, special, out, None)
+            # Looked up by name once: tarfile's getmember searches every member, each time it's called. The last of a
+            # repeated name wins, as getmember's does.
+            members = {m.name: m for m in tar.getmembers()}
+            _check_manifest(_read_json(tar, members, "MANIFEST.json", where), name, version, where)
+            entries = _files_json(_read_json(tar, members, "FILES.json", where), where)
+            wanted: list[tuple[tarfile.TarInfo, str, str, str | None]] = [
+                (_member(members, special, where), special, "file", None) for special in ("MANIFEST.json", "FILES.json")
+            ]
             for entry_name, ftype, sha256 in entries:
                 if entry_name == ".":
                     continue
                 _check_path(entry_name, where)
+                wanted.append((_member(members, entry_name, where), entry_name, ftype, sha256))
+            # In the order they're stored, so reading the compressed stream only ever moves forward: going back means
+            # decompressing again from the start.
+            for member, entry_name, ftype, sha256 in sorted(wanted, key=lambda w: w[0].offset):
                 if ftype == "dir":
-                    _extract_dir(tar, entry_name, out)
+                    _extract_dir(member, entry_name, out)
                 else:
-                    _extract_file(tar, entry_name, out, sha256)
+                    _extract_file(tar, member, entry_name, out, sha256)
         # A link made later can change where an earlier one leads, so each is checked again once all exist.
         for entry_name, path in out.links:
-            out.check_inside(path, entry_name)
+            _ = out.check_inside(path, entry_name)
     except (tarfile.TarError, EOFError, OSError) as e:
         # A truncated or corrupt gzip stream raises EOFError or OSError (BadGzipFile) rather than a TarError.
         message = e.strerror if isinstance(e, OSError) and e.strerror else str(e)
@@ -162,21 +216,27 @@ class _Target:
         self.umask = umask
         self.where = where
         self.links: list[tuple[str, str]] = []
+        self._plain: set[str] = set()
+        """Parent directories already checked whose path has no symlink in it, so can't later lead anywhere else."""
 
     def path(self, entry: str) -> str:
         """Where ``entry`` goes, its parent directories made and checked to resolve inside the collection on disk."""
         path = os.path.join(self.dest, *entry.split("/"))
         parent = os.path.dirname(path)
-        os.makedirs(parent, 0o755 & ~self.umask, exist_ok=True)
-        self.check_inside(parent, entry)
+        if parent not in self._plain:
+            os.makedirs(parent, 0o755 & ~self.umask, exist_ok=True)
+            if self.check_inside(parent, entry) == os.path.abspath(parent):
+                self._plain.add(parent)
         return path
 
-    def check_inside(self, path: str, entry: str) -> None:
+    def check_inside(self, path: str, entry: str) -> str:
+        """Fail unless ``path`` resolves inside the collection on disk; return where it resolves to."""
         real = os.path.realpath(path)
         if real != self.real and not real.startswith(self.real + os.sep):
             raise ArtifactError(
                 f"{self.where}: {entry} in the artifact leads outside the collection, through a symlink"
             )
+        return real
 
     def symlink(self, target: str, path: str, entry: str) -> None:
         os.symlink(target, path)
@@ -189,15 +249,15 @@ def _umask() -> int:
     return mask
 
 
-def _member(tar: tarfile.TarFile, entry: str, where: str) -> tarfile.TarInfo:
+def _member(members: dict[str, tarfile.TarInfo], entry: str, where: str) -> tarfile.TarInfo:
     try:
-        return tar.getmember(entry)
+        return members[entry]
     except KeyError:
         raise ArtifactError(f"{where}: the artifact doesn't contain {entry}, which FILES.json lists") from None
 
 
-def _read_json(tar: tarfile.TarFile, entry: str, where: str) -> dict[str, object]:
-    member = _member(tar, entry, where)
+def _read_json(tar: tarfile.TarFile, members: dict[str, tarfile.TarInfo], entry: str, where: str) -> dict[str, object]:
+    member = _member(members, entry, where)
     stream = tar.extractfile(member) if member.isfile() else None
     if stream is None:
         raise ArtifactError(f"{where}: {entry} in the artifact isn't a file")
@@ -254,9 +314,8 @@ def _check_link(member: tarfile.TarInfo, entry: str, where: str) -> None:
         raise ArtifactError(f"{where}: {entry} in the artifact links outside the collection, to {member.linkname}")
 
 
-def _extract_dir(tar: tarfile.TarFile, entry: str, out: _Target) -> None:
+def _extract_dir(member: tarfile.TarInfo, entry: str, out: _Target) -> None:
     where = out.where
-    member = _member(tar, entry, where)
     if member.type not in _DIR_TYPES:
         raise ArtifactError(f"{where}: {entry} in the artifact isn't a directory, as FILES.json says")
     path = out.path(entry)
@@ -267,9 +326,8 @@ def _extract_dir(tar: tarfile.TarFile, entry: str, out: _Target) -> None:
         os.mkdir(path, 0o755 & ~out.umask)
 
 
-def _extract_file(tar: tarfile.TarFile, entry: str, out: _Target, sha256: str | None) -> None:
+def _extract_file(tar: tarfile.TarFile, member: tarfile.TarInfo, entry: str, out: _Target, sha256: str | None) -> None:
     where = out.where
-    member = _member(tar, entry, where)
     if member.type not in _FILE_TYPES:
         raise ArtifactError(f"{where}: {entry} in the artifact isn't a file, as FILES.json says")
     if member.issym():

@@ -6,6 +6,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import re
 import stat
 from pathlib import Path
 
@@ -223,7 +224,8 @@ class TestLinker:
         assert describe(installed_at(cdir)) == describe(Path(cached(tmp_path / "again")))
         err = capsys.readouterr().err
         assert err.count("warning:") == 1
-        assert "can't hardlink files from the cache (Invalid cross-device link); using copy instead" in err
+        # The system's own wording: glibc says "Invalid cross-device link", macOS "Cross-device link".
+        assert f"can't hardlink files from the cache ({os.strerror(errno.EXDEV)}); using copy instead" in err
 
     def test_explicit_mode_doesnt_fall_back(self, tmp_path: Path, cdir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         def cross_device(source: str, dest: str) -> None:
@@ -231,8 +233,28 @@ class TestLinker:
 
         monkeypatch.setitem(_install._LINKS, LinkMode.HARDLINK, cross_device)
 
-        with pytest.raises(InstallError, match=r"can't hardlink .*: Invalid cross-device link"):
+        with pytest.raises(InstallError, match=rf"can't hardlink .*: {re.escape(os.strerror(errno.EXDEV))}$"):
             install(str(cdir), "ns.coll", cached(tmp_path), Linker(LinkMode.HARDLINK))
+
+
+def test_clone(tmp_path: Path, cdir: Path) -> None:
+    # clonefile on macOS, which APFS always supports; FICLONE on Linux, which only some filesystems do (btrfs, XFS),
+    # and not the ext4 of CI runners or a tmpfs /tmp, so it's skipped there.
+    probe = tmp_path / "probe"
+    _ = probe.write_text("x")
+    try:
+        _install._clone(str(probe), str(tmp_path / "probe-clone"))  # pyright: ignore[reportPrivateUsage]
+    except OSError as e:
+        pytest.skip(f"{tmp_path} can't clone files: {e.strerror or e}")
+    source = cached(tmp_path)
+
+    install(str(cdir), "ns.coll", source, Linker(LinkMode.CLONE))
+
+    target = installed_at(cdir)
+    assert describe(target) == describe(Path(source))
+    assert (target / "run.sh").read_text() == Path(source, "run.sh").read_text()
+    # A clone is a file of its own, unlike a hardlink.
+    assert (target / "run.sh").stat().st_ino != Path(source, "run.sh").stat().st_ino
 
 
 class TestNamespaceLinks:

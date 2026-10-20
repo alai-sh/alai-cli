@@ -86,11 +86,6 @@ combine.
 
 ## Declaring collections
 
-!!! note "Not installed yet"
-
-    [`alai lock`](#locking) resolves these keys into `alai.lock`, but no
-    command installs from it yet.
-
 The project's `alai.toml` lists the collections the project needs, the
 ansible-core versions it targets, collections only some workflows need, and
 fixes for wrong metadata upstream:
@@ -191,3 +186,87 @@ on it accepts, with these exceptions:
 
 When no version fits, `alai lock` lists every requirement on the
 collection and where it came from, and writes nothing.
+
+## Installing
+
+`alai sync` makes the [collections directory](#where-collections-are-installed)
+hold exactly what `alai.lock` lists: it installs what's missing, replaces any
+other version, and removes collections the lock doesn't list. If
+`alai.lock` is missing, or `alai.toml` has changed since it was written, it
+locks first, as `alai lock` would:
+
+```console
+$ alai sync
+Resolved 6 collections in 2.47s
+Prepared 5 collections in 1.77s
+Installed 5 collections in 88ms
+ + ansible.netcommon==8.7.1
+ + ansible.posix==2.2.2
+ + ansible.utils==6.1.1
+ + cisco.ios==11.6.0
+ + community.general==10.7.9
+```
+
+On a terminal, each phase shows its progress until its summary line
+replaces it: what's being resolved, what's being downloaded or extracted,
+and a bar while installing (see
+[`--no-progress`](configuration.md#options-that-arent-settings)).
+
+Running it again with nothing to change connects to nothing:
+
+```console
+$ alai sync
+Resolved 6 collections in 1ms
+Checked 5 collections in 0ms
+```
+
+A collection is matched by the version in its `MANIFEST.json`, so one
+already at its locked version is left as it is, files edited in place
+included. Anything else under a locked collection's name, including a
+directory without a `MANIFEST.json`, is replaced. Collections are downloaded
+once, checked against `alai.lock`, and kept in the cache; installing links
+their files from there, as [`link_mode`](alai-toml.md#link_mode) says.
+
+| Option | |
+|---|---|
+| `--locked` | Resolve, and exit 1 without installing if `alai.lock` is missing or would change, as [`alai lock --check`](#locking) does. For CI, to catch an `alai.toml` change nobody locked |
+| `--frozen` | Install from `alai.lock` as it is, without checking it against `alai.toml`. It still needs to exist |
+| `--inexact` | Keep installed collections `alai.lock` doesn't list, rather than removing them. For a collections directory other tools also install to |
+
+`alai sync` also takes the index, `--system-certs`,
+[`--offline`](alai-toml.md#offline), `--collections-dir` and `--link-mode`
+settings.
+
+!!! warning "Symlinks in `ansible_collections`"
+
+    `alai sync` never writes through a symlink, or deletes anything behind
+    one; it only removes the link:
+
+    - A collection directory that's a symlink is unlinked when it's
+      replaced or removed, and what it points at is left as it is.
+    - A namespace directory that's a symlink
+      (`ansible_collections/community -> /elsewhere`) isn't counted as
+      installed. If `alai.lock` lists a collection in that namespace, the
+      link is replaced with a real directory, which hides the other
+      collections it held, even with `--inexact`. Otherwise it's removed
+      like anything else the lock doesn't list, unless `--inexact` is
+      given.
+
+### Groups
+
+The project's own collections are installed with its `dev` group, if it
+has one, as uv installs its `dev` dependency group. Other
+[groups](alai-toml.md#projectgroupsname) are installed when asked for:
+
+| Option | |
+|---|---|
+| `--group NAME` | Also install group `NAME`; can be repeated |
+| `--all-groups` | Install every group |
+| `--no-group NAME` | Don't install group `NAME`, even if another option asks for it; can be repeated |
+| `--no-default-groups`, `--no-dev` | Don't install the `dev` group |
+| `--only-group NAME`, `--only-dev` | Install only that group, without the project's own collections; can be repeated |
+
+Every group is locked together whichever are installed, so switching
+groups never changes `alai.lock`. Naming a group `alai.toml` doesn't have
+is an error, except `--no-group dev` and `--no-dev`, which are always
+accepted.

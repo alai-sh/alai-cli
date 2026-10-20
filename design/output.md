@@ -23,6 +23,40 @@ The rest is planned.
   when it passes, which an interactive run is better for; scripts use the
   exit code. Nothing goes to stdout, since there's no result to pipe;
   `_output.status()` writes them.
+- **`alai sync` prints uv's install lines**: `Prepared`, `Uninstalled`,
+  `Installed` or `Checked N collections in …`, then ` - ns.name==1.0.0` and
+  ` + ns.name==2.0.0` per change, as `uv sync` does
+  ([install.md](install.md#the-command)).
+- **Colour as uv colours**, from its escape codes (uv 0.13, 2026-10-20):
+  `error` bold red and `warning` bold yellow, each with a bold `:`, the
+  warning's message bold; `Resolved` and `Checked` lines dim with the count
+  bold; `Prepared`, `Installed` and `Uninstalled` plain with the count bold
+  and `in …` dim; ` + ` green and ` - ` red, the name bold and `==version`
+  dim; lock changes' verb bold green (`Removed` red). `--color
+  auto|always|never`, then `NO_COLOR` (off) over `FORCE_COLOR` (on), then
+  whether stderr is a terminal and `TERM` isn't `dumb`. A few lines of ANSI
+  in `_output` (`styled`), not Python 3.14's `_colorize` (~12 ms to
+  import). Tests run with `--color never` (`tests/conftest.py`), so an
+  environment's `FORCE_COLOR` can't change them.
+- **Progress as uv draws it** (`_progress`): a spinner with the phase and
+  what it's on (`⠹ Resolving collections... (41) sivel.acd`), a count with
+  a line per item in flight while preparing (only `downloading` and
+  `extracting`; a downloaded collection waiting its turn to extract isn't
+  shown, and extracting comes first, as it's one at a time), and a bar while
+  installing (`███░░ [40/97] community.general==10.7.3`), each cleared for
+  its summary line. Recorded from uv 0.13 and cargo 1.90 on a
+  pseudo-terminal: uv redraws a block in place and keeps only summaries;
+  cargo keeps a line per crate above one status line, which would put 97
+  lines in the scrollback for `sivel.acd`. A ticker thread redraws at
+  10 Hz, the first frame one tick in, so a phase quicker than that draws
+  nothing; lines are cut a column short of the terminal's width, as a
+  wrapped line throws off moving back up. Messages written meanwhile
+  (warnings, `-v`) clear the block, print, and redraw it. Drawn only on a
+  terminal that isn't `TERM=dumb`, never with `-q`, off with
+  `--no-progress` or `ALAI_NO_PROGRESS`. No Windows console handling:
+  alai doesn't run on Windows, as Ansible's control node doesn't. Not rich: one block of lines is cursor
+  movement and clearing, a couple of hundred lines here, against rich's
+  ~50 ms import and its dependencies.
 - **`-v` says why each change happened**, indented under it with no
   `debug:` prefix (`_output.detail()`), so the action and its reason read
   as one item and are easy to tell apart; uv doesn't give reasons. Asked for after a pin on one collection inside a
@@ -67,40 +101,6 @@ The rest is planned.
   names don't follow changes to the human-readable text. Warnings, progress
   and errors stay on stderr as text, and the exit code stays the signal for
   failure.
-- **Colour** with `--color auto|always|never`, plus `NO_COLOR` and
-  `FORCE_COLOR`. `auto` colours a stream only when that stream is a terminal.
-  A small ANSI helper in `_output`; not Python 3.14's `_colorize`, which costs
-  ~12 ms to import (see `HelpFormatter` in `src/alai/_args.py`).
-- **Progress** (spinners, download bars) on stderr, drawn only when stderr is
-  a terminal, off with `-q` and with a `--no-progress` flag (and
-  `ALAI_NO_PROGRESS`) for CI logs that are terminals.
-  The parallel index fetches and artifact downloads in `alai lock` and
-  `alai sync` are the case the rich decision above leaves open: several
-  things in flight at once, in commands where network time outweighs rich's
-  import cost (see [index-client.md](index-client.md)). Deciding that is
-  separate work.
-
-### Progress on stderr and PowerShell
-
-Writing progress to stderr is what uv, cargo, pip, curl and git do. Checked
-with PowerShell 7.6 on Linux, running a child process from a terminal:
-
-| PowerShell | Child sees | Captured in `$res` |
-|---|---|---|
-| `$res = alai …` | stderr is a terminal, stdout isn't | stdout only; stderr goes straight to the console |
-| `$res = alai … 2>&1` | neither is a terminal | stdout lines as strings, stderr lines as `ErrorRecord` objects |
-| `$res = alai … 2>$null` | stdout isn't a terminal | stdout only |
-
-So `$res = alai …` shows the spinner and captures only the result, and once
-stderr is redirected alai sees no terminal and draws nothing. Drawing only
-when stderr is a terminal is what keeps `2>&1` output free of `\r` noise, and
-keeps the stderr lines that do appear (warnings, errors) one record each.
-Windows PowerShell 5.1 treats redirected stderr more harshly (it can stop a
-script under `$ErrorActionPreference = 'Stop'`); not checked, and less likely
-to matter since Ansible doesn't run on a Windows control node.
-
-## Open questions
-
 - **`-qq` for no output at all**, errors included, as uv has. Not needed
   until someone asks; the exit code already says whether it worked.
 - **Machine-readable errors** in the JSON output. Only if a tool needs more

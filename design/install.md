@@ -1,9 +1,10 @@
 # Installing
 
-How `alai sync` (slice 4) gets each locked collection onto disk: the
-artifact cache is `src/alai/_artifacts.py`, installing into
-`collections_dir` is `src/alai/_install.py`, and the command itself
-follows.
+How `alai sync` gets each locked collection onto disk: the artifact cache
+is `src/alai/_artifacts.py`, installing into `collections_dir` is
+`src/alai/_install.py`, and the command is `src/alai/_commands/sync.py`
+with its logic in `src/alai/_sync.py`. The user documentation is
+`docs/projects.md#installing`.
 
 ## Decisions
 
@@ -59,10 +60,18 @@ follows.
   clearing the cache helps. The docs already say alai trusts its cache and
   that a `cache_dir` outside the home directory is the user's to restrict
   (see [index-client.md](index-client.md)).
-- **Downloads run in parallel**, up to the fetcher's 16 connections, each
-  extracted in its own thread. Every artifact is attempted; when several
-  fail, the first by name is reported. Three artifacts (3.6 MB) took 1.6 s
-  cold from `dl.alai.sh` and 1 ms warm.
+- **Downloads run in parallel, extraction one at a time**: up to the
+  fetcher's 16 connections download at once, but extracting is CPU-bound
+  Python, so under the GIL more at once is slower. Every artifact is
+  attempted; when several fail, the first by name is reported. The
+  measurements are in [performance.md](performance.md#extraction).
+- **Extraction looks members up once and reads forward**: a dict of
+  members built once, rather than `tarfile`'s `getmember`, which searches
+  every member on each call; members taken in the order they're stored, so
+  the gzip stream only moves forward; and a parent directory with no
+  symlink in its path checked once (one that has a link is checked every
+  time, as a later link could redirect it). See
+  [performance.md](performance.md#extraction).
 
 - **What's installed is read from each collection's `MANIFEST.json`**, as
   uv reads each package's installed metadata, with no record of alai's
@@ -135,8 +144,7 @@ follows.
   when it comes to copying. uv 0.13's default is "`clone` … on macOS and
   Linux, and `hardlink` on Windows", and on tmpfs it warned "Failed to
   hardlink files; falling back to full copy". Clones use `clonefile` on
-  macOS and the `FICLONE` ioctl on Linux; Windows has none, so `auto` starts
-  at hardlink there in effect. `FICLONE` needs Linux 4.5 or later (before
+  macOS and the `FICLONE` ioctl on Linux. `FICLONE` needs Linux 4.5 or later (before
   that the same number was btrfs's `BTRFS_IOC_CLONE`) and a filesystem with
   reflinks (btrfs, XFS with `reflink=1`, the `mkfs.xfs` default since
   xfsprogs 5.1, bcachefs, OCFS2, NFS 4.2 where the server clones), and
@@ -156,16 +164,53 @@ follows.
   don't; `auto` keeps uv's order for that. tmpfs can't clone, so `auto`
   hardlinked there (0.17 s).
 
+## The command
+
+All tested against uv 0.13 on 2026-10-20 with a project having a `dev` and
+a `docs` dependency group.
+
+- **`sync` locks first when it has to, as `uv sync` does**: when
+  `alai.lock` is missing, or the no-network `_lock.stale()` check says it's
+  out of date (`alai.toml` asks for something else, or a locked index isn't
+  configured), it resolves, keeping locked versions that fit, and writes the
+  lock before installing. Otherwise it uses the lock as it is, with no
+  network, which is uv's fast path ("Resolved 4 packages in 2ms"). Unlike
+  `alai lock`, it doesn't print the lock's change lines, as `uv sync`
+  doesn't; the install lines say what changed.
+- **`--locked` is `lock --check` before installing**: it resolves, and
+  exits 1 without installing if the lock is missing or would change; it
+  never writes the lock, even one re-resolved to the same collections.
+  **`--frozen`** installs from the lock without checking it, and fails only
+  if there's none, both with uv's flags' meanings. A `--frozen` lock entry
+  whose index isn't configured any more is downloaded from the URL the lock
+  records, as uv uses its lock's URLs.
+- **Groups are uv's, with `dev` the default**: the project's collections
+  and its `dev` group, if it has one; `--group` adds, `--all-groups` takes
+  every one, `--no-group` (winning over both), `--no-default-groups` and
+  `--no-dev` take away, and `--only-group` and `--only-dev` install only
+  those groups without the project's collections, and can't be combined
+  with `--group` or `--all-groups`. A group `alai.toml` doesn't have is an
+  error ("Group `nope` is not defined", in uv), except `--no-group dev` and
+  `--no-dev`, which a CI job should be able to pass to any project. What a
+  selection needs is worked out from the lock (`Lock.select`): the named
+  collections and everything their locked `dependencies` reach. Every group
+  stays in one resolution, so switching groups never changes the lock.
+- **Only what the plan installs is downloaded**, and only what isn't
+  cached; with nothing to fetch, the fetcher and urllib3 aren't imported at
+  all. A sync with nothing to do took 0.02 s for the whole process.
+- **Output is uv's**, on stderr: `Resolved N collections in …` (not with
+  `--frozen`, as uv), `Prepared N …` when anything was downloaded,
+  `Uninstalled N …` counting removals and replacements, `Installed N …`,
+  then one line per change, by name, a removal before its replacement:
+  ` - ns.name==1.0.0`, ` + ns.name==2.0.0`, ` - ns.name (unknown version)`
+  for a directory without a version, ` - ns (namespace link to …)` for an
+  unlinked namespace. With nothing to change it's
+  `Checked N collections in …`.
+
 ## Not done yet
 
-- **The `alai sync` command**: reading the lock, choosing groups,
-  downloading only what the plan installs, `--inexact`, and its output.
-- **The `sync` docs need a warning admonition on symlinks in
-  `ansible_collections`**: a namespace that's a link is replaced by a real
-  directory when a locked collection is in it (hiding its other collections,
-  even with `--inexact`) and unlinked by an exact sync otherwise; a
-  collection that's a link is unlinked, never followed; and nothing behind
-  a link is ever deleted.
+- **Speed**: replacing `tarfile` with a native extension, and making
+  clones cheaper; see [performance.md](performance.md).
 - **Verifying against `FILES.json` later.** Every published collection
   carries a SHA-256 for each file. An `alai cache verify` command, or
   `--verify` on `sync`, could check cached or installed collections against

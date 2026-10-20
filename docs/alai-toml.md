@@ -151,9 +151,9 @@ It's deliberately not a setting in `alai.toml`.
 - **Environment variable:** `ALAI_OFFLINE`, a
   [boolean](configuration.md#environment-variables)
 
-Use only index data alai has already cached, without connecting to any
-index. A command that needs something that isn't in the cache fails, saying
-what it couldn't find. An index given as a `file://` URL is read from disk
+Use only index data and collections alai has already cached, without
+connecting to any index. A command that needs something that isn't in the
+cache fails, saying what it couldn't find. An index given as a `file://` URL is read from disk
 either way.
 
 ### `[[index]]`
@@ -196,13 +196,10 @@ keep their own settings under `[tool.<name>]`, as in `pyproject.toml`.
 
 ## Project
 
-!!! note "Not installed yet"
-
-    [`alai lock`](projects.md#locking) resolves `requires_ansible`,
-    `collections`, `[project.groups.<name>]`, `[project.overrides]` and
-    `[project.sources]` into `alai.lock`, but no command installs from it
-    yet. Every command checks that they're spelt right and have the right
-    types; the requirements themselves are checked by `alai lock`.
+Every command checks that these keys are spelt right and have the right
+types; the requirements themselves are checked when
+[`alai lock`](projects.md#locking) or [`alai sync`](projects.md#installing)
+resolves them.
 
 | Key | Type | |
 |---|---|---|
@@ -281,7 +278,9 @@ collections = ["ansible.posix", "community.crypto>=2"]
 | `collections` | array of [requirements](#requirements) | The group's collections. A collection can be listed once per group, and in the project's `collections` as well |
 
 Group names use lowercase letters, digits, `-` and `_`, starting with a
-letter or digit.
+letter or digit. `alai sync` installs the `dev` group with the project's
+collections and the others when asked for; see
+[Groups](projects.md#groups).
 
 ### `[project.overrides]`
 
