@@ -90,11 +90,14 @@ def verbose_count(args: argparse.Namespace) -> int:
     return sum(value for name, value in vars(args).items() if name.startswith("verbose:"))
 
 
-def add_settings_args(parser: argparse.ArgumentParser) -> None:
-    """Options for commands that resolve or install collections."""
+def add_settings_args(parser: argparse.ArgumentParser, *groups: str) -> None:
+    """The settings' options for a command: those in ``groups`` (``resolve``, ``install``), or every one with none.
+
+    A command only takes the flags it uses, so one it doesn't is an argparse error rather than silently ignored.
+    """
     group = parser.add_argument_group("settings")
     for setting in SETTINGS:
-        if not setting.global_flag:
+        if not setting.global_flag and (not groups or setting.group in groups):
             _add_setting(group, setting, default=[] if setting.repeat else None)
 
 

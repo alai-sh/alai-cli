@@ -11,6 +11,25 @@ The rest is planned.
   Warnings, debug and trace lines, progress and errors go to stderr. So
   `alai … | jq` or `> file` never captures anything but the result, and no
   verbosity, colour or progress setting can change it.
+- **Status lines go to stderr too**, shown unless `-q`, as uv's are: what a
+  command did, as opposed to data a script would read. `alai lock` prints
+  `Resolved 3 collections in 412ms`, then one line per change in uv's
+  wording: `Added a.a v2.0.0`, `Updated a.a v1.0.0 -> v2.0.0`,
+  `Removed c.c v1.0.0`, and `Updated a.a v1.0.0, now from <url>` when only
+  the index changed. Checked against uv 0.13, which does the same on
+  stderr and silences it with `-q`. Like uv, a first lock lists no
+  changes, since everything would be `Added`. Unlike uv, `lock --check`
+  prints the change lines before failing, and `alai.lock is up to date`
+  when it passes, which an interactive run is better for; scripts use the
+  exit code. Nothing goes to stdout, since there's no result to pipe;
+  `_output.status()` writes them.
+- **`-v` says why each change happened**, indented under it with no
+  `debug:` prefix (`_output.detail()`), so the action and its reason read
+  as one item and are easy to tell apart; uv doesn't give reasons. Asked for after a pin on one collection inside a
+  bundle that pins everything exactly (`sivel.acd`, the Ansible package as
+  a collection) moved the bundle and ~90 collections back with no
+  explanation. The reasons are worked out by the resolver
+  ([resolver.md](resolver.md)).
 - **Two verbosity levels, each with a meaning**, as uv has, rather than
   Ansible's six loosely defined ones:
 
@@ -18,7 +37,7 @@ The rest is planned.
   |---|---|
   | `-q` | errors only |
   | none | results, warnings and errors |
-  | `-v` | `debug:` lines, what alai decided and why: which config files were read, which index a collection came from, a cache hit or miss |
+  | `-v` | why each change happened, indented under it, and `debug:` lines, what alai decided and why: which config files were read, which index a collection came from, a cache hit or miss |
   | `-vv` | `trace:` lines as well, each step: every HTTP request and file operation, with timings |
 
   More than two is an error, not silently the same as `-vv`, so a later

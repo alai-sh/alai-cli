@@ -70,6 +70,7 @@ deploy_target = "prod"
 | [`cache_dir`](#cache_dir) | [path](configuration.md#paths) | Where downloads, extracted collections and index data are kept |
 | [`link_mode`](#link_mode) | string | How files get from the cache into the collections directory |
 | [`system_certs`](#system_certs) | boolean | Verify TLS certificates with the operating system's trust store |
+| [`offline`](#offline) | boolean | Use only what's cached, without connecting to any index |
 | [`[[index]]`](#index) | array of tables | The indexes collections are resolved from, before the default one |
 | [`[tool]`](#tool) | table | Ignored by alai, for other tools |
 
@@ -142,6 +143,19 @@ session's keys to it and warns on every run while it's set. Anyone with that
 file and a capture of the traffic can read it, so unset it when you're done.
 It's deliberately not a setting in `alai.toml`.
 
+### `offline`
+
+- **Type:** boolean (TOML's `true` or `false`, not a string)
+- **Default:** `false`
+- **Flags:** `--offline`, `--no-offline`
+- **Environment variable:** `ALAI_OFFLINE`, a
+  [boolean](configuration.md#environment-variables)
+
+Use only index data alai has already cached, without connecting to any
+index. A command that needs something that isn't in the cache fails, saying
+what it couldn't find. An index given as a `file://` URL is read from disk
+either way.
+
 ### `[[index]]`
 
 !!! warning "Only index.alai.sh is supported"
@@ -182,14 +196,13 @@ keep their own settings under `[tool.<name>]`, as in `pyproject.toml`.
 
 ## Project
 
-!!! note "Not used yet"
+!!! note "Not installed yet"
 
-    No command installs from `requires_ansible`, `collections`,
-    `[project.groups.<name>]`, `[project.overrides]` or `[project.sources]`
-    yet. Every command
-    already checks that they're spelt right and have the right types, but
-    the requirements themselves are only checked by the commands that use
-    them.
+    [`alai lock`](projects.md#locking) resolves `requires_ansible`,
+    `collections`, `[project.groups.<name>]`, `[project.overrides]` and
+    `[project.sources]` into `alai.lock`, but no command installs from it
+    yet. Every command checks that they're spelt right and have the right
+    types; the requirements themselves are checked by `alai lock`.
 
 | Key | Type | |
 |---|---|---|

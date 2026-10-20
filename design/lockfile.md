@@ -3,8 +3,8 @@
 `alai lock` resolves the project's manifest against its indexes and writes
 `alai.lock` beside the project's `alai.toml`; `alai sync` (slice 4) installs
 exactly what it lists. The format is read and written by `src/alai/_lock.py`,
-resolution is in [resolver.md](resolver.md). User documentation follows once
-`alai lock` exists.
+resolution is in [resolver.md](resolver.md). The user documentation is
+`docs/projects.md#locking`.
 
 ## The format
 
@@ -177,11 +177,29 @@ members' `requires-python`.
   TOML, and tomli-w can't write `source` as an inline table or give control
   over the layout; the schema is small and alai writes all of it. Tests read
   every written lock back with `tomllib`.
-- **Each root's inputs are copied in**, so `alai lock --check` and
-  `alai sync` can tell the lock is out of date without resolving. They're
+- **Each root's inputs are copied in**, so `alai sync` can tell the lock
+  is out of date without resolving, and `lock --check` can tell the inputs
+  changed even when the result didn't. They're
   compared after parsing (`Manifest.resolution_key`), so whitespace or
   reordering in `alai.toml` doesn't make the lock stale; requirements compare
   as sets.
+- **`alai lock`** loads the settings and `alai.toml`, resolves with the
+  current `alai.lock` as the preference, and writes the lock atomically, as
+  `uv lock` does. An unchanged result leaves the file untouched, and a failed
+  resolution leaves the lock untouched. `-U` / `--upgrade` and `-P` /
+  `--upgrade-package NAME` drop the locked preference for every collection
+  or the named ones, as uv's flags of the same names.
+- **`alai lock --check` resolves**, as `uv lock --check` does, and exits 1
+  without writing when the lock is missing (checked first, without
+  resolving) or would change: its copied inputs ask for something else than
+  `alai.toml`, or the resolved collections differ, say because a locked
+  version was removed from its index or its index is no longer configured.
+  The change lines are printed as `alai lock` would print them. It connects
+  to the indexes unless `--offline`. A check that only compared the files,
+  without the network, was the first version (2026-10-20) and was dropped
+  to follow uv: it couldn't see a removed version. That comparison stays as
+  `_lock.stale()` for `sync`, which needs to decide quickly whether to
+  resolve again.
 - **Roots and the resolution are kept apart**, as uv does: a root's
   requirements, groups and `requires_ansible` are on the root (`[project]`
   today, `project`-source collections later), and the overrides for the

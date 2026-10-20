@@ -1,8 +1,8 @@
 # Resolver
 
 How alai chooses one version of every collection a project needs, in
-`src/alai/_resolve.py`. Its output is the lock's `[[collection]]` entries
-([lockfile.md](lockfile.md)); `alai lock` is the command around it.
+`src/alai/_resolve.py`. Its output is the lock's `[[collection]]` entries;
+`alai lock`, the command around it, is in [lockfile.md](lockfile.md).
 
 ## Decisions
 
@@ -115,6 +115,21 @@ How alai chooses one version of every collection a project needs, in
   project`, `group 'test'`, or the collection and version that depends on
   it, with any override shown), and how many versions that met them were
   left out and why (yanked, unreadable, or needing a newer ansible-core). A dependency an index doesn't have is reported as such.
+- **Each change has a reason** (`Resolution.reasons`), worked out once the
+  resolution is known rather than traced through resolvelib's search: what
+  needs an added collection; that nothing needs a removed one; and for a
+  locked version not kept, the first of: upgrading was asked for, its
+  index changed, a requirement on it it doesn't meet, it's no longer on its
+  index, a filter leaves it out, or a dependency it can't have. For the
+  last, a dependency conflicting with a requirement from something else
+  (the project, another collection) is preferred over one only the
+  collection's replacement asks differently for: with a bundle pinning
+  everything exactly, every other pin moved because the bundle did, and
+  naming one of those would be circular. A locked version resolvelib
+  passed over for none of these reasons gets none rather than a guess.
+- **Dependencies' bare versions show with `==`**: the index allows `2.8.0`
+  for an exact version, and messages show it as `ns.name==2.8.0`, as a
+  manifest would need it.
 - **5,000 rounds** before giving up, each pinning or backtracking from one
   collection.
 - **Index-file warnings** (lines needing a newer alai, unreadable lines) are

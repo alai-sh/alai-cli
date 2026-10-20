@@ -93,6 +93,48 @@ class Lock(Record):
         return parse_manifest(self.manifest).resolution_key() == manifest.resolution_key()
 
 
+def stale(lock: Lock | None, manifest: Manifest, index_urls: _c.Collection[str]) -> str | None:
+    """Why ``lock`` is out of date for ``manifest`` and the configured index URLs, or None if it isn't.
+
+    Checked without resolving or touching the network, so ``sync`` can tell quickly whether the lock needs
+    resolving again: it's current when it exists, was resolved from a manifest asking for the same, and every
+    collection's index is still configured. ``lock --check`` resolves instead, as ``uv lock --check`` does.
+    """
+    if lock is None:
+        return "it doesn't exist"
+    if not lock.is_current(manifest):
+        return "alai.toml asks for something else than when it was locked"
+    for collection in lock.collections:
+        if collection.source.url not in index_urls:
+            return f"{collection.name} comes from {collection.source.url}, which isn't a configured index"
+    return None
+
+
+def changes(before: Lock | None, after: Lock) -> list[tuple[str, str]]:
+    """What changed between two locks, one line per collection with its name, as uv reports it: added, updated or
+    removed.
+
+    Nothing when there was no lock before, as uv lists nothing for a new lock: every collection would be added.
+    """
+    if before is None:
+        return []
+    old = {c.name: c for c in before.collections}
+    new = {c.name: c for c in after.collections}
+    lines: list[tuple[str, str]] = []
+    for name in sorted(old.keys() | new.keys()):
+        was, now = old.get(name), new.get(name)
+        if was is None and now is not None:
+            lines.append((name, f"Added {name} v{now.version}"))
+        elif now is None and was is not None:
+            lines.append((name, f"Removed {name} v{was.version}"))
+        elif was is not None and now is not None:
+            if was.version != now.version:
+                lines.append((name, f"Updated {name} v{was.version} -> v{now.version}"))
+            elif was.source.url != now.source.url:
+                lines.append((name, f"Updated {name} v{now.version}, now from {now.source.url}"))
+    return lines
+
+
 def lock_path(project_root: str) -> str:
     return os.path.join(project_root, LOCK_FILE_NAME)
 

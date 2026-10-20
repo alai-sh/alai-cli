@@ -15,7 +15,7 @@ import sys
 
 from . import _output
 from ._args import HelpFormatter, add_global_args, verbose_count
-from ._commands import config, shell_completion
+from ._commands import config, lock, shell_completion
 from ._common import Error
 
 EXIT_ERROR = 2
@@ -64,6 +64,7 @@ def _build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(title="commands", metavar="<command>", prog="alai")
 
     config.register(commands)
+    lock.register(commands)
     shell_completion.register(commands)
 
     return parser

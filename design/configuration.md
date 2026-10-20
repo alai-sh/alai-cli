@@ -87,11 +87,16 @@ what's planned on top of it, and the questions still open.
   loop over it. `Settings` stays a hand-written class so code using it is
   type-checked; a test checks it has an attribute for every definition.
 - **Flags exist only on the commands that use them.** A flag a command
-  doesn't use is an argparse error, never silently accepted. When commands
-  need different subsets (`lock` the indexes, `cache clean` only the cache),
-  each definition gets a group (`cache`, `resolve`, `install`) and a command
-  asks for the groups it uses. Not done yet: `config show` uses every
-  setting, so there's no second subset to test it against.
+  doesn't use is an argparse error, never silently accepted. Each
+  definition has a group, `resolve` (the indexes, `system_certs`,
+  `offline`) or `install` (`collections_dir`, `link_mode`), and a command
+  asks for the groups it uses: `alai lock` takes `resolve` only, so
+  `alai lock --link-mode copy` is an error; `config show` takes every one.
+  `cache_dir` is a global flag, since every command that reads an index or
+  installs uses the cache.
+- **`offline`** (`--offline`, `ALAI_OFFLINE`) uses only what's cached and
+  never connects to an index, as uv's `--offline`: a cached index file is
+  used without revalidating, and one that isn't cached is an error.
 - **Config files and environment variables apply to every command**, and a
   command ignores the settings it doesn't use. They're set once, for all
   commands (`link_mode` in a user file, `ALAI_INDEX` for a CI job), so

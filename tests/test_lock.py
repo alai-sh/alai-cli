@@ -16,10 +16,12 @@ from alai._lock import (
     Lock,
     LockedCollection,
     LockError,
+    changes,
     lock_path,
     parse_lock,
     read_lock,
     render_lock,
+    stale,
     write_lock,
 )
 from alai._manifest import parse_manifest
@@ -385,3 +387,47 @@ ignore_requires_ansible = ["some.collection"]
     )
     def test_stale(self, toml: str) -> None:
         assert not example().is_current(self.manifest(toml))  # pyright: ignore[reportArgumentType]
+
+
+class TestChanges:
+    def test_each_kind(self) -> None:
+        before = Lock(raw(), [locked("a.a", "1.0.0"), locked("b.b", "1.0.0"), locked("c.c", "1.0.0")])
+        after = Lock(
+            raw(),
+            [locked("a.a", "2.0.0"), locked("b.b", "1.0.0", source=IndexSource("https://mirror/")), locked("d.d")],
+        )
+
+        assert changes(before, after) == [
+            ("a.a", "Updated a.a v1.0.0 -> v2.0.0"),
+            ("b.b", "Updated b.b v1.0.0, now from https://mirror/"),
+            ("c.c", "Removed c.c v1.0.0"),
+            ("d.d", "Added d.d v1.0.0"),
+        ]
+
+    def test_from_nothing(self) -> None:
+        assert changes(None, Lock(raw(), [locked("a.a")])) == []
+
+    def test_unchanged(self) -> None:
+        assert changes(example(), example()) == []
+
+
+class TestStale:
+    MANIFEST = parse_manifest(raw(["a.a"]))
+
+    def test_missing(self) -> None:
+        assert stale(None, self.MANIFEST, [INDEX.url]) == "it doesn't exist"
+
+    def test_current(self) -> None:
+        assert stale(Lock(raw(["a.a"]), [locked("a.a")]), self.MANIFEST, [INDEX.url]) is None
+
+    def test_manifest_changed(self) -> None:
+        lock = Lock(raw(["a.a>=2"]), [locked("a.a")])
+
+        assert stale(lock, self.MANIFEST, [INDEX.url]) == "alai.toml asks for something else than when it was locked"
+
+    def test_index_gone(self) -> None:
+        lock = Lock(raw(["a.a"]), [locked("a.a")])
+
+        assert stale(lock, self.MANIFEST, ["https://other/"]) == (
+            "a.a comes from https://index.alai.sh/, which isn't a configured index"
+        )

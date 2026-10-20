@@ -67,6 +67,7 @@ def test_config_show_defaults(capsys: pytest.CaptureFixture[str]) -> None:
         "  cache_dir                ~/.cache/alai       default\n"
         "  link_mode                auto                default\n"
         "  system_certs             true                default\n"
+        "  offline                  false               default\n"
         "\n"
         "Indexes, in resolution order\n"
         "  alai  https://index.alai.sh/  built-in, default index\n"
