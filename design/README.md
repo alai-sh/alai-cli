@@ -3,6 +3,13 @@
 Why things work the way they do, what's planned, and open questions. Not
 published; the user documentation is in [docs/](../docs/).
 
+These notes are the source of truth for how the client behaves: its
+configuration, manifest, lockfile and resolution. The index spec, in
+galaxy-sync's `docs/index-spec/`, defines the index format and how it's
+served; its "Client rules" were a starting point and aren't kept in step, so
+where they differ from a decision here (pinning with `[project.sources]`
+rather than `<index>:ns.name`, say), the decision here holds.
+
 | Note | |
 |---|---|
 | [configuration.md](configuration.md) | Settings and project discovery decisions, the project manifest, planned error positions, and what isn't read yet |

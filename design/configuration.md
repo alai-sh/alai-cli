@@ -59,14 +59,29 @@ what's planned on top of it, and the questions still open.
   project, `ansible-playbook` finds nothing without `alai run` or
   `ANSIBLE_COLLECTIONS_PATH`, and the installer's rule of never replacing a
   directory it didn't install matters most there.
-- **`--config-file` holds settings only**, as uv's does: `[project]`,
-  `[groups]` and `[overrides]` there are errors, even when it names the
-  project's own `alai.toml`. So there's one rule: those tables only ever come
-  from the project's `alai.toml`, found by discovery. A CI job that needs a
+- **`--config-file` holds settings only**, as uv's does: `[project]` there
+  is an error, even when it names the project's own `alai.toml`. So there's
+  one rule: `[project]` only ever comes from the project's `alai.toml`, found
+  by discovery. A CI job that needs a
   different `collections_dir` sets `--collections-dir` or
   `ALAI_COLLECTIONS_DIR`. This also settles a path question: with no
   `[project]` in a `--config-file`, a relative `collections_dir` in a file is
   always relative to the project root, so no `{root}` placeholder is needed.
+- **Everything under `[project]` is the project; everything else is a
+  setting** (2026-10-20). Settings (top-level keys and `[[index]]`) can be
+  set in any config file, a flag or an environment variable; `[project]` and
+  its sub-tables (`[project.groups.<name>]`, `[project.overrides]`) only in
+  the project's own `alai.toml`. Top-level `[groups]` and `[overrides]`
+  tables, as `pyproject.toml` has `[dependency-groups]`, were considered, but
+  then which tables were project-only would be a list to learn rather than
+  visible in the file. TOML defines `[project]` from its sub-tables, so a
+  collection repo's file can hold only `[project.groups.test]` and
+  `[project.overrides]`, and the check catches either form. A top-level
+  `[groups]` is just an unknown key, which the project file's suggestion
+  points at `project.groups`. A collection repo's `[project] requires_ansible`
+  or `collections`, if allowed, would override what `meta/runtime.yml` and
+  `galaxy.yml` say (see
+  [collection-development.md](collection-development.md#open-questions)).
 - **Settings are defined once**, in `SETTINGS` in `src/alai/_config.py`:
   reading each level, merging, the argparse options and `config show` all
   loop over it. `Settings` stays a hand-written class so code using it is
@@ -173,15 +188,18 @@ requires_ansible = ">=2.17"
 collections = [
     "community.general>=9,<11",
     "ansible.windows",
-    "internal:corp.tools>=1.2",
+    "corp.tools>=1.2",
 ]
 
-[groups.test]
+[project.groups.test]
 collections = ["ansible.posix", "community.crypto"]
 
-[overrides]
+[project.overrides]
 "ansible.netcommon" = ">=6"
 ignore_requires_ansible = ["some.collection"]
+
+[project.sources]
+"corp.tools" = { index = "internal" }
 ```
 
 Decisions:
@@ -195,7 +213,8 @@ Decisions:
   collections for its own while the lockfile beside `alai.toml` still
   described the originals.
 - **Manifest keys anywhere else are errors**, as all of `[project]` is
-  outside the project file (see `--config-file` above). Since alai never
+  outside the project file (see `--config-file` and the `[project]` rule
+  above). Since alai never
   reads them there, accepting them would let someone believe a CI file adds
   collections when it does nothing.
 - **Keys and types on every command, values when used.** Loading settings
@@ -220,6 +239,20 @@ Decisions:
 - **Index pins are checked when used**, by `alai lock`, like any other
   value. Checking them on every command would also break `alai config show`,
   the command for finding out why an index is missing.
+- **Where a collection comes from is `[project.sources]`, not part of the
+  requirement** (2026-10-20). An `INDEX:` prefix (`internal:corp.tools`),
+  carried over from the early workspace notes, was dropped for a table like
+  `[tool.uv.sources]`: requirement strings stay exactly ansible-galaxy's, so
+  they copy to and from `requirements.yml` and `galaxy.yml`; a collection
+  repo's `galaxy.yml` dependencies can't carry a prefix anyway; and git,
+  path and URL sources need a table, so every kind of source is in one
+  place. Only `{ index = "<name>" }` exists so far; other kinds are an
+  error until supported. An entry applies to any collection in the
+  resolution, not only those listed, overriding the index spec's rule that
+  a dependency comes from its parent's index: the user named the index, so
+  nothing is guessed, and pinning a transitive dependency is the point. So
+  sources are resolution-wide, one per name, like overrides, and the lock
+  records them as a top-level `[sources]`.
 - **Groups are named like indexes** (`[a-z0-9][a-z0-9_-]*`), so a group is
   spelled one way in files and on the command line.
 
@@ -236,8 +269,10 @@ Planned alongside it:
 - **Collection source repos** keep their dependencies in `galaxy.yml`, which
   alai reads instead of `project.collections`. Their `alai.toml` holds groups
   and settings. See [collection-development.md](collection-development.md).
-- **`[sources]`**, keyed by collection name, for git, URL and local path
-  sources a string can't express, like `[tool.uv.sources]`.
+- **More kinds in `[project.sources]`**: git, URL and local path sources a
+  requirement string can't express, as `[tool.uv.sources]` has. Only
+  `{ index = "<name>" }` exists so far; the lock side is in
+  [lockfile.md](lockfile.md#planned-other-sources).
 - **`alai export --format requirements.yml`** writes the lock as a
   `collections/requirements.yml` for AWX/Controller, ansible-builder and
   ansible-navigator, which can't run alai.
