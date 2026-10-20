@@ -14,6 +14,8 @@ from __future__ import annotations
 import collections.abc as _c
 import re
 
+from ._common import Record
+
 # PEP 440's canonical pattern, without the local part.
 _VERSION_PATTERN = r"""
     v?
@@ -88,6 +90,19 @@ class Version:
 
     def __ge__(self, other: Version) -> bool:
         return self._key >= other._key
+
+
+class Bound(Record):
+    """One end of the range a specifier set allows: a version, and whether the range includes it."""
+
+    __slots__ = ("inclusive", "version")
+
+    def __init__(self, version: Version, *, inclusive: bool) -> None:
+        self.version = version
+        self.inclusive = inclusive
+
+    def __str__(self) -> str:
+        return str(self.version)
 
 
 class Specifier:
@@ -174,6 +189,44 @@ class SpecifierSet:
         base = version.base
         return all(s.contains(base) for s in self.specifiers)
 
+    def lower_bound(self) -> Bound | None:
+        """The lowest version the set allows, or None if it has no lower bound.
+
+        From ``>=`` and ``>``, and the lower end of ``~=``, ``==`` and ``==X.*``. ``!=`` and ``===`` don't bound the
+        range. With several, the highest wins; at one version, an exclusive bound is the higher.
+        """
+        bounds: list[Bound] = []
+        for s in self.specifiers:
+            if s.version is None:
+                continue
+            if s.op in (">=", "~=") or (s.op == "==" and not s.prefix):
+                bounds.append(Bound(s.version, inclusive=True))
+            elif s.op == ">":
+                bounds.append(Bound(s.version, inclusive=False))
+            elif s.op == "==":
+                bounds.append(Bound(_release(s.version.epoch, s.version.release), inclusive=True))
+        return max(bounds, key=lambda b: (b.version, not b.inclusive), default=None)
+
+    def upper_bound(self) -> Bound | None:
+        """The highest version the set allows, or None if it has no upper bound.
+
+        From ``<`` and ``<=``, and the upper end of ``~=`` (``~=2.17`` is below 3), ``==`` and ``==X.*``
+        (``==2.17.*`` is below 2.18). With several, the lowest wins; at one version, an exclusive bound is the lower.
+        """
+        bounds: list[Bound] = []
+        for s in self.specifiers:
+            if s.version is None:
+                continue
+            if s.op == "<":
+                bounds.append(Bound(s.version, inclusive=False))
+            elif s.op == "<=" or (s.op == "==" and not s.prefix):
+                bounds.append(Bound(s.version, inclusive=True))
+            elif s.op == "~=":
+                bounds.append(Bound(_next_prefix(s.version.epoch, s.version.release[:-1]), inclusive=False))
+            elif s.op == "==":
+                bounds.append(Bound(_next_prefix(s.version.epoch, s.version.release), inclusive=False))
+        return min(bounds, key=lambda b: (b.version, b.inclusive), default=None)
+
     def __iter__(self) -> _c.Iterator[Specifier]:
         return iter(self.specifiers)
 
@@ -188,6 +241,16 @@ class SpecifierSet:
 
     def __hash__(self) -> int:
         return hash(self.specifiers)
+
+
+def _release(epoch: int, release: tuple[int, ...]) -> Version:
+    text = ".".join(str(i) for i in release)
+    return Version(f"{epoch}!{text}" if epoch else text)
+
+
+def _next_prefix(epoch: int, prefix: tuple[int, ...]) -> Version:
+    """The first release after every one starting with ``prefix``: 2.18 for 2.17, 3 for 2."""
+    return _release(epoch, (*prefix[:-1], prefix[-1] + 1))
 
 
 def _prefix_match(version: Version, prefix: Version) -> bool:

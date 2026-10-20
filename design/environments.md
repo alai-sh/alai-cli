@@ -29,7 +29,7 @@ uv keeps two separate things, and alai should too:
 | | uv | alai |
 |---|---|---|
 | The versions the project supports, a range | `requires-python` in `[project]` | `requires_ansible` in `[project]` |
-| The version to run, one version | `.python-version`, `--python`, `UV_PYTHON` | `ansible_core_version`, if alai manages ansible-core |
+| The version to run, one version | `.python-version`, `--python`, `UV_PYTHON` | `ansible_version`, if alai manages ansible-core |
 
 Decisions so far:
 
@@ -39,12 +39,17 @@ Decisions so far:
   [versions.md](versions.md)).
 - **A pin is a setting, not part of the manifest.** It's how alai runs, not
   what the project needs. As a setting it gets the flag and environment
-  layering for free, so a CI matrix sets `ALAI_ANSIBLE_CORE_VERSION` per job
+  layering for free, so a CI matrix sets `ALAI_ANSIBLE_VERSION` per job
   against one lockfile. A pin outside `requires_ansible` is an error.
-- **Named `ansible_core_version`, not `ansible_version`.** `ansible` is also
-  the community package (versioned 11.x, 12.x), which bundles ansible-core
-  2.18 and so on, so `ansible_version = "2.18"` reads as the wrong package. A
-  `.ansible-core-version` file, like `.python-version`, could feed it too.
+- **Named `ansible_version`** (decided 2026-10-20), for the ansible-core
+  version. `ansible_core_version` was considered first, since `ansible` is
+  also the community package (11.x, 12.x) that bundles ansible-core, so
+  `ansible_version = "2.18"` could read as the wrong package; the shorter
+  name was preferred, matching how `requires_ansible` already names
+  ansible-core. A `.ansible-version` file, like `.python-version`, could
+  feed it too. The resolver already takes it (`resolve(...,
+  ansible_version=...)`, see [resolver.md](resolver.md)); nothing sets it
+  yet.
 - **Installing ansible-core belongs in `[python]`**, reserved in
   [configuration.md](configuration.md#project-manifest) for Python
   requirements, since ansible-core is a Python package.
@@ -74,7 +79,7 @@ The use case: running a project against several ansible-core versions, each
 with its own collections tree, locally or as a CI matrix.
 
 - **One at a time works without a new feature**, as `UV_PROJECT_ENVIRONMENT`
-  does for uv: `ALAI_COLLECTIONS_DIR` (and, later, `ALAI_ANSIBLE_CORE_VERSION`)
+  does for uv: `ALAI_COLLECTIONS_DIR` (and, later, `ALAI_ANSIBLE_VERSION`)
   per job.
 - **Named environments** would let a project list them once, like Hatch or
   tox environments, and pick one with `--env NAME`. Each could set an
@@ -82,11 +87,11 @@ with its own collections tree, locally or as a CI matrix.
 
   ```toml
   [environments.core-2-17]
-  ansible_core_version = "2.17"
+  ansible_version = "2.17"
   groups = ["test"]
 
   [environments.core-2-19]
-  ansible_core_version = "2.19"
+  ansible_version = "2.19"
   groups = ["test"]
   ```
 
@@ -131,7 +136,12 @@ it decides whether environments can hold different collection versions:
   lockfile. Several lockfiles to keep in sync, and nothing guarantees they
   agree where they could.
 
-Leaning: containment first, as the resolver's rule from slice 3, with the
-lockfile format leaving room for an ansible-core range on each package entry
-so forks can come later without a format change. The lockfile design should
-settle this.
+Decided (2026-10-20, [resolver.md](resolver.md)): neither overlap nor strict
+containment, but uv's rule for `requires-python`: a version is usable when
+its `requires_ansible`, upper bounds ignored, starts no later than the
+project's. Containment would reject every collection with an upper bound
+whenever the project's range is open-ended (`>=2.17`). Unlike uv, alai warns
+when a chosen version's upper bound ends inside the project's range, and
+`sync` will check the installed ansible-core against each locked range. Forks
+or per-environment locks remain open for when environments exist; the
+lockfile format leaves room for them (see [lockfile.md](lockfile.md)).

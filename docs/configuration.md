@@ -126,9 +126,10 @@ built highest level first:
    `default = true` are dropped, since only one index can replace the default.
 
 A collection comes from the index its
-[`[project.sources]`](alai-toml.md#projectsources) entry names. Otherwise, one
-the project lists comes from the first index in this list that has it, and a
-dependency from the same index as the collection that needs it.
+[`[project.sources]`](alai-toml.md#projectsources) entry names. Otherwise it
+comes from the first index in this list that has it, whether the project
+lists it or another collection depends on it, and only that index's versions
+are considered: a later index can't shadow it, even with a newer version.
 
 ## Paths
 

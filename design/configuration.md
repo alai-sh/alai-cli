@@ -248,11 +248,11 @@ Decisions:
   path and URL sources need a table, so every kind of source is in one
   place. Only `{ index = "<name>" }` exists so far; other kinds are an
   error until supported. An entry applies to any collection in the
-  resolution, not only those listed, overriding the index spec's rule that
-  a dependency comes from its parent's index: the user named the index, so
-  nothing is guessed, and pinning a transitive dependency is the point. So
-  sources are resolution-wide, one per name, like overrides, and the lock
-  records them as a top-level `[sources]`.
+  resolution, not only those listed, so pinning a transitive dependency
+  works; without one, a collection comes from the first index that has it
+  ([resolver.md](resolver.md)). So sources are resolution-wide, one per
+  name, like overrides, and the lock records them as a top-level
+  `[sources]`.
 - **Groups are named like indexes** (`[a-z0-9][a-z0-9_-]*`), so a group is
   spelled one way in files and on the command line.
 
