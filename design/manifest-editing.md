@@ -41,6 +41,19 @@ Tested against `uv add` and `uv remove` (uv 0.13) on 2026-10-20, with a
 - **`alai.toml` keeps its newlines (`\n` or `\r\n`) and permissions**, and is
   written beside itself and renamed into place.
 
+### Not done yet
+
+- **`--locked` on `add` and `remove`** (asked for 2026-10-21), as `sync`
+  has it: resolve the edit, and exit 1 without writing `alai.toml` or
+  `alai.lock` if the lock would change. Tried with uv 0.13.0 on 2026-10-21:
+  `uv add --locked six` (new) and `uv remove --locked requests` resolved,
+  then failed with "The lockfile at `uv.lock` needs to be updated, but
+  `--locked` was provided" and "hint: To update the lockfile, run `uv
+  lock`", exit 1, `pyproject.toml` untouched; `uv add --locked requests`,
+  already there, went on to sync ("Checked 5 packages"). `--locked` with
+  `--frozen` is an argument error; with `--no-sync` it's accepted. Mostly
+  useful in CI, where an `add` that's already been done should be a no-op.
+
 ## The editor
 
 - **Our own, surgical, and checked.** A small scanner reads enough TOML to

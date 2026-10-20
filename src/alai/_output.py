@@ -89,8 +89,10 @@ def summary(verb: str, count: int, seconds: float, *, dim: bool = False) -> None
 
 
 def change(sign: str, name: str, rest: str) -> None:
-    """An install line, `` + ns.name==1.0.0``: the sign green or red, the name bold and the rest dim."""
-    status(f" {styled(sign, GREEN if sign == '+' else RED)} {styled(name, BOLD)}{styled(rest, DIM)}")
+    """An install line, `` + ns.name==1.0.0``: the sign green, red, or yellow for ``~`` (reinstalled), the name bold
+    and the rest dim."""
+    colour = {"+": GREEN, "~": YELLOW}.get(sign, RED)
+    status(f" {styled(sign, colour)} {styled(name, BOLD)}{styled(rest, DIM)}")
 
 
 def lock_change(line: str) -> None:

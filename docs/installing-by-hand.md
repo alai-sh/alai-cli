@@ -37,7 +37,11 @@ keeps installed versions that still fit, and removes nothing else:
 
 When every collection asked for is already installed at a version that
 fits, it says `Checked` and connects to nothing. `-U` and `-P NAME` upgrade,
-as for [`alai lock`](managing-collections.md#locking). Requirements take the
+as for [`alai lock`](managing-collections.md#locking). `--reinstall`
+reinstalls everything it resolves, what's asked for and what that needs,
+even those already at the version chosen, and
+`--reinstall-collection NAME` reinstalls only `NAME`, as for
+[`alai sync`](managing-collections.md#installing). Requirements take the
 same [syntax](alai-toml.md#requirements) as in `alai.toml`, such as
 `'cisco.ios>=11'`.
 
@@ -84,4 +88,5 @@ whether it was asked for or is needed by one that was.
 as whatever version is asked for, as `ansible-galaxy` does without
 `--force`. One asked for isn't looked up at all, so it needn't be on any
 index; one that's only needed by another is still looked up, which decides
-what else it needs, but its directory isn't touched.
+what else it needs, but its directory isn't touched. It can't be used with
+`--reinstall` or `--reinstall-collection`, which would replace it.

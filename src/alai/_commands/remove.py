@@ -10,6 +10,7 @@ import argparse
 from .._args import HelpFormatter, add_global_args, add_settings_args, settings_from_args
 from .add import add_edit_args
 from .lock import upgrade_from_args
+from .sync import reinstall_from_args
 
 
 def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -32,6 +33,13 @@ def run(args: argparse.Namespace) -> int:
 
     settings = settings_from_args(args)
     group = "dev" if args.dev else args.group
-    upgrade = upgrade_from_args(args)
-    remove(settings, args.names, group=group, sync=not args.no_sync, frozen=args.frozen, upgrade=upgrade)
+    remove(
+        settings,
+        args.names,
+        group=group,
+        sync=not args.no_sync,
+        frozen=args.frozen,
+        upgrade=upgrade_from_args(args),
+        reinstall=reinstall_from_args(args),
+    )
     return 0

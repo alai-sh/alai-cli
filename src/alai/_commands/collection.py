@@ -8,7 +8,9 @@ from __future__ import annotations
 import argparse
 
 from .._args import HelpFormatter, add_global_args, add_settings_args, settings_from_args
+from .._common import ConfigError
 from .lock import add_upgrade_args, upgrade_from_args
+from .sync import add_reinstall_args, reinstall_from_args
 
 
 def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -37,6 +39,7 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         "requirements", metavar="REQUIREMENT", nargs="+", help="a collection, such as ansible.posix or 'cisco.ios>=11'"
     )
     add_upgrade_args(install)
+    add_reinstall_args(install)
     _ = install.add_argument(
         "--keep-unversioned",
         action="store_true",
@@ -64,10 +67,15 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
 def run_install(args: argparse.Namespace) -> int:
     from .._collection import install
 
+    reinstall = reinstall_from_args(args)
+    if reinstall and args.keep_unversioned:
+        # Keeping a collection as it is and reinstalling it ask for opposite things.
+        raise ConfigError("--keep-unversioned can't be used with --reinstall or --reinstall-collection")
     install(
         settings_from_args(args),
         args.requirements,
         upgrade=upgrade_from_args(args),
+        reinstall=reinstall,
         keep_unversioned=args.keep_unversioned,
     )
     return 0

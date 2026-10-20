@@ -43,12 +43,18 @@ def _using(cdir: str) -> str:
 
 
 def install(
-    settings: Settings, requirements: _c.Sequence[str], *, upgrade: bool | set[str], keep_unversioned: bool = False
+    settings: Settings,
+    requirements: _c.Sequence[str],
+    *,
+    upgrade: bool | set[str],
+    reinstall: bool | set[str] = False,
+    keep_unversioned: bool = False,
 ) -> None:
     """Install ``requirements`` and what they need, preferring what's already installed, and remove nothing else.
 
-    If every requirement is already met by what's installed, and nothing is to be upgraded, nothing is resolved or
-    fetched, as ``uv pip install`` checks first. With ``keep_unversioned``, a collection whose version can't be read,
+    If every requirement is already met by what's installed, and nothing is to be upgraded or reinstalled, nothing is
+    resolved or fetched, as ``uv pip install`` checks first. ``reinstall``, everything resolved or the names given,
+    replaces those already at the version chosen. With ``keep_unversioned``, a collection whose version can't be read,
     such as a source checkout with no ``MANIFEST.json``, counts as installed whatever version is asked for, as
     ansible-galaxy counts one: it's left as it is, and isn't resolved when it's asked for.
     """
@@ -59,8 +65,10 @@ def install(
     every = installed(cdir)
     present = {name: c.version for name, c in every.items() if c.version is not None}
     unversioned: set[str] = {name for name, c in every.items() if c.version is None} if keep_unversioned else set()
-    if not upgrade and all(
-        r.name in unversioned or (r.name in present and r.req.contains(present[r.name])) for r in wanted
+    if (
+        not upgrade
+        and not reinstall
+        and all(r.name in unversioned or (r.name in present and r.req.contains(present[r.name])) for r in wanted)
     ):
         summary("Checked", len({r.name for r in wanted}), time.monotonic() - started, dim=True)
         return
@@ -74,7 +82,13 @@ def install(
         origin="the command line",
     )
     summary("Resolved", len(resolution.collections), time.monotonic() - started, dim=True)
-    install_locked(settings, list(resolution.collections), exact=False, keep_unversioned=keep_unversioned)
+    install_locked(
+        settings,
+        list(resolution.collections),
+        exact=False,
+        keep_unversioned=keep_unversioned,
+        reinstall=reinstall,
+    )
 
 
 def uninstall(settings: Settings, names: _c.Sequence[str]) -> None:

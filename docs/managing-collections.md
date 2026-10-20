@@ -111,6 +111,7 @@ it is.
 | `--no-sync` | Lock, but don't install |
 | `--frozen` | Only edit `alai.toml`, without locking or installing; a name alone is written as it is |
 | `-U`, `-P NAME` | Upgrade every collection, or `NAME`, while locking, as [`alai lock`](#locking) does |
+| `--reinstall`, `--reinstall-collection NAME` | Reinstall every collection, or `NAME`, while installing, as [`alai sync`](#installing) does |
 
 Adding a collection keeps every other locked version that still fits, even
 when a newer one is out. `-P NAME` upgrades `NAME` along the way; it takes
@@ -219,8 +220,8 @@ again with nothing to change connects to nothing, and says `Checked`.
 
 A collection is matched by the version in its `MANIFEST.json`, so one
 already at its locked version is left as it is, files edited in place
-included; to put back a collection you've edited, delete its directory and
-run `alai sync`. Anything else under a locked collection's name, including
+included; to put back a collection you've edited, run
+`alai sync --reinstall-collection NAME`. Anything else under a locked collection's name, including
 a directory without a `MANIFEST.json`, is replaced. Collections are
 downloaded once, checked against `alai.lock`, and kept in the cache;
 installing links their files from there, as
@@ -233,6 +234,8 @@ installing links their files from there, as
 | `--inexact` | Keep installed collections `alai.lock` doesn't list, rather than removing them. For a collections directory other tools also install to |
 | `-U`, `--upgrade` | Lock again choosing the newest version of every collection that fits, then install. Can't be used with `--frozen` |
 | `-P NAME`, `--upgrade-collection NAME` | The same for collection `NAME` only; can be repeated |
+| `--reinstall` | Reinstall every collection, even those already at their locked version, from the cache. Shown as `~ NAME==VERSION` |
+| `--reinstall-collection NAME` | The same for collection `NAME` only; can be repeated. One that isn't locked is ignored |
 
 `alai sync` also takes the index, `--system-certs`,
 [`--offline`](alai-toml.md#offline), `--collections-dir` and `--link-mode`

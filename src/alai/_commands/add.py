@@ -9,6 +9,7 @@ import argparse
 
 from .._args import HelpFormatter, add_global_args, add_settings_args, settings_from_args
 from .lock import add_upgrade_args, upgrade_from_args
+from .sync import add_reinstall_args, reinstall_from_args
 
 
 def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -37,6 +38,7 @@ def add_edit_args(parser: argparse.ArgumentParser, *, verb: str) -> None:
     _ = when.add_argument("--no-sync", action="store_true", help="lock, but don't install")
     _ = when.add_argument("--frozen", action="store_true", help="only edit alai.toml, without locking or installing")
     add_upgrade_args(parser)
+    add_reinstall_args(parser)
 
 
 def run(args: argparse.Namespace) -> int:
@@ -44,6 +46,13 @@ def run(args: argparse.Namespace) -> int:
 
     settings = settings_from_args(args)
     group = "dev" if args.dev else args.group
-    upgrade = upgrade_from_args(args)
-    add(settings, args.requirements, group=group, sync=not args.no_sync, frozen=args.frozen, upgrade=upgrade)
+    add(
+        settings,
+        args.requirements,
+        group=group,
+        sync=not args.no_sync,
+        frozen=args.frozen,
+        upgrade=upgrade_from_args(args),
+        reinstall=reinstall_from_args(args),
+    )
     return 0

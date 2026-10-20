@@ -129,6 +129,27 @@ class TestPlan:
 
         assert [c.name for c in plan(str(cdir), {}, exact=True).remove] == ["ns.coll"]
 
+    def test_reinstall_all(self, cdir: Path) -> None:
+        _ = collection(installed_at(cdir, "ns.a"), "ns.a", "1.0.0")
+        _ = collection(installed_at(cdir, "ns.b"), "ns.b", "1.0.0")
+
+        result = plan(str(cdir), {"ns.a": Version("1.0.0"), "ns.b": Version("1.0.0")}, exact=True, reinstall=True)
+
+        assert result.install == ("ns.a", "ns.b")
+        assert [c.name for c in result.replace] == ["ns.a", "ns.b"]
+        assert result.unchanged == ()
+
+    def test_reinstall_named(self, cdir: Path) -> None:
+        _ = collection(installed_at(cdir, "ns.a"), "ns.a", "1.0.0")
+        _ = collection(installed_at(cdir, "ns.b"), "ns.b", "1.0.0")
+        locked = {"ns.a": Version("1.0.0"), "ns.b": Version("1.0.0")}
+
+        # One the lock doesn't list is ignored, as uv ignores a --reinstall-package it doesn't install.
+        result = plan(str(cdir), locked, exact=True, reinstall={"ns.b", "ns.other"})
+
+        assert result.install == ("ns.b",)
+        assert result.unchanged == ("ns.a",)
+
 
 def describe(path: Path) -> dict[str, str]:
     out: dict[str, str] = {}

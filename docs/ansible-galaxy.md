@@ -50,7 +50,8 @@ into.
 | `ansible-galaxy collection install NAME`, then adding it to `requirements.yml` | `alai add NAME` |
 | `ansible-galaxy collection install NAME -p DIR`, for a one-off | `alai collection install NAME`, with `--collections-dir DIR` outside a project ([Installing by hand](installing-by-hand.md)) |
 | `ansible-galaxy collection install --upgrade NAME` | `alai sync -P NAME`, or `alai lock -P NAME` to only update the lock |
-| `ansible-galaxy collection install --force NAME` | Delete the collection's directory, then `alai sync`: `sync` leaves a collection at its locked version as it is, edited or not, so it only reinstalls one that's missing |
+| `ansible-galaxy collection install --force NAME` | `alai sync --reinstall-collection NAME`, or `alai collection install --reinstall-collection NAME NAME` for a one-off |
+| `ansible-galaxy collection install --force-with-deps NAME` | `alai collection install --reinstall NAME` |
 | `ansible-galaxy collection install --pre NAME` | Nothing extra: a pre-release is chosen when no stable version fits (see [Pre-releases](#pre-releases)) |
 | Deleting a collection's directory | `alai remove NAME`, or `alai collection uninstall NAME` |
 | `ansible-galaxy role install` | Not handled: keep using ansible-galaxy for roles |
@@ -128,8 +129,8 @@ directory for collections managed by other tools.
 ansible-galaxy skips a collection that's already installed at a version
 that fits, and reinstalls with `--force`. alai does the same by version:
 a collection at its locked version is left as it is, even if its files were
-edited. There's no `--force`; delete the collection's directory and run
-`alai sync` to get a clean copy.
+edited. `--reinstall-collection NAME`, or `--reinstall` for every one,
+replaces it with a clean copy.
 
 ### Collections without a `MANIFEST.json`
 
