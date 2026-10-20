@@ -26,6 +26,8 @@ dependencies = [
     # Older releases fail on the argparse internals of current Python 3.12 and later releases.
     "argcomplete >= 3.5.2",
     "tomli >= 1.1.0; python_version < '3.11'",
+    # Dependency resolution, as pip and ansible-galaxy use; the floor is the release tested.
+    "resolvelib >= 1.2",
     # The OS trust store for TLS; the floor is the release tested.
     "truststore >= 0.10",
     "urllib3 >= 2.0",

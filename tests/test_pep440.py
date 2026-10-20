@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from alai._pep440 import Specifier, SpecifierSet, Version
+from alai._pep440 import Bound, Specifier, SpecifierSet, Version
 
 
 class TestVersion:
@@ -139,3 +139,39 @@ class TestSpecifierPreAndPostReleases:
     )
     def test_contains(self, spec: str, version: str, expected: bool) -> None:
         assert Specifier(spec).contains(Version(version)) is expected
+
+
+class TestBounds:
+    @pytest.mark.parametrize(
+        ("spec", "lower", "upper"),
+        [
+            ("", None, None),
+            (">=2.17", ("2.17", True), None),
+            (">2.16", ("2.16", False), None),
+            ("<2.20", None, ("2.20", False)),
+            ("<=2.19", None, ("2.19", True)),
+            (">=2.15,<2.19", ("2.15", True), ("2.19", False)),
+            ("~=2.17", ("2.17", True), ("3", False)),
+            ("~=2.17.1", ("2.17.1", True), ("2.18", False)),
+            ("==2.17.*", ("2.17", True), ("2.18", False)),
+            ("==2.17.3", ("2.17.3", True), ("2.17.3", True)),
+            ("!=2.18.0", None, None),
+            ("===2.18.0", None, None),
+            (">=2.15,>=2.17,<2.20,<2.19", ("2.17", True), ("2.19", False)),
+            (">=2.17,>2.17", ("2.17", False), None),
+            ("<2.19,<=2.19", None, ("2.19", False)),
+            (">=1!2.0", ("1!2.0", True), None),
+            ("==1!2.17.*", ("1!2.17", True), ("1!2.18", False)),
+        ],
+    )
+    def test_bounds(self, spec: str, lower: tuple[str, bool] | None, upper: tuple[str, bool] | None) -> None:
+        def expect(bound: tuple[str, bool] | None) -> Bound | None:
+            return None if bound is None else Bound(Version(bound[0]), inclusive=bound[1])
+
+        specifiers = SpecifierSet(spec)
+
+        assert specifiers.lower_bound() == expect(lower)
+        assert specifiers.upper_bound() == expect(upper)
+
+    def test_str(self) -> None:
+        assert str(Bound(Version("2.17"), inclusive=True)) == "2.17"

@@ -304,10 +304,8 @@ Where particular collections come from, by collection name:
 
 An entry applies wherever the collection appears, whether the project lists
 it in `collections` or another collection depends on it, as
-`ansible.netcommon` might here. Without an entry, a collection the project
-lists comes from the first index that has it, and a dependency from the
-same index as the collection that needs it (see
-[Configuration](configuration.md#indexes)). Naming the index yourself is
+`ansible.netcommon` might here. Without an entry, a collection comes from the
+first index that has it (see [Configuration](configuration.md#indexes)). Naming the index yourself is
 also how to be sure a collection can't come from somewhere else that
 happens to have one by the same name.
 
