@@ -107,6 +107,13 @@ wheel itself.
   enabled. PEP 803 proposes a stable ABI for free-threaded builds, which
   would fold those into one wheel; its status wasn't checked. PyPy has no
   `abi3` either and would need its own wheels or the sdist.
+- **TOML editing could live there too.** `alai add` and `alai remove` edit
+  `alai.toml` with a small checked editor of our own
+  ([manifest-editing.md](manifest-editing.md)) because the mature
+  format-preserving editor, `toml_edit` (cargo's and uv's), is Rust with no
+  maintained Python binding. Exposing it from the same extension would cover
+  edits beyond one requirement array, such as `[project.sources]` entries;
+  worth deciding when the extension is designed.
 - **Until then**, cheap wins in today's Python: a process pool for
   extraction (every core, at the cost of shipping errors and progress back
   from the workers); for clones, raw file descriptors (1.42 s to 1.20 s in

@@ -127,6 +127,58 @@ These keys are only read from the project's own `alai.toml`, the one that
 needs: a command that uses these keys reads them from the project's
 `alai.toml` either way.
 
+## Adding and removing collections
+
+`alai add` adds collections to `alai.toml`, then locks and installs them,
+as `alai sync` would:
+
+```console
+$ alai add cisco.ios
+Resolved 4 collections in 2.27s
+Prepared 4 collections in 752ms
+Installed 4 collections in 50ms
+ + ansible.netcommon==8.7.1
+ + ansible.posix==2.2.2
+ + ansible.utils==6.1.1
+ + cisco.ios==11.6.0
+```
+
+A collection given by name alone is written with the version it was
+locked at as its lowest, `"cisco.ios>=11.6.0"`; one given with a
+[requirement](alai-toml.md#requirements), such as `'cisco.ios<12'`, is
+written as given, and replaces the requirement already there for that
+collection. A collection already listed and given by name alone is left as
+it is. `alai remove` takes collection names and removes them, uninstalling
+what nothing needs any more:
+
+```console
+$ alai remove ansible.posix
+Resolved 3 collections in 139ms
+Uninstalled 1 collection in 1ms
+ - ansible.posix==2.1.0
+```
+
+| Option | |
+|---|---|
+| `--group NAME` | Add to or remove from group `NAME` rather than the project's own collections. `alai add` creates the group if it doesn't exist, and installs it |
+| `--dev` | The same as `--group dev` |
+| `--no-sync` | Lock, but don't install |
+| `--frozen` | Only edit `alai.toml`, without locking or installing; a name alone is written as it is |
+| `-U`, `-P NAME` | Upgrade every collection, or `NAME`, while locking, as [`alai lock`](#locking) does |
+
+Only the one array changes: every other line of `alai.toml`, comments and
+layout included, is left as it is. A comment on a removed collection's line
+stays, on a line of its own. A new collection goes in order when the list is
+already sorted, and at the end otherwise. If resolving fails, nothing is
+written.
+
+!!! note "Arrays alai can't edit"
+
+    An array written inside an inline table, such as
+    `project = { collections = [...] }`, can't be edited this way: `alai add`
+    and `alai remove` say so and change nothing, and the collections need
+    adding or removing by hand.
+
 ## Locking
 
 `alai lock` resolves what the project's `alai.toml` asks for, its groups
@@ -166,7 +218,7 @@ To move to newer versions anyway:
 | Option | |
 |---|---|
 | `-U`, `--upgrade` | Choose the newest version of every collection that fits |
-| `-P NAME`, `--upgrade-package NAME` | Choose the newest version of collection `NAME` that fits; can be repeated |
+| `-P NAME`, `--upgrade-collection NAME` | Choose the newest version of collection `NAME` that fits; can be repeated |
 | `--check` | Resolve as usual but write nothing, and exit 1 if `alai.lock` is missing or would change: `alai.toml` asks for something different, or the indexes no longer give the locked versions. A newer release alone doesn't count, since locked versions are kept while they fit. With `--offline`, it resolves from the cache |
 
 `alai lock` also takes the index, `--system-certs` and
@@ -232,6 +284,8 @@ their files from there, as [`link_mode`](alai-toml.md#link_mode) says.
 | `--locked` | Resolve, and exit 1 without installing if `alai.lock` is missing or would change, as [`alai lock --check`](#locking) does. For CI, to catch an `alai.toml` change nobody locked |
 | `--frozen` | Install from `alai.lock` as it is, without checking it against `alai.toml`. It still needs to exist |
 | `--inexact` | Keep installed collections `alai.lock` doesn't list, rather than removing them. For a collections directory other tools also install to |
+| `-U`, `--upgrade` | Lock again choosing the newest version of every collection that fits, then install. Can't be used with `--frozen` |
+| `-P NAME`, `--upgrade-collection NAME` | The same for collection `NAME` only; can be repeated |
 
 `alai sync` also takes the index, `--system-certs`,
 [`--offline`](alai-toml.md#offline), `--collections-dir` and `--link-mode`

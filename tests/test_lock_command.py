@@ -107,7 +107,9 @@ class TestLock:
         assert lines(capsys.readouterr().err) == ["Resolved 2 collections"]
         assert 'name = "b.b"\nversion = "1.0.0"' in (project / "alai.lock").read_text()
 
-    @pytest.mark.parametrize(("args", "updated"), [(["-U"], True), (["--upgrade-package", "b.b"], True), ([], False)])
+    @pytest.mark.parametrize(
+        ("args", "updated"), [(["-U"], True), (["--upgrade-collection", "b.b"], True), ([], False)]
+    )
     def test_upgrade(self, project: Path, capsys: pytest.CaptureFixture[str], args: list[str], updated: bool) -> None:
         write(project, ["a.a", "b.b<1.1"])
         _ = lock()
@@ -260,12 +262,12 @@ class TestErrors:
         )
         assert not (project / "alai.lock").exists()
 
-    def test_invalid_upgrade_package(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_invalid_upgrade_collection(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         write(project, ["a.a"])
 
         assert lock("-P", "nope") == EXIT_ERROR
 
-        assert "--upgrade-package: invalid collection name 'nope'" in capsys.readouterr().err
+        assert "--upgrade-collection: invalid collection name 'nope'" in capsys.readouterr().err
 
     def test_invalid_requirement(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         write(project, ["a.a 1.0"])

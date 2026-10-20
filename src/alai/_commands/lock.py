@@ -30,25 +30,41 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         action="store_true",
         help="resolve, but don't write alai.lock; exit 1 if it's missing or would change",
     )
-    _ = lock.add_argument(
-        "-U", "--upgrade", action="store_true", help="choose the newest versions that fit, ignoring alai.lock"
-    )
-    _ = lock.add_argument(
-        "-P",
-        "--upgrade-package",
-        metavar="NAME",
-        action="append",
-        default=[],
-        help="choose the newest version of collection NAME that fits; can be repeated",
-    )
+    add_upgrade_args(lock)
     add_global_args(lock, suppress=True)
     add_settings_args(lock, "resolve")
     lock.set_defaults(parser=lock, handler=run)
 
 
+def add_upgrade_args(parser: argparse.ArgumentParser) -> None:
+    """``-U`` and ``-P``, for every command that locks, as uv has them on ``lock``, ``sync``, ``add`` and ``remove``."""
+    _ = parser.add_argument(
+        "-U", "--upgrade", action="store_true", help="choose the newest versions that fit, ignoring alai.lock"
+    )
+    _ = parser.add_argument(
+        "-P",
+        "--upgrade-collection",
+        metavar="NAME",
+        action="append",
+        default=[],
+        help="choose the newest version of collection NAME that fits; can be repeated",
+    )
+
+
+def upgrade_from_args(args: argparse.Namespace) -> bool | set[str]:
+    """What to upgrade, for the resolver: everything, the collections named, or nothing (False)."""
+    from .._manifest import collection_name
+
+    if args.upgrade:
+        return True
+    try:
+        return {collection_name(n) for n in args.upgrade_collection} or False
+    except ValueError as e:
+        raise ConfigError(f"--upgrade-collection: {e}") from None
+
+
 def run(args: argparse.Namespace) -> int:
     from .._lock import changes, lock_path, read_lock, write_lock
-    from .._manifest import collection_name
     from .._project import load_project, lock_unchanged, resolve_project
 
     started = time.monotonic()
@@ -61,12 +77,7 @@ def run(args: argparse.Namespace) -> int:
         error(f"there's no {shown_path(path)}; run alai lock")
         return EXIT_STALE
 
-    try:
-        upgrade: bool | set[str] = True if args.upgrade else {collection_name(n) for n in args.upgrade_package}
-    except ValueError as e:
-        raise ConfigError(f"--upgrade-package: {e}") from None
-
-    lock, resolution = resolve_project(settings, manifest, raw, existing, upgrade=upgrade)
+    lock, resolution = resolve_project(settings, manifest, raw, existing, upgrade=upgrade_from_args(args))
     summary("Resolved", len(lock.collections), time.monotonic() - started, dim=True)
     for name, line in changes(existing, lock):
         lock_change(line)

@@ -14,7 +14,8 @@ from the alai index, a static mirror of Galaxy with a few changes to improve
 the time it takes to retrieve the collection metadata before downloading.
 
 - [Projects](projects.md): how alai finds your project, declaring the
-  collections it needs, locking them, and installing them with `alai sync`.
+  collections it needs, adding and removing them, locking them, and
+  installing them with `alai sync`.
 - [Configuration](configuration.md): where alai reads its settings from,
   and how files, environment variables and flags combine.
 - [alai.toml](alai-toml.md): every key and table the file can hold.

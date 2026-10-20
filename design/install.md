@@ -184,6 +184,11 @@ a `docs` dependency group.
   if there's none, both with uv's flags' meanings. A `--frozen` lock entry
   whose index isn't configured any more is downloaded from the URL the lock
   records, as uv uses its lock's URLs.
+- **`-U` and `-P` as uv has them on `sync`**: an upgrade always resolves,
+  even with a current lock, then writes the lock and installs; with
+  `--locked` it fails if the lock would change, and with `--frozen`, which
+  resolves nothing, it's an error. The same flags are on `lock`, `add` and
+  `remove`, all passing `upgrade` to the resolver.
 - **Groups are uv's, with `dev` the default**: the project's collections
   and its `dev` group, if it has one; `--group` adds, `--all-groups` takes
   every one, `--no-group` (winning over both), `--no-default-groups` and
@@ -209,6 +214,13 @@ a `docs` dependency group.
 
 ## Not done yet
 
+- **Upgrading a group** (asked for 2026-10-20): one flag that upgrades
+  every collection a group names, `--upgrade-group NAME` say, on `lock`,
+  `sync`, `add` and `remove`, as `-P` does for one collection; today it
+  takes a `-P` per collection. Open: whether it also upgrades what those
+  collections depend on (`-P` doesn't), whether the project's own
+  collections count as a group for it, and whether uv has an equivalent to
+  follow (not checked).
 - **Speed**: replacing `tarfile` with a native extension, and making
   clones cheaper; see [performance.md](performance.md).
 - **Verifying against `FILES.json` later.** Every published collection
