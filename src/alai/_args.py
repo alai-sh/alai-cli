@@ -83,6 +83,18 @@ def add_global_args(parser: argparse.ArgumentParser, *, suppress: bool) -> None:
         help="show debug detail; -vv also traces each step",
     )
     _ = group.add_argument("-q", "--quiet", action="store_true", default=default(False), help="only show errors")
+    _ = group.add_argument(
+        "--color",
+        choices=("auto", "always", "never"),
+        default=default("auto"),
+        help="colour the output: auto, the default, colours it on a terminal (env: NO_COLOR, FORCE_COLOR)",
+    )
+    _ = group.add_argument(
+        "--no-progress",
+        action="store_true",
+        default=default(False),
+        help="don't draw progress while working (env: ALAI_NO_PROGRESS)",
+    )
 
 
 def verbose_count(args: argparse.Namespace) -> int:

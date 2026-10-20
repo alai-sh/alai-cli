@@ -171,3 +171,5 @@ These control where settings come from, or alai's output, so they have no
 | `--no-config` | `ALAI_NO_CONFIG` | Read no config files |
 | `-v`, `--verbose` | none | Show debug lines: what alai decided and why. `-vv` also shows trace lines for each step. Counted wherever it appears, so `alai -v config show -v` is `-vv`; more than two is an error |
 | `-q`, `--quiet` | none | Show only errors. Can't be combined with `-v` |
+| `--color <when>` | `NO_COLOR`, `FORCE_COLOR` | Colour the output: `auto` (the default) only when it goes to a terminal, `always` or `never`. With `auto`, a non-empty `NO_COLOR` turns colour off and a non-empty `FORCE_COLOR` turns it on; `NO_COLOR` wins if both are set |
+| `--no-progress` | `ALAI_NO_PROGRESS` | Don't draw progress while resolving, downloading or installing. Progress is only drawn when the output goes to a terminal that isn't `TERM=dumb`, and never with `-q` |

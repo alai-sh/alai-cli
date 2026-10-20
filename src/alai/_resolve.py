@@ -86,6 +86,7 @@ def resolve(
     locked: Lock | None = None,
     upgrade: bool | _c.Collection[str] = False,
     ansible_version: Version | None = None,
+    report: _c.Callable[[str, int], None] | None = None,
 ) -> Resolution:
     """Choose one version of every collection the project needs, its groups included.
 
@@ -93,6 +94,8 @@ def resolve(
     whose versions are kept while they still fit, unless ``upgrade`` is true or names the collection.
     ``ansible_version`` is the one ansible-core version to resolve for, when it's known: each version's own
     ``requires_ansible`` must then contain it, upper bounds included, in place of the project's range.
+    ``report``, for progress, is called with each collection as its versions are looked at, and how many index files
+    have been read so far.
     """
     project = manifest.requires_ansible
     if ansible_version is not None and project is not None and not project.contains(ansible_version):
@@ -102,7 +105,7 @@ def resolve(
         if client.index.name in by_name:
             raise ValueError(f"index '{client.index.name}' is given more than once")
         by_name[client.index.name] = client
-    provider = _Provider(manifest, by_name, _preferences(locked, upgrade), ansible_version)
+    provider = _Provider(manifest, by_name, _preferences(locked, upgrade), ansible_version, report)
     roots = provider.roots()
     resolver: resolvelib.Resolver[_Requirement, _Candidate, str] = resolvelib.Resolver(
         provider, resolvelib.BaseReporter()
@@ -179,8 +182,10 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
         indexes: dict[str, IndexClient],
         preferred: dict[str, LockedCollection],
         ansible_version: Version | None,
+        report: _c.Callable[[str, int], None] | None = None,
     ) -> None:
         self._manifest = manifest
+        self._report = report
         self._indexes = indexes
         """By name, in the order they're searched: built from a sequence, so the order is the configured one."""
         self._preferred = preferred
@@ -251,6 +256,8 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
         incompatibilities: _c.Mapping[str, _c.Iterator[_Candidate]],
     ) -> list[_Candidate]:
         reqs = list(requirements[identifier])
+        if self._report is not None:
+            self._report(identifier, len(self._files))
         # Every requirement on a name agrees on its index: it's worked out from the name alone.
         index = reqs[0].index
         file = None if index is None else self._file(index, identifier)

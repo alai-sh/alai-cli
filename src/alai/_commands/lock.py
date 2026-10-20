@@ -6,9 +6,11 @@
 from __future__ import annotations
 
 import argparse
-import sys
+import time
 
 from .._args import HelpFormatter, add_global_args, add_settings_args, settings_from_args
+from .._common import ConfigError
+from .._output import detail, error, lock_change, shown_path, status, summary
 
 EXIT_STALE = 1
 """``--check`` found the lock missing, or resolving would change it."""
@@ -45,30 +47,18 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
 
 
 def run(args: argparse.Namespace) -> int:
-    import time
-
-    from .. import __version__
-    from .._common import ConfigError
-    from .._config import raw_manifest, read_toml
-    from .._fetch import Fetcher
-    from .._index import IndexClient
-    from .._lock import Lock, changes, lock_path, read_lock, write_lock
-    from .._manifest import collection_name, parse_manifest
-    from .._output import detail, status, warn
-    from .._resolve import resolve
+    from .._lock import changes, lock_path, read_lock, write_lock
+    from .._manifest import collection_name
+    from .._project import load_project, lock_unchanged, resolve_project
 
     started = time.monotonic()
     settings = settings_from_args(args)
-    project = settings.project
-    if project.config_file is None:
-        raise ConfigError(f"there's no alai.toml in {project.root}: alai lock resolves the collections it lists")
-    raw = raw_manifest(read_toml(project.config_file), project.config_file)
-    manifest = parse_manifest(raw)
-    path = lock_path(project.root)
+    raw, manifest = load_project(settings, "alai lock resolves the collections it lists")
+    path = lock_path(settings.project.root)
     existing = read_lock(path)
 
     if args.check and existing is None:
-        print(f"error: there's no {_shown(path)}; run alai lock", file=sys.stderr)
+        error(f"there's no {shown_path(path)}; run alai lock")
         return EXIT_STALE
 
     try:
@@ -76,41 +66,17 @@ def run(args: argparse.Namespace) -> int:
     except ValueError as e:
         raise ConfigError(f"--upgrade-package: {e}") from None
 
-    with Fetcher(
-        user_agent=f"alai/{__version__}", offline=settings.offline, system_certs=settings.system_certs
-    ) as fetcher:
-        clients = [IndexClient(index, fetcher, settings.cache_dir) for index in settings.indexes]
-        resolution = resolve(manifest, clients, locked=existing, upgrade=upgrade)
-
-    for message in resolution.warnings:
-        warn(message)
-    lock = Lock(raw, resolution.collections)
-    status(f"Resolved {_count(len(lock.collections))} in {_elapsed(time.monotonic() - started)}")
+    lock, resolution = resolve_project(settings, manifest, raw, existing, upgrade=upgrade)
+    summary("Resolved", len(lock.collections), time.monotonic() - started, dim=True)
     for name, line in changes(existing, lock):
-        status(line)
+        lock_change(line)
         if (reason := resolution.reasons.get(name)) is not None:
             detail(reason)
     if args.check:
-        if existing is None or not existing.is_current(manifest) or existing.collections != lock.collections:
-            print(f"error: {_shown(path)} is out of date; run alai lock", file=sys.stderr)
+        if not lock_unchanged(existing, manifest, lock):
+            error(f"{shown_path(path)} is out of date; run alai lock")
             return EXIT_STALE
-        status(f"{_shown(path)} is up to date")
+        status(f"{shown_path(path)} is up to date")
         return 0
     _ = write_lock(path, lock)
     return 0
-
-
-def _shown(path: str) -> str:
-    """``path`` relative to the current directory when it's under it, as uv shows paths, else as it is."""
-    import os
-
-    relative = os.path.relpath(path)
-    return path if relative.startswith("..") else relative
-
-
-def _count(n: int) -> str:
-    return f"{n} collection" if n == 1 else f"{n} collections"
-
-
-def _elapsed(seconds: float) -> str:
-    return f"{seconds * 1000:.0f}ms" if seconds < 1 else f"{seconds:.2f}s"

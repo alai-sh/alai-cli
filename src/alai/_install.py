@@ -14,6 +14,7 @@ from __future__ import annotations
 import collections.abc as _c
 import contextlib
 import errno
+import fcntl
 import glob
 import json
 import os
@@ -54,7 +55,7 @@ class Installed(Record):
 
 
 class Plan(Record):
-    __slots__ = ("install", "remove", "unchanged", "unlink")
+    __slots__ = ("install", "remove", "replace", "unchanged", "unlink")
 
     def __init__(
         self,
@@ -62,9 +63,12 @@ class Plan(Record):
         remove: _c.Sequence[Installed],
         unchanged: _c.Sequence[str],
         unlink: _c.Sequence[str] = (),
+        replace: _c.Sequence[Installed] = (),
     ) -> None:
         self.install = tuple(install)
         """Locked collections to install, replacing any other version already there, by name."""
+        self.replace = tuple(replace)
+        """What's installed now under the names in ``install``, which installing them replaces."""
         self.remove = tuple(remove)
         """Installed collections the lock doesn't list."""
         self.unchanged = tuple(unchanged)
@@ -118,7 +122,8 @@ def plan(collections_dir: str, locked: _c.Mapping[str, Version], *, exact: bool)
         have = present.get(name)
         (unchanged if have is not None and have.version == version else install).append(name)
     remove = [c for name, c in sorted(present.items()) if name not in locked] if exact else []
-    return Plan(install, remove, unchanged, unlink)
+    replace = [present[name] for name in install if name in present]
+    return Plan(install, remove, unchanged, unlink, replace)
 
 
 def install(collections_dir: str, name: str, source: str, linker: Linker) -> None:
@@ -240,8 +245,6 @@ def _clone(source: str, dest: str) -> None:
             code = ctypes.get_errno()
             raise OSError(code, os.strerror(code))
     elif sys.platform == "linux":
-        import fcntl
-
         with open(source, "rb") as src, open(dest, "xb") as dst:
             _ = fcntl.ioctl(dst.fileno(), _ficlone(), src.fileno())
         shutil.copymode(source, dest)
@@ -251,8 +254,6 @@ def _clone(source: str, dest: str) -> None:
 
 def _ficlone() -> int:
     """The ``FICLONE`` request: Python's own from 3.12, which is right for every architecture, else x86 and ARM's."""
-    import fcntl
-
     request: int = getattr(fcntl, "FICLONE", _FICLONE)
     return request
 

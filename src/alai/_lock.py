@@ -85,6 +85,26 @@ class Lock(Record):
     def get(self, name: str) -> LockedCollection | None:
         return next((c for c in self.collections if c.name == name), None)
 
+    def select(self, groups: _c.Iterable[str], *, project: bool = True) -> list[LockedCollection]:
+        """What installing the project's requirements, unless not ``project``, and those of ``groups`` needs: each
+        collection they name and everything those depend on, sorted by name."""
+        manifest = parse_manifest(self.manifest)
+        wanted = [r.name for r in manifest.collections] if project else []
+        for group in groups:
+            wanted.extend(r.name for r in manifest.groups[group])
+        by_name = {c.name: c for c in self.collections}
+        found: set[str] = set()
+        while wanted:
+            name = wanted.pop()
+            if name in found:
+                continue
+            collection = by_name.get(name)
+            if collection is None:
+                raise LockError(f"the lock has no entry for {name}, which it needs: run alai lock")
+            found.add(name)
+            wanted.extend(collection.dependencies)
+        return [by_name[n] for n in sorted(found)]
+
     def is_current(self, manifest: Manifest) -> bool:
         """Whether this lock was resolved from a manifest that asks for the same as ``manifest``.
 

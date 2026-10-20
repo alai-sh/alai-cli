@@ -6,6 +6,7 @@ and ``_manifest``."""
 
 from __future__ import annotations
 
+import collections.abc as _c
 import re
 
 NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
@@ -39,3 +40,17 @@ class Record:
 def as_table(value: object) -> dict[str, object] | None:
     # TOML tables always have string keys.
     return value if isinstance(value, dict) else None  # pyright: ignore[reportUnknownVariableType]
+
+
+TRUE_WORDS = frozenset(("1", "true", "yes", "on"))
+FALSE_WORDS = frozenset(("0", "false", "no", "off"))
+"""The words a boolean environment variable takes, in any case."""
+
+
+def env_bool(environ: _c.Mapping[str, str], name: str) -> bool:
+    value = (environ.get(name) or "").lower()
+    if not value or value in FALSE_WORDS:
+        return False
+    if value in TRUE_WORDS:
+        return True
+    raise ConfigError(f"{name}: expected a boolean (1, true, yes, on, 0, false, no, off), got '{value}'")
