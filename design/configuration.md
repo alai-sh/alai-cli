@@ -266,8 +266,9 @@ names contain a dot: `community.general = ">=9"` is a TOML dotted key. They're
 listed per kind, as `requirements.yml` does with `collections:` and `roles:`:
 a role and a collection can share a `namespace.name`, so one list couldn't
 hold both. `project` and each group can take a `roles` key later without a
-format change. For now alai handles collections only, and `-r
-requirements.yml` warns about and skips roles.
+format change. For now alai handles collections only, and a future `-r
+requirements.yml` would warn about and skip roles
+([requirements-file.md](requirements-file.md)).
 
 Planned alongside it:
 

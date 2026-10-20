@@ -257,7 +257,8 @@ are. Tested with uv 0.13 on 2026-10-20 in a venv:
 ## Not done yet
 
 - **`collection install -r requirements.yml`**, ansible-galaxy's
-  requirements file, as `uv pip install -r requirements.txt` takes pip's.
+  requirements file, as `uv pip install -r requirements.txt` takes pip's:
+  shelved, see [requirements-file.md](requirements-file.md).
 
 - **Upgrading a group** (asked for 2026-10-20): one flag that upgrades
   every collection a group names, `--upgrade-group NAME` say, on `lock`,
