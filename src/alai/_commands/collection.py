@@ -17,8 +17,8 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         help="install or uninstall collections outside the project's requirements and alai.lock",
         description="Install or uninstall collections in the collections directory by hand, as uv pip does for "
         + "packages. The project's requirements and alai.lock aren't used or changed, though an alai.toml, if the "
-        + "project has one, marks it and its settings apply; the next alai sync puts the directory back as the lock "
-        + "has it.",
+        + "project has one, marks the project's directory and its settings apply, such as where collections are "
+        + "installed; the next alai sync puts the collections directory back as the lock has it.",
         formatter_class=HelpFormatter,
     )
     add_global_args(collection, suppress=True)
@@ -29,13 +29,20 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         "install",
         help="install collections and what they need",
         description="Install collections and what they need into the collections directory, keeping installed "
-        + "versions that fit. Nothing else is removed. Outside a project, --collections-dir says where.",
+        + "versions that fit. Nothing else is removed. Outside a project, there's no collections directory to use, so "
+        + "--collections-dir, or the collections_dir setting, has to say where.",
         formatter_class=HelpFormatter,
     )
     _ = install.add_argument(
         "requirements", metavar="REQUIREMENT", nargs="+", help="a collection, such as ansible.posix or 'cisco.ios>=11'"
     )
     add_upgrade_args(install)
+    _ = install.add_argument(
+        "--keep-unversioned",
+        action="store_true",
+        help="leave a collection whose version can't be read, such as a source checkout with no MANIFEST.json, as "
+        + "it is, as if it were the version asked for, rather than replace it",
+    )
     add_global_args(install, suppress=True)
     add_settings_args(install, "resolve", "install")
     install.set_defaults(parser=install, handler=run_install)
@@ -43,7 +50,9 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
     uninstall = collection_commands.add_parser(
         "uninstall",
         help="uninstall collections",
-        description="Uninstall collections from the collections directory. What they depend on stays.",
+        description="Uninstall collections from the collections directory. What they depend on stays. Outside a "
+        + "project, there's no collections directory to use, so --collections-dir, or the collections_dir setting, "
+        + "has to say where.",
         formatter_class=HelpFormatter,
     )
     _ = uninstall.add_argument("names", metavar="NAME", nargs="+", help="a collection name, such as ansible.posix")
@@ -55,7 +64,12 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
 def run_install(args: argparse.Namespace) -> int:
     from .._collection import install
 
-    install(settings_from_args(args), args.requirements, upgrade=upgrade_from_args(args))
+    install(
+        settings_from_args(args),
+        args.requirements,
+        upgrade=upgrade_from_args(args),
+        keep_unversioned=args.keep_unversioned,
+    )
     return 0
 
 

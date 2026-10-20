@@ -4,7 +4,7 @@ How `alai sync` gets each locked collection onto disk: the artifact cache
 is `src/alai/_artifacts.py`, installing into `collections_dir` is
 `src/alai/_install.py`, and the command is `src/alai/_commands/sync.py`
 with its logic in `src/alai/_sync.py`. The user documentation is
-`docs/projects.md#installing`.
+`docs/managing-collections.md#installing`.
 
 ## Decisions
 
@@ -100,9 +100,23 @@ with its logic in `src/alai/_sync.py`. The user documentation is
   `sync` makes `collections_dir` match the lock. ansible-galaxy instead
   names it from its path at version `*` (`from_dir_path_implicit`), which
   satisfies any requirement, so it skips it without `--force`; that leaves
-  code the lock didn't choose in place. A broken symlink is replaced or
-  removed the same way, and a symlink is only ever unlinked, never followed,
-  so what it points at survives.
+  code the lock didn't choose in place. `collection install` does the same
+  for the collections it installs, asked for or needed, and leaves every
+  other one alone (2026-10-21); `collection install --keep-unversioned`
+  leaves an unversioned one as it is instead, as if it were the version
+  asked for, and doesn't resolve one that's asked for, so it needn't be on
+  an index. A dependency kept that way is still resolved from the index,
+  which decides what else it pulls in. Whether this should be the default
+  is a question for users ([user-questions.md](user-questions.md)). uv 0.13.0 can't always read a version
+  either: a `site-packages` directory with no `.dist-info` isn't a package
+  to it, so `uv pip install` writes over it and leaves any other files mixed
+  in, while a `.dist-info` whose `METADATA` has no version, or one that
+  doesn't parse, makes `uv pip install` fail ("Failed to read metadata");
+  `uv pip uninstall` still removes it, by the version in the directory's
+  name. A collection has no separate record like `.dist-info`, so alai
+  replaces the whole directory rather than merge files into it. A broken
+  symlink is replaced or removed the same way, and a symlink is only ever
+  unlinked, never followed, so what it points at survives.
 - **Nothing is written or deleted through a symlink in the tree**, only
   unlinked. Links inside a collection are deleted with it, never followed
   (`shutil.rmtree`, which works through file descriptors here:
@@ -205,7 +219,8 @@ a `docs` dependency group.
   all. A sync with nothing to do took 0.02 s for the whole process.
 - **Output is uv's**, on stderr: `Resolved N collections in …` (not with
   `--frozen`, as uv), `Prepared N …` when anything was downloaded,
-  `Uninstalled N …` counting removals and replacements, `Installed N …`,
+  `Uninstalled N …` counting removals and replacements (not an unlinked
+  namespace, which isn't a collection), `Installed N …`,
   then one line per change, by name, a removal before its replacement:
   ` - ns.name==1.0.0`, ` + ns.name==2.0.0`, ` - ns.name (unknown version)`
   for a directory without a version, ` - ns (namespace link to …)` for an
@@ -251,6 +266,16 @@ are. Tested with uv 0.13 on 2026-10-20 in a venv:
   no marker, `collections_dir` has to be set (`--collections-dir`,
   `ALAI_COLLECTIONS_DIR`, a config file), or it's an error, rather than a
   `collections/` in whatever directory alai runs from.
+- **Which directory is said first**, dim, on stderr:
+  `Using collections directory at: ~/project/collections`, unless it's
+  `collections/` in the current directory. uv 0.13.0 (2026-10-21) prints
+  `Using Python 3.15.0 environment at: <path>` first for `pip install` and
+  `pip uninstall`, from a subdirectory of the project, with `--python` and
+  with `VIRTUAL_ENV`, and not for `.venv` in the current directory; the
+  path relative when under the current directory, else absolute. alai
+  shows the absolute ones with `~` for home. Asked for after the
+  recordings showed an install from `playbooks/` going to the project's
+  `collections/` above it with nothing saying so.
 - **`alai sync` undoes them**, being exact: what was installed by hand goes
   and what was uninstalled comes back, unless `--inexact`. The docs say so.
 
@@ -260,6 +285,15 @@ are. Tested with uv 0.13 on 2026-10-20 in a venv:
   requirements file, as `uv pip install -r requirements.txt` takes pip's:
   shelved, see [requirements-file.md](requirements-file.md).
 
+- **Reinstalling** (asked for 2026-10-21): `--reinstall` and
+  `--reinstall-collection NAME` on `sync` and `collection install`, as uv's
+  `--reinstall` and `--reinstall-package` on `uv sync` and `uv pip install`
+  (from uv's help; not tried yet), putting a collection in the plan's
+  `install` even when its installed version matches. It's what
+  ansible-galaxy's `--force` is for; today a collection edited in place is
+  only replaced after deleting its directory. Open: whether it re-extracts
+  from the download or reuses the extracted cache, which is checked against
+  the lock's `cksum` when it's made but not after.
 - **Upgrading a group** (asked for 2026-10-20): one flag that upgrades
   every collection a group names, `--upgrade-group NAME` say, on `lock`,
   `sync`, `add` and `remove`, as `-P` does for one collection; today it

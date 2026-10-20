@@ -64,6 +64,13 @@ The rest is planned.
   a collection) moved the bundle and ~90 collections back with no
   explanation. The reasons are worked out by the resolver
   ([resolver.md](resolver.md)).
+- **Paths under the home directory are shown with `~`** in `config show`
+  and in errors naming the project's directory (`no project found from
+  ~/ansible`), through `_output.home_path()`, so output reads the same in
+  the docs' recordings, which run in a temporary home, as on a user's
+  terminal. uv's equivalent error names no path at all; alai's does, as
+  `--project` can start the search somewhere other than the current
+  directory.
 - **Two verbosity levels, each with a meaning**, as uv has, rather than
   Ansible's six loosely defined ones:
 

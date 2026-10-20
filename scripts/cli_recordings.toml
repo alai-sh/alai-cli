@@ -1,0 +1,201 @@
+# The terminal recordings in the docs, made by scripts/cli_recordings.py on every
+# docs build. See design/documentation.md.
+#
+# Each [[recording]] runs in a new home directory, with an empty cache, against
+# the local index below. `cd` in its commands changes the directory the next ones
+# run in, as in a shell:
+#
+#   name         the file it's written to, docs/casts/<name>.cast
+#   title        shown above it
+#   directory    where it starts, in the home directory: "project" unless set
+#   files        files written to that directory first, by relative path
+#   setup        shell commands run before recording starts, not shown
+#   commands     shell commands typed and run in the recording, in order
+
+# The collections the local index serves, by name: each version, and the
+# collections it depends on. Versions are taken from Galaxy so the output reads
+# as it would for real, but the artifacts hold only a README.
+[index]
+"ansible.netcommon" = [
+    { vers = "8.6.0", deps = { "ansible.utils" = ">=6.0.0" } },
+    { vers = "8.7.1", deps = { "ansible.utils" = ">=6.0.0" } },
+]
+"ansible.posix" = [{ vers = "2.1.0" }, { vers = "2.2.2" }]
+"ansible.utils" = [{ vers = "6.0.0" }, { vers = "6.1.1" }]
+"cisco.ios" = [
+    { vers = "11.5.0", deps = { "ansible.netcommon" = ">=8.1.0", "ansible.posix" = ">=2.0.0" } },
+    { vers = "11.6.0", deps = { "ansible.netcommon" = ">=8.1.0", "ansible.posix" = ">=2.0.0" } },
+]
+"community.general" = [{ vers = "10.7.8" }, { vers = "10.7.9" }, { vers = "11.0.0" }]
+
+[[recording]]
+name = "add"
+title = "Adding collections to a new project"
+files = { "alai.toml" = "[project]\n" }
+commands = ["alai add cisco.ios 'community.general<11'", "cat alai.toml"]
+
+[[recording]]
+name = "add-upgrade"
+title = "Upgrading a locked collection while adding another"
+files = { "alai.toml" = "[project]\n" }
+setup = ["alai add -q 'ansible.posix<2.2'", "sed -i 's/ansible.posix<2.2/ansible.posix>=2.1.0/' alai.toml"]
+commands = [
+    "grep -A1 'name = \"ansible.posix\"' alai.lock",
+    "alai add cisco.ios",
+    "alai add community.general -P ansible.posix",
+]
+
+[[recording]]
+name = "remove"
+title = "Removing a collection"
+files = { "alai.toml" = "[project]\n" }
+setup = ["alai add -q ansible.posix cisco.ios"]
+commands = ["alai remove cisco.ios"]
+
+[[recording]]
+name = "lock"
+title = "Upgrading one collection, then the rest"
+files = { "alai.toml" = """
+[project]
+collections = ["cisco.ios>=11.5.0", "community.general>=10.7.0"]
+""" }
+setup = ["alai lock -q", "sed -i 's/11\\.6\\.0/11.5.0/; s/8\\.7\\.1/8.6.0/' alai.lock"]
+commands = ["alai lock --upgrade-collection cisco.ios", "alai lock --upgrade", "alai lock --check"]
+
+[[recording]]
+name = "sync"
+title = "Installing a project's collections"
+files = { "alai.toml" = """
+[project]
+collections = ["cisco.ios>=11.5.0", "community.general>=10.7.0"]
+""" }
+commands = ["alai sync", "ls collections/ansible_collections/*", "alai sync"]
+
+[[recording]]
+name = "collection-install"
+title = "Installing into a project's collections directory"
+files = { "alai.toml" = "" }
+commands = ["ls", "alai collection install ansible.posix", "tree -L 3 collections"]
+
+[[recording]]
+name = "collection-install-subdirectory"
+title = "Installing from a directory inside the project"
+files = { "alai.toml" = "", "playbooks/site.yml" = "- hosts: all\n" }
+commands = ["ls", "cd playbooks", "alai collection install ansible.posix", "tree -L 4 .."]
+
+[[recording]]
+name = "collection-install-ansible-cfg"
+title = "Installing into a project marked by ansible.cfg"
+files = { "ansible.cfg" = "[defaults]\ninventory = inventory.ini\n" }
+commands = ["ls", "alai collection install ansible.posix", "tree -L 3 collections"]
+
+[[recording]]
+name = "collection-install-outside"
+title = "Installing outside a project"
+directory = "ansible"
+commands = ["alai collection install cisco.ios", "alai collection install --collections-dir ./collections cisco.ios"]
+
+[[recording]]
+name = "collection-uninstall"
+title = "Uninstalling from a project's collections directory"
+files = { "alai.toml" = "" }
+setup = ["alai collection install -q cisco.ios"]
+commands = ["ls", "alai collection uninstall cisco.ios", "tree -L 3 collections"]
+
+[[recording]]
+name = "collection-uninstall-outside"
+title = "Uninstalling a collection outside a project"
+directory = "ansible"
+setup = ["alai collection install -q --collections-dir ./collections cisco.ios"]
+commands = ["alai collection uninstall --collections-dir ./collections cisco.ios"]
+
+[[recording]]
+name = "config-show"
+title = "Showing the settings in effect"
+files = { "alai.toml" = """
+link_mode = "copy"
+
+[project]
+collections = ["ansible.posix"]
+""" }
+commands = ["alai config show"]
+
+# Which recordings the CLI reference (docs/cli.md) shows under each command, in
+# order: one [[reference."<command>"]] table each, naming the recording, with an
+# optional description, Markdown paragraphs shown between its title and the
+# player to explain what it shows there. A recording can be shown under several
+# commands, or only on a guide page, linked as
+# [Title](casts/<name>.cast){ .alai-cast } with the guide's own text around it;
+# one used nowhere fails the docs build.
+
+[[reference.add]]
+recording = "add"
+
+[[reference.add]]
+recording = "add-upgrade"
+description = """
+Here `ansible.posix` is locked at 2.1.0, and 2.2.2 has since been released.
+
+Adding `cisco.ios` leaves `ansible.posix` at 2.1.0. `cisco.ios` needs
+`ansible.posix>=2.0.0`, which 2.1.0 still satisfies, and alai doesn't change a
+locked version that still works, even when a newer one is out.
+
+Adding `community.general -P ansible.posix` adds `community.general` and
+upgrades `ansible.posix`, and only `ansible.posix`, to the newest version that
+fits, 2.2.2. `-P` takes the name of the collection to upgrade, which needn't be
+one being added: here it's already in `alai.toml`. Give `-P` again to upgrade
+more than one, or use `-U` to upgrade every collection.
+"""
+
+[[reference.remove]]
+recording = "remove"
+
+[[reference.lock]]
+recording = "lock"
+
+[[reference.sync]]
+recording = "sync"
+
+[[reference."collection install"]]
+recording = "collection-install"
+description = """
+An `alai.toml`, even an empty one, marks the project's directory, and
+collections are installed into `collections/` beside it.
+"""
+
+[[reference."collection install"]]
+recording = "collection-install-subdirectory"
+description = """
+alai looks for the project from the current directory upwards, so run from
+`playbooks/`, it finds the `alai.toml` above and installs into the project's
+`collections/`, not one in `playbooks/`.
+"""
+
+[[reference."collection install"]]
+recording = "collection-install-ansible-cfg"
+description = """
+Without an `alai.toml`, an `ansible.cfg` marks the project's directory too, so
+collections still go into `collections/` beside it. alai only uses it to find
+the project; it doesn't read Ansible's settings from it.
+"""
+
+[[reference."collection install"]]
+recording = "collection-install-outside"
+description = """
+With no `alai.toml`, `ansible.cfg` or `collections/ansible_collections` in the
+current directory or above it, there's no project, and alai won't guess where
+to install: `--collections-dir` says where.
+"""
+
+[[reference."collection uninstall"]]
+recording = "collection-uninstall"
+description = """
+Only the collections named are uninstalled: the collections `cisco.ios`
+needed stay installed.
+"""
+
+[[reference."collection uninstall"]]
+recording = "collection-uninstall-outside"
+
+[[reference."config show"]]
+recording = "config-show"

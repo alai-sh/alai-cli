@@ -198,7 +198,7 @@ keep their own settings under `[tool.<name>]`, as in `pyproject.toml`.
 
 Every command checks that these keys are spelt right and have the right
 types; the requirements themselves are checked when
-[`alai lock`](projects.md#locking) or [`alai sync`](projects.md#installing)
+[`alai lock`](managing-collections.md#locking) or [`alai sync`](managing-collections.md#installing)
 resolves them.
 
 | Key | Type | |
@@ -280,7 +280,7 @@ collections = ["ansible.posix", "community.crypto>=2"]
 Group names use lowercase letters, digits, `-` and `_`, starting with a
 letter or digit. `alai sync` installs the `dev` group with the project's
 collections and the others when asked for; see
-[Groups](projects.md#groups).
+[Groups](managing-collections.md#groups).
 
 ### `[project.overrides]`
 

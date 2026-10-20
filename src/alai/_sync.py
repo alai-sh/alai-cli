@@ -54,12 +54,15 @@ def selected_groups(args: argparse.Namespace, manifest: Manifest) -> tuple[bool,
     return True, sorted(chosen - excluded)
 
 
-def install_locked(settings: Settings, wanted: list[LockedCollection], *, exact: bool) -> None:
-    """Make the collections directory hold ``wanted``: download what isn't cached, then remove and install."""
+def install_locked(
+    settings: Settings, wanted: list[LockedCollection], *, exact: bool, keep_unversioned: bool = False
+) -> None:
+    """Make the collections directory hold ``wanted``: download what isn't cached, then remove and install. With
+    ``keep_unversioned``, a collection whose version can't be read is left as it is."""
 
     started = time.monotonic()
     cdir = settings.collections_dir
-    todo = plan(cdir, {c.name: c.version for c in wanted}, exact=exact)
+    todo = plan(cdir, {c.name: c.version for c in wanted}, exact=exact, keep_unversioned=keep_unversioned)
     by_name = {c.name: c for c in wanted}
     if not (todo.install or todo.remove or todo.unlink):
         summary("Checked", len(wanted), time.monotonic() - started, dim=True)
@@ -71,12 +74,15 @@ def install_locked(settings: Settings, wanted: list[LockedCollection], *, exact:
         summary("Prepared", sources.downloaded, time.monotonic() - started)
 
     started = time.monotonic()
+    # Where each namespace link pointed, read before it's removed, to say so below.
+    links = {path: _link_target(path) for path in todo.unlink}
     for path in todo.unlink:
         unlink_namespace(path)
     for collection in todo.remove:
         remove(cdir, collection)
+    # An unlinked namespace isn't a collection uninstalled: its line below says what happened to it.
     gone = len(todo.remove) + len(todo.replace)
-    if gone or todo.unlink:
+    if gone:
         summary("Uninstalled", gone, time.monotonic() - started)
 
     started = time.monotonic()
@@ -89,8 +95,7 @@ def install_locked(settings: Settings, wanted: list[LockedCollection], *, exact:
         summary("Installed", len(todo.install), time.monotonic() - started)
 
     lines: list[tuple[str, str, str]] = []
-    for path in todo.unlink:
-        target = os.readlink(path) if os.path.islink(path) else "?"
+    for path, target in links.items():
         lines.append(("-", os.path.basename(path), f" (namespace link to {target})"))
     for collection in [*todo.remove, *todo.replace]:
         version = f"=={collection.version}" if collection.version is not None else " (unknown version)"
@@ -99,6 +104,13 @@ def install_locked(settings: Settings, wanted: list[LockedCollection], *, exact:
     # By name, a removal before its replacement, as uv lists them.
     for sign, name, rest in sorted(lines, key=lambda line: (line[1], line[0] == "+")):
         change(sign, name, rest)
+
+
+def _link_target(path: str) -> str:
+    try:
+        return os.readlink(path)
+    except OSError:  # gone since the plan was made
+        return "?"
 
 
 class _Sources:

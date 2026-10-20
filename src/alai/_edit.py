@@ -20,7 +20,7 @@ from ._common import NAME_RE, ConfigError
 from ._config import Settings, raw_manifest
 from ._lock import Lock, lock_path, read_lock, write_lock
 from ._manifest import Manifest, Requirement, collection_name, parse_manifest
-from ._output import summary
+from ._output import home_path, summary
 from ._project import resolve_project
 from ._sync import DEFAULT_GROUPS, install_locked
 
@@ -185,7 +185,9 @@ def _read(settings: Settings) -> tuple[str, str]:
     """The project's ``alai.toml`` path and text, as written: its newlines kept, so edits keep them too."""
     config = settings.project.config_file
     if config is None:
-        raise ConfigError(f"there's no alai.toml in {settings.project.root}: create one with a [project] table first")
+        raise ConfigError(
+            f"there's no alai.toml in {home_path(settings.project.root)}: create one with a [project] table first"
+        )
     try:
         with open(config, encoding="utf-8", newline="") as f:
             return config, f.read()

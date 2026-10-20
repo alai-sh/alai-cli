@@ -291,9 +291,12 @@ No `name` or `version`: a playbook project isn't published.
 
 ## Not read yet
 
-- **`ansible.cfg`.** The plan is for a `collections_path` in the project
-  root's `ansible.cfg` to choose `collections_dir` when alai's own settings
-  don't, sitting between the project file and the default. User-level and
+- **`ansible.cfg`.** Not planned for now (2026-10-21): `alai run` will put
+  the collections directory on Ansible's path, which makes following an
+  `ansible.cfg`'s `collections_path` mostly redundant. If it comes back, the
+  idea was for a `collections_path` in the project root's `ansible.cfg` to
+  choose `collections_dir` when alai's own settings don't, sitting between
+  the project file and the default. User-level and
   system-wide Ansible config would never choose where alai installs, since
   that would make the same command behave differently on different machines.
   It needs Ansible's own rules first: only one `ansible.cfg` is used

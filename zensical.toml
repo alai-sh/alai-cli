@@ -13,9 +13,26 @@ copyright = "Copyright &copy; 2026 Jordan Borean"
 nav = [
   { "Home" = "index.md" },
   { "Projects" = "projects.md" },
+  { "Managing collections" = "managing-collections.md" },
+  { "Installing by hand" = "installing-by-hand.md" },
+  { "Coming from ansible-galaxy" = "ansible-galaxy.md" },
   { "Configuration" = "configuration.md" },
+  { "Indexes" = "indexes.md" },
   { "alai.toml" = "alai-toml.md" },
   { "Shell completion" = "shell-completion.md" },
+  { "CLI reference" = "cli.md" },
+  { "Roadmap" = "roadmap.md" },
+]
+
+# The terminal recordings in the CLI reference: asciinema-player, vendored at a
+# pinned release, and cast.js, which turns each recording's link into a player.
+extra_css = [
+  "assets/asciinema-player-3.17.0/asciinema-player.css",
+  "assets/cast.css",
+]
+extra_javascript = [
+  "assets/asciinema-player-3.17.0/asciinema-player.min.js",
+  "assets/cast.js",
 ]
 
 [project.theme]

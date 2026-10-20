@@ -123,6 +123,14 @@ def shown_path(path: str) -> str:
     return path if relative.startswith("..") else relative
 
 
+def home_path(path: str) -> str:
+    """``path`` with a leading home directory shortened to ``~``, for display."""
+    home = os.path.expanduser("~")
+    if home != "~" and (path == home or path.startswith(home + os.sep)):
+        return "~" + path[len(home) :]
+    return path
+
+
 def count_collections(n: int) -> str:
     """``1 collection``, ``2 collections``."""
     return f"{n} collection" if n == 1 else f"{n} collections"

@@ -108,9 +108,12 @@ def namespace_links(collections_dir: str) -> dict[str, str]:
     return {n: os.path.join(root, n) for n in _subdirs(root) if os.path.islink(os.path.join(root, n))}
 
 
-def plan(collections_dir: str, locked: _c.Mapping[str, Version], *, exact: bool) -> Plan:
+def plan(
+    collections_dir: str, locked: _c.Mapping[str, Version], *, exact: bool, keep_unversioned: bool = False
+) -> Plan:
     """What makes ``collections_dir`` hold the ``locked`` versions: matched by version alone, as uv does, so a
-    collection edited in place is left as it is, and one with no readable version is always replaced."""
+    collection edited in place is left as it is, and one with no readable version is replaced, unless
+    ``keep_unversioned`` says to count it as the version wanted."""
     present = installed(collections_dir)
     needed = {name.split(".")[0] for name in locked}
     unlink = [
@@ -120,7 +123,8 @@ def plan(collections_dir: str, locked: _c.Mapping[str, Version], *, exact: bool)
     unchanged: list[str] = []
     for name, version in sorted(locked.items()):
         have = present.get(name)
-        (unchanged if have is not None and have.version == version else install).append(name)
+        kept = have is not None and (have.version == version or (keep_unversioned and have.version is None))
+        (unchanged if kept else install).append(name)
     remove = [c for name, c in sorted(present.items()) if name not in locked] if exact else []
     replace = [present[name] for name in install if name in present]
     return Plan(install, remove, unchanged, unlink, replace)

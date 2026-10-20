@@ -96,6 +96,27 @@ class TestSync:
         assert lines(capsys.readouterr().err) == ["Resolved 2 collections", "Uninstalled 1 collection", " - c.c==1.0.0"]
         assert "c.c" not in installed(project)
 
+    def test_unlinks_a_namespace(self, project: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # A locked collection's namespace that's a symlink is replaced by a real directory, and what it pointed at is
+        # left; the line says where it pointed.
+        shared = tmp_path / "shared"
+        (shared / "other").mkdir(parents=True)
+        (project / "collections" / "ansible_collections").mkdir(parents=True)
+        (project / "collections" / "ansible_collections" / "c").symlink_to(shared)
+        write(project, ["c.c"])
+
+        assert sync() == 0
+
+        assert lines(capsys.readouterr().err) == [
+            "Resolved 1 collection",
+            "Prepared 1 collection",
+            "Installed 1 collection",
+            f" - c (namespace link to {shared})",
+            " + c.c==1.0.0",
+        ]
+        assert not (project / "collections" / "ansible_collections" / "c").is_symlink()
+        assert (shared / "other").is_dir()
+
     def test_inexact_keeps_extras(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         write(project, ["a.a", "c.c"])
         _ = sync()
