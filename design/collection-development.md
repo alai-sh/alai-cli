@@ -14,7 +14,7 @@ choices don't get in its way. The findings were checked against ansible-core
 | Marker | `alai.toml`, `ansible.cfg`, `collections/` | `galaxy.yml` |
 | Requirements | `[project] collections` in `alai.toml` | `dependencies` in `galaxy.yml` |
 | Target ansible-core | `[project] requires_ansible` | `requires_ansible` in `meta/runtime.yml` |
-| Installs to | `<root>/collections` | Next to the collection in its `ansible_collections` tree: see [Checkouts already in the layout](#checkouts-already-in-the-layout) and [Where the tree lives](#where-the-tree-lives) |
+| Installs to | `<root>/collections` | A tree alai owns, with the checkout linked in: see [Where the tree lives](#where-the-tree-lives) and [Checkouts already in the layout](#checkouts-already-in-the-layout) |
 | Run with | `ansible-playbook`, `alai run` | `ansible-test`, plus `ansible-playbook`, `ansible` and `ansible-doc` against the checkout, through `alai run` |
 
 `galaxy.yml` is the collection's equivalent of `pyproject.toml`, but alai
@@ -169,12 +169,14 @@ outside the project.
 ### Checkouts already in the layout
 
 When the checkout already is at `…/ansible_collections/<ns>/<name>`, no tree
-is needed: alai installs dependencies next to it and every ansible-test mode
-works as it does today. That's the case where the installer's ownership rule
-matters most: `~/dev/ansible_collections` often holds many checkouts side by
-side, and alai must never replace a directory it didn't install, least of all
-one holding `.git`. A sibling checkout of a dependency could be offered as a
-local path source instead.
+is needed for ansible-test itself: every mode works as it does today. But
+alai must not install dependencies next to it. `sync` is exact
+([install.md](install.md)): every `<ns>/<name>` beside the ones it installs
+that the lock doesn't name is removed, and `~/dev/ansible_collections` often
+holds many checkouts side by side, with `.git` and uncommitted work. So a
+collection project syncs into a tree alai builds and owns, as above, with
+the checkout linked in, wherever the checkout is. A sibling checkout of a
+dependency can be a local path source, linked into that tree too.
 
 ## Debugging
 
