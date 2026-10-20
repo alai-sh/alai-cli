@@ -212,7 +212,52 @@ a `docs` dependency group.
   unlinked namespace. With nothing to change it's
   `Checked N collections in …`.
 
+## Installing by hand
+
+`alai collection install` and `alai collection uninstall`
+(`src/alai/_collection.py`), as `uv pip install` and `uv pip uninstall`
+are. Tested with uv 0.13 on 2026-10-20 in a venv:
+
+- **Install resolves what's asked for and what it needs, preferring what's
+  installed**: the resolver takes the installed versions as a preference by
+  version alone, as it takes a lock's, and `-U` and `-P` drop it. uv
+  installed `requests` and four dependencies; after `uv pip install
+  'idna<3.10'` replaced `idna 3.20` with 3.9, installing `requests` again
+  kept 3.9, and `-U requests` moved it back.
+- **Already satisfied resolves nothing**: when every requirement is met by
+  an installed version and nothing is to be upgraded, it's `Checked N
+  collections` with no network, as uv's "Checked 1 package" for a second
+  `uv pip install requests`. Like uv, that doesn't look at what the
+  installed collections depend on.
+- **Nothing is removed that wasn't asked for**: `install_locked` runs with
+  `exact=False`. The project's `[project]` requirements and `alai.lock` are
+  neither used nor written. An `alai.toml`, where the project has one, is
+  still read as for any command: it's the first marker discovery looks
+  for, and its settings (the indexes, `collections_dir`, `link_mode`)
+  apply, as uv's `pip` commands still read `uv.toml` (a `uv.toml` index
+  URL was used by `uv pip install`). Without one, an `ansible.cfg` or
+  `collections/ansible_collections/` marks the project. A failure names the requirement as `(from the
+  command line)`.
+- **Uninstall removes only the collections named**; what they depend on
+  stays, as uv left `idna`, `certifi` and the rest after `uv pip uninstall
+  requests`. One that isn't installed is a warning, and with none left it's
+  "no collections to uninstall", exit 0, as uv's "Skipping six as it is not
+  installed" and "No packages to uninstall".
+- **Where: the project's collections directory, or an explicit one.** uv
+  won't install without an environment ("No virtual environment found;
+  run `uv venv` … or pass `--system`"). Here a project is any of
+  discovery's markers, so an `ansible.cfg` or an existing
+  `collections/ansible_collections/` counts without an `alai.toml`; with
+  no marker, `collections_dir` has to be set (`--collections-dir`,
+  `ALAI_COLLECTIONS_DIR`, a config file), or it's an error, rather than a
+  `collections/` in whatever directory alai runs from.
+- **`alai sync` undoes them**, being exact: what was installed by hand goes
+  and what was uninstalled comes back, unless `--inexact`. The docs say so.
+
 ## Not done yet
+
+- **`collection install -r requirements.yml`**, ansible-galaxy's
+  requirements file, as `uv pip install -r requirements.txt` takes pip's.
 
 - **Upgrading a group** (asked for 2026-10-20): one flag that upgrades
   every collection a group names, `--upgrade-group NAME` say, on `lock`,

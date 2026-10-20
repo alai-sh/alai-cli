@@ -16,6 +16,7 @@ import typing as _t
 import resolvelib
 import resolvelib.resolvers
 
+from . import _semver
 from ._common import Error, Record
 from ._index import CollectionVersion, IndexClient, IndexFile
 from ._lock import IndexSource, Lock, LockedCollection
@@ -84,17 +85,21 @@ def resolve(
     indexes: _c.Sequence[IndexClient],
     *,
     locked: Lock | None = None,
+    installed: _c.Mapping[str, _semver.Version] | None = None,
     upgrade: bool | _c.Collection[str] = False,
     ansible_version: Version | None = None,
     report: _c.Callable[[str, int], None] | None = None,
+    origin: str = "the project",
 ) -> Resolution:
     """Choose one version of every collection the project needs, its groups included.
 
     ``indexes`` are the configured indexes in the order they're searched, the default last. ``locked`` is the current lock,
-    whose versions are kept while they still fit, unless ``upgrade`` is true or names the collection.
+    whose versions are kept while they still fit, unless ``upgrade`` is true or names the collection. ``installed`` is
+    the same by version alone, from whichever index the collection comes from, for what's installed outside a lock.
     ``ansible_version`` is the one ansible-core version to resolve for, when it's known: each version's own
     ``requires_ansible`` must then contain it, upper bounds included, in place of the project's range.
-    ``report``, for progress, is called with each collection as its versions are looked at, and how many index files
+    ``origin`` is what the manifest's own requirements are said to come from, in errors: ``the project``, or ``the
+    command line`` for ones given there. ``report``, for progress, is called with each collection as its versions are looked at, and how many index files
     have been read so far.
     """
     project = manifest.requires_ansible
@@ -105,7 +110,15 @@ def resolve(
         if client.index.name in by_name:
             raise ValueError(f"index '{client.index.name}' is given more than once")
         by_name[client.index.name] = client
-    provider = _Provider(manifest, by_name, _preferences(locked, upgrade), ansible_version, report)
+    provider = _Provider(
+        manifest,
+        by_name,
+        _preferences(locked, upgrade),
+        ansible_version,
+        report,
+        _kept(installed or {}, upgrade),
+        origin,
+    )
     roots = provider.roots()
     resolver: resolvelib.Resolver[_Requirement, _Candidate, str] = resolvelib.Resolver(
         provider, resolvelib.BaseReporter()
@@ -168,6 +181,15 @@ def narrower_than(collection: SpecifierSet, project: SpecifierSet) -> bool:
     return ours.version == theirs.version and ours.inclusive and not theirs.inclusive
 
 
+def _kept(
+    installed: _c.Mapping[str, _semver.Version], upgrade: bool | _c.Collection[str]
+) -> dict[str, _semver.Version]:
+    """The installed versions to prefer: all of them, unless ``upgrade`` says otherwise."""
+    if upgrade is True:
+        return {}
+    return {name: version for name, version in installed.items() if upgrade is False or name not in upgrade}
+
+
 def _preferences(locked: Lock | None, upgrade: bool | _c.Collection[str]) -> dict[str, LockedCollection]:
     if locked is None or upgrade is True:
         return {}
@@ -183,9 +205,13 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
         preferred: dict[str, LockedCollection],
         ansible_version: Version | None,
         report: _c.Callable[[str, int], None] | None = None,
+        installed: dict[str, _semver.Version] | None = None,
+        origin: str = "the project",
     ) -> None:
         self._manifest = manifest
+        self._origin = origin
         self._report = report
+        self._installed = installed or {}
         self._indexes = indexes
         """By name, in the order they're searched: built from a sequence, so the order is the configured one."""
         self._preferred = preferred
@@ -204,7 +230,7 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
 
     def roots(self) -> list[_Requirement]:
         """The project's requirements and its groups', each from the index it comes from."""
-        listed: list[tuple[str, str]] = [(r.text, "the project") for r in self._manifest.collections]
+        listed: list[tuple[str, str]] = [(r.text, self._origin) for r in self._manifest.collections]
         for group, items in self._manifest.groups.items():
             listed.extend((r.text, f"group '{group}'") for r in items)
         named = [*self._manifest.collections, *(r for items in self._manifest.groups.values() for r in items)]
@@ -267,6 +293,8 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
         preferred = self._preferred.get(identifier)
         if preferred is not None and preferred.source.url != self._indexes[index].config().root:
             preferred = None
+        # The locked version, else the installed one: either is kept while it still fits.
+        keep = preferred.version if preferred is not None else self._installed.get(identifier)
 
         left_out = self._left_out.setdefault(identifier, {})
         matches: list[CollectionVersion] = []
@@ -274,7 +302,7 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
             if version.version in excluded or not all(r.req.contains(version.version) for r in reqs):
                 continue
             # A yanked version is a candidate when it's locked, or pinned with == by the user, as uv allows.
-            allow_yanked = (preferred is not None and preferred.version == version.version) or any(
+            allow_yanked = keep == version.version or any(
                 r.first_party and any(op == "==" for op, _ in r.req.clauses) for r in reqs
             )
             reason = self._left_out_because(identifier, version, allow_yanked=allow_yanked)
@@ -287,9 +315,9 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
         # stable version fits: uv's default (if-necessary).
         matches.sort(key=lambda v: v.version, reverse=True)
         matches.sort(key=lambda v: v.version.is_prerelease)
-        if preferred is not None:
-            # The locked version first, so an unchanged manifest gives an unchanged lock.
-            matches.sort(key=lambda v: v.version != preferred.version)
+        if keep is not None:
+            # The locked or installed version first, so an unchanged manifest gives an unchanged lock.
+            matches.sort(key=lambda v: v.version != keep)
         return [_Candidate(identifier, v, index) for v in matches]
 
     def is_satisfied_by(self, requirement: _Requirement, candidate: _Candidate) -> bool:
