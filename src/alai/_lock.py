@@ -16,7 +16,7 @@ import secrets
 
 from ._common import Error, Record, as_table
 from ._config import RawManifest, read_toml
-from ._manifest import Manifest, collection_name, parse_manifest
+from ._manifest import Manifest, Requirement, collection_name, parse_manifest
 from ._semver import Version
 
 LOCK_FILE_NAME = "alai.lock"
@@ -152,6 +152,64 @@ def changes(before: Lock | None, after: Lock) -> list[tuple[str, str]]:
                 lines.append((name, f"Updated {name} v{was.version} -> v{now.version}"))
             elif was.source.url != now.source.url:
                 lines.append((name, f"Updated {name} v{now.version}, now from {now.source.url}"))
+    return lines
+
+
+def input_changes(lock: Lock, manifest: Manifest) -> list[str]:
+    """What ``manifest`` asks for that differs from the inputs ``lock`` was resolved from, one line per difference,
+    named by its place in ``alai.toml``; nothing when ``lock.is_current(manifest)``. Compared as parsed, as
+    ``is_current`` compares them, and shown as written."""
+    before = parse_manifest(lock.manifest)
+    lines: list[str] = []
+
+    def compare(key: str, old: _c.Mapping[str, tuple[object, str]], new: _c.Mapping[str, tuple[object, str]]) -> None:
+        # Each entry is (what's compared, how it's shown), by collection name.
+        for name in sorted(old.keys() | new.keys()):
+            was, now = old.get(name), new.get(name)
+            if was is None and now is not None:
+                lines.append(f"{key}: added {now[1]}")
+            elif now is None and was is not None:
+                lines.append(f"{key}: removed {was[1]}")
+            elif was is not None and now is not None and was[0] != now[0]:
+                lines.append(f"{key}: changed {was[1]} to {now[1]}")
+
+    def requirements(items: _c.Iterable[Requirement]) -> dict[str, tuple[object, str]]:
+        return {r.name: (r.req.clauses, str(r)) for r in items}
+
+    compare("project.collections", requirements(before.collections), requirements(manifest.collections))
+
+    def ansible(m: Manifest) -> dict[str, tuple[object, str]]:
+        return {"": (m.requires_ansible, str(m.requires_ansible))} if m.requires_ansible is not None else {}
+
+    compare("project.requires_ansible", ansible(before), ansible(manifest))
+    for group in sorted(before.groups.keys() | manifest.groups.keys()):
+        # A group added or removed whole is one line, with what it lists.
+        if group not in manifest.groups or group not in before.groups:
+            items = before.groups.get(group) or manifest.groups.get(group) or ()
+            listed = ", ".join(sorted(str(r) for r in items)) or "no collections"
+            verb = "removed" if group not in manifest.groups else "added"
+            lines.append(f"project.groups.{group}: {verb} ({listed})")
+            continue
+        compare(
+            f"project.groups.{group}.collections",
+            requirements(before.groups[group]),
+            requirements(manifest.groups[group]),
+        )
+    compare(
+        "project.overrides",
+        {n: (r.clauses, f"{n}{r}") for n, r in before.overrides.items()},
+        {n: (r.clauses, f"{n}{r}") for n, r in manifest.overrides.items()},
+    )
+    compare(
+        "project.overrides.ignore_requires_ansible",
+        {n: (None, n) for n in before.ignore_requires_ansible},
+        {n: (None, n) for n in manifest.ignore_requires_ansible},
+    )
+    compare(
+        "project.sources",
+        {n: (p.index, f"{n} from '{p.index}'") for n, p in before.sources.items()},
+        {n: (p.index, f"{n} from '{p.index}'") for n, p in manifest.sources.items()},
+    )
     return lines
 
 

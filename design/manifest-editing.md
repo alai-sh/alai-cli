@@ -40,19 +40,35 @@ Tested against `uv add` and `uv remove` (uv 0.13) on 2026-10-20, with a
   end, as uv keeps a sorted list sorted.
 - **`alai.toml` keeps its newlines (`\n` or `\r\n`) and permissions**, and is
   written beside itself and renamed into place.
-
-### Not done yet
-
-- **`--locked` on `add` and `remove`** (asked for 2026-10-21), as `sync`
-  has it: resolve the edit, and exit 1 without writing `alai.toml` or
-  `alai.lock` if the lock would change. Tried with uv 0.13.0 on 2026-10-21:
-  `uv add --locked six` (new) and `uv remove --locked requests` resolved,
-  then failed with "The lockfile at `uv.lock` needs to be updated, but
-  `--locked` was provided" and "hint: To update the lockfile, run `uv
-  lock`", exit 1, `pyproject.toml` untouched; `uv add --locked requests`,
-  already there, went on to sync ("Checked 5 packages"). `--locked` with
-  `--frozen` is an argument error; with `--no-sync` it's accepted. Mostly
-  useful in CI, where an `add` that's already been done should be a no-op.
+- **`--locked`** (asked for 2026-10-21), as on `sync`: the edit is
+  resolved, and if `alai.lock` would change, nothing is written and it
+  exits 1. Tried with uv 0.13.0 on 2026-10-21:
+  - `uv add --locked six` (new) and `uv remove --locked requests`
+    resolved, then failed with "The lockfile at `uv.lock` needs to be
+    updated, but `--locked` was provided", exit 1, with `pyproject.toml`
+    left as it was. It's the lock as a whole that's compared, so `uv add
+    --locked idna`, already listed, failed too when the lock was stale for
+    another reason. Here it's `alai.lock would change, and --locked was
+    given`, without uv's "hint: To update the lockfile, run `uv lock`",
+    which can't add the collection; `sync --locked`'s message has `run
+    alai lock` because there it's the fix. Before the error it says what
+    would change, as `lock --check` does ([lockfile.md](lockfile.md)).
+  - `uv add --locked six`, already listed, went on to sync ("Checked 1
+    package"), exit 0. So does alai: an `add` that's already been done is
+    a no-op that installs, which is what a setup script wants.
+  - With no lock, uv failed before resolving: "Unable to find lockfile at
+    `uv.lock`, but `--locked` was provided", exit 1. Here it's `sync
+    --locked`'s message, also before resolving.
+  - `uv add --locked 'six>=1.17'` with `six>=1.17.0` listed: exit 0,
+    `pyproject.toml` rewritten to `six>=1.17`, `uv.lock` untouched. alai
+    writes `alai.toml` the same way and never writes `alai.lock` with
+    `--locked`, which keeps its own text as `sync --locked` does.
+  - `--locked` with `--frozen` is an argument error in uv; here it's the
+    same argparse error `sync --locked --frozen` gives, exit 2, raised by
+    hand since `--frozen` is already in a group with `--no-sync`. With
+    `--no-sync` it's accepted, and checks without installing.
+  - uv also has `UV_LOCKED=1`; alai has no environment variable for
+    `--locked` on any command yet.
 
 ## The editor
 

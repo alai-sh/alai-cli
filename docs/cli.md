@@ -81,6 +81,7 @@ $ alai add [OPTIONS] REQUIREMENT [REQUIREMENT ...]
 | `--dev` | The same as `--group dev`. Can't be used with `--group` |
 | `--no-sync` | Lock, but don't install. Can't be used with `--frozen` |
 | `--frozen` | Only edit alai.toml, without locking or installing. Can't be used with `--no-sync` |
+| `--locked` | Resolve, and exit 1 without writing anything if alai.lock is missing or would change |
 | `-U`, `--upgrade` | Choose the newest versions that fit, ignoring alai.lock |
 | `-P`, `--upgrade-collection NAME` | Choose the newest version of collection NAME that fits; can be repeated |
 | `--reinstall` | Reinstall every collection, even those already at the right version |
@@ -297,6 +298,7 @@ $ alai remove [OPTIONS] NAME [NAME ...]
 | `--dev` | The same as `--group dev`. Can't be used with `--group` |
 | `--no-sync` | Lock, but don't install. Can't be used with `--frozen` |
 | `--frozen` | Only edit alai.toml, without locking or installing. Can't be used with `--no-sync` |
+| `--locked` | Resolve, and exit 1 without writing anything if alai.lock is missing or would change |
 | `-U`, `--upgrade` | Choose the newest versions that fit, ignoring alai.lock |
 | `-P`, `--upgrade-collection NAME` | Choose the newest version of collection NAME that fits; can be repeated |
 | `--reinstall` | Reinstall every collection, even those already at the right version |

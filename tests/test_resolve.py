@@ -709,4 +709,5 @@ def test_prefetches_every_named_dependency(tmp_path: Path) -> None:
             result = resolve(manifest(PROJECT), [client])
 
             assert chosen(result) == {"a.a": "2.0.0", "b.b": "1.0.0"}
-            assert "/index/old/dep.jsonl" in server.paths()
+            # Nothing waits for it, since a.a 2.0.0 doesn't need old.dep, so it can arrive after resolve returns.
+            assert server.wait_for("/index/old/dep.jsonl")

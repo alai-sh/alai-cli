@@ -8,8 +8,8 @@ from __future__ import annotations
 import argparse
 
 from .._args import HelpFormatter, add_global_args, add_settings_args, settings_from_args
-from .add import add_edit_args
-from .lock import upgrade_from_args
+from .add import add_edit_args, check_locked
+from .lock import EXIT_STALE, upgrade_from_args
 from .sync import reinstall_from_args
 
 
@@ -33,13 +33,15 @@ def run(args: argparse.Namespace) -> int:
 
     settings = settings_from_args(args)
     group = "dev" if args.dev else args.group
-    remove(
+    check_locked(args)
+    ok = remove(
         settings,
         args.names,
         group=group,
         sync=not args.no_sync,
         frozen=args.frozen,
+        locked=args.locked,
         upgrade=upgrade_from_args(args),
         reinstall=reinstall_from_args(args),
     )
-    return 0
+    return 0 if ok else EXIT_STALE

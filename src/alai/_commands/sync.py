@@ -99,7 +99,7 @@ def reinstall_from_args(args: argparse.Namespace) -> bool | set[str]:
 
 def run(args: argparse.Namespace) -> int:
     from .._lock import lock_path, read_lock, stale, write_lock
-    from .._project import load_project, lock_unchanged, resolve_project
+    from .._project import load_project, lock_unchanged, report_changes, resolve_project
     from .._sync import install_locked, selected_groups
 
     started = time.monotonic()
@@ -120,10 +120,11 @@ def run(args: argparse.Namespace) -> int:
     if args.frozen and existing is not None:
         lock = existing
     elif upgrade or args.locked or existing is None or stale(existing, manifest, {i.url for i in settings.indexes}):
-        lock, _ = resolve_project(settings, manifest, raw, existing, upgrade=upgrade)
+        lock, resolution = resolve_project(settings, manifest, raw, existing, upgrade=upgrade)
         summary("Resolved", len(lock.collections), time.monotonic() - started, dim=True)
         if args.locked:
             if not lock_unchanged(existing, manifest, lock):
+                report_changes(existing, manifest, lock, resolution, inputs=True)
                 error(f"{shown_path(path)} is out of date, and --locked was given; run alai lock")
                 return EXIT_STALE
         else:

@@ -9,6 +9,7 @@ import pytest
 from test_sync_command import edit, edited, installed, lines
 
 from alai._cli import EXIT_ERROR, main
+from alai._commands.lock import EXIT_STALE
 
 # The index (from test_sync_command): a.a 1.0.0 and 2.0.0 (which needs b.b>=1.0.0), b.b 1.0.0 and 1.1.0, c.c and d.d.
 
@@ -234,6 +235,135 @@ class TestUpgrade:
         assert main(argv) == EXIT_ERROR
 
         assert "--frozen doesn't" in capsys.readouterr().err
+        assert toml(project) == TOML
+
+
+class TestLocked:
+    def synced(self, project: Path, text: str = TOML) -> bytes:
+        write(project, text)
+        assert main(["sync"]) == 0
+        return (project / "alai.lock").read_bytes()
+
+    @pytest.mark.parametrize(
+        ("argv", "expected"),
+        [
+            (
+                ["add", "--locked", "d.d"],
+                [
+                    "Resolved 2 collections",
+                    "Added d.d v1.0.0",
+                    "alai.toml has changed since alai.lock was made:",
+                    "  project.collections: added d.d>=1.0.0",
+                ],
+            ),
+            (
+                ["remove", "--locked", "c.c"],
+                [
+                    "Resolved 0 collections",
+                    "Removed c.c v1.0.0",
+                    "alai.toml has changed since alai.lock was made:",
+                    "  project.collections: removed c.c",
+                ],
+            ),
+        ],
+    )
+    def test_refuses_a_change(
+        self, project: Path, capsys: pytest.CaptureFixture[str], argv: list[str], expected: list[str]
+    ) -> None:
+        before = self.synced(project)
+        _ = capsys.readouterr()
+
+        assert main(argv) == EXIT_STALE
+
+        assert lines(capsys.readouterr().err) == [*expected, "error: alai.lock would change, and --locked was given"]
+        assert toml(project) == TOML
+        assert (project / "alai.lock").read_bytes() == before
+        assert installed(project) == {"c.c": "1.0.0"}
+
+    def test_already_there(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        before = self.synced(project)
+        (project / "collections").joinpath("ansible_collections", "c", "c", "MANIFEST.json").unlink()
+        _ = capsys.readouterr()
+
+        # Nothing to change, so it goes on to sync, as uv add --locked does.
+        assert main(["add", "--locked", "c.c"]) == 0
+
+        assert toml(project) == TOML
+        assert (project / "alai.lock").read_bytes() == before
+        assert installed(project) == {"c.c": "1.0.0"}
+
+    def test_spelt_differently(self, project: Path) -> None:
+        before = self.synced(project, '[project]\ncollections = ["c.c>=1"]\n')
+
+        assert main(["add", "--locked", "c.c>=1.0.0"]) == 0
+
+        # alai.toml takes the requirement as given, and alai.lock keeps its own text, as uv keeps uv.lock's.
+        assert toml(project) == '[project]\ncollections = ["c.c>=1.0.0"]\n'
+        assert (project / "alai.lock").read_bytes() == before
+
+    def test_stale_lock(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        _ = self.synced(project)
+        stale = '[project]\ncollections = ["c.c", "d.d"]\n'
+        write(project, stale)
+        _ = capsys.readouterr()
+
+        # The edit changes nothing, but the lock is already out of date.
+        assert main(["add", "--locked", "c.c"]) == EXIT_STALE
+
+        # Only alai.toml says why: d.d was already added by hand, and nothing was locked since.
+        assert lines(capsys.readouterr().err) == [
+            "Resolved 2 collections",
+            "Added d.d v1.0.0",
+            "alai.toml has changed since alai.lock was made:",
+            "  project.collections: added d.d",
+            "error: alai.lock would change, and --locked was given",
+        ]
+        assert toml(project) == stale
+
+    @pytest.mark.parametrize("argv", [["add", "--locked", "d.d"], ["remove", "--locked", "c.c"]])
+    def test_needs_a_lock(self, project: Path, capsys: pytest.CaptureFixture[str], argv: list[str]) -> None:
+        write(project)
+
+        assert main(argv) == EXIT_STALE
+
+        # Checked before resolving, as uv checks first.
+        assert lines(capsys.readouterr().err) == ["error: there's no alai.lock, and --locked was given; run alai lock"]
+        assert toml(project) == TOML
+        assert not (project / "alai.lock").exists()
+        assert not (project / "collections").exists()
+
+    def test_upgrade(self, project: Path) -> None:
+        # As sync --locked -U: allowed, failing only if the upgrade would change alai.lock.
+        before = self.synced(project, '[project]\ncollections = ["b.b<1.1", "c.c"]\n')
+
+        assert main(["add", "--locked", "-U", "c.c"]) == 0
+        assert (project / "alai.lock").read_bytes() == before
+
+        write(project, '[project]\ncollections = ["b.b", "c.c"]\n')
+        assert main(["lock"]) == 0
+        before = (project / "alai.lock").read_bytes()
+
+        assert main(["add", "--locked", "-U", "c.c"]) == EXIT_STALE
+        assert (project / "alai.lock").read_bytes() == before
+        assert installed(project) == {"b.b": "1.0.0", "c.c": "1.0.0"}
+
+    def test_with_no_sync(self, project: Path) -> None:
+        _ = self.synced(project)
+        (project / "collections").joinpath("ansible_collections", "c", "c", "MANIFEST.json").unlink()
+
+        assert main(["add", "--locked", "--no-sync", "c.c"]) == 0
+
+        assert installed(project) == {}
+
+    @pytest.mark.parametrize("command", ["add", "remove"])
+    def test_not_with_frozen(self, project: Path, capsys: pytest.CaptureFixture[str], command: str) -> None:
+        write(project)
+
+        with pytest.raises(SystemExit) as e:
+            _ = main([command, "--locked", "--frozen", "c.c"])
+
+        assert e.value.code == 2
+        assert "argument --locked: not allowed with argument --frozen" in capsys.readouterr().err
         assert toml(project) == TOML
 
 

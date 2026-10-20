@@ -227,8 +227,13 @@ class TestLockFlags:
 
         assert sync("--locked") == EXIT_STALE
 
-        err = capsys.readouterr().err
-        assert "error: alai.lock is out of date, and --locked was given; run alai lock" in err
+        assert lines(capsys.readouterr().err) == [
+            "Resolved 2 collections",
+            "Added d.d v1.0.0",
+            "alai.toml has changed since alai.lock was made:",
+            "  project.collections: added d.d",
+            "error: alai.lock is out of date, and --locked was given; run alai lock",
+        ]
         assert (project / "alai.lock").read_bytes() == before
         assert set(installed(project)) == {"c.c"}
 
@@ -318,6 +323,16 @@ class TestUpgrade:
 
         assert sync("--locked", "-U") == EXIT_STALE
         assert installed(project)["b.b"] == "1.0.0"
+
+    def test_locked_allows_an_upgrade_that_changes_nothing(self, project: Path) -> None:
+        # Unlike uv, which rejects --locked with -U: an upgrade that leaves the lock as it was is a valid result.
+        write(project, ["a.a"])
+        _ = sync()
+        before = (project / "alai.lock").read_bytes()
+
+        assert sync("--locked", "-U") == 0
+        assert (project / "alai.lock").read_bytes() == before
+        assert installed(project) == {"a.a": "2.0.0", "b.b": "1.1.0"}
 
     def test_frozen_refuses(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         write(project, ["c.c"])
