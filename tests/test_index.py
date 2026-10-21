@@ -75,8 +75,14 @@ class TestConfig:
             index_url=f"{ROOT}index/",
             collections_url=f"{ROOT}collections.json",
             dl="https://dl.alai.sh/sha256/{sha256-prefix}/{sha256-checksum}.tar.gz",
+            plugins_url=f"{ROOT}plugins.jsonl",
         )
         assert moved_to is None
+
+    def test_no_plugin_index(self) -> None:
+        parsed, _ = parse_config(config(), ROOT, "u")
+
+        assert parsed.plugins_url is None
 
     def test_highest_readable_format(self) -> None:
         formats = {"1": {"index": "v1/", "collections": "c1.json"}, "2": {"index": "v2/", "collections": "c2.json"}}
@@ -106,6 +112,10 @@ class TestConfig:
             (config(dl="https://dl.example/artifact.tar.gz"), "'dl' must be a URL template with a placeholder"),
             (config(dl=None), "'dl' must be a URL template"),
             (config(**{"moved-to": 1}), "'moved-to' must be a URL or null"),
+            (
+                config(formats={"1": {"index": "i/", "collections": "c.json", "plugins": 1}}),
+                r"'formats\.1\.plugins' must be a path",
+            ),
         ],
     )
     def test_invalid(self, data: bytes, match: str) -> None:
@@ -372,6 +382,25 @@ class TestIndexClient:
             "/index/community/general.jsonl",
             "/index/community/library_inventory_filtering_v1.jsonl",
         ]
+
+    def test_plugins(self, server: IndexServer, fetcher: Fetcher, tmp_path: Path) -> None:
+        index = IndexClient(Index("test", server.url, source="t"), fetcher, str(tmp_path / "cache"), prefetch=False)
+
+        data = index.plugins()
+
+        assert data == (EXAMPLE / "plugins.jsonl").read_bytes()
+        # Without prefetch, collections.json, which finding plugins doesn't use, isn't fetched.
+        assert sorted(server.paths()) == ["/config.json", "/plugins.jsonl"]
+
+    def test_no_plugins(self, server: IndexServer, site: Path, fetcher: Fetcher, tmp_path: Path) -> None:
+        _ = (site / "config.json").write_bytes(config())
+
+        assert client(server.url, fetcher, tmp_path / "cache").plugins() is None
+
+    def test_plugins_missing(self, server: IndexServer, site: Path, fetcher: Fetcher, tmp_path: Path) -> None:
+        (site / "plugins.jsonl").unlink()
+
+        assert client(server.url, fetcher, tmp_path / "cache").plugins() is None
 
     def test_not_an_index(self, server: IndexServer, fetcher: Fetcher, tmp_path: Path) -> None:
         with pytest.raises(IndexDataError, match=r"config\.json not found: is .* an alai index\?"):

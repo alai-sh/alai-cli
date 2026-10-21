@@ -40,8 +40,14 @@
   `exclude_newer` setting, to resolve only from versions published before a
   date or a duration ago, for reproducing an old lock or holding back
   releases until they've been out a while.
-- **JSON output** for commands that report data, such as `config show`,
-  for scripts.
+- **JSON output** for the other commands that report data, such as
+  `config show`, for scripts, as `alai find` has.
+- **Plugin documentation**: a command to show a plugin's full
+  documentation, options and examples, as `ansible-doc` does, without
+  installing its collection first.
+- **More from installed collections in `alai find`**: listing the plugins
+  of installed collections that aren't on an index, such as source
+  checkouts, and reading routing from the version installed.
 - **Checking installed collections** against the checksums each one
   carries for its files, and **cleaning the cache**.
 

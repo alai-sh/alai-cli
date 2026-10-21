@@ -45,9 +45,12 @@ than ansible-test:
   and then `sys.path` (`COLLECTIONS_SCAN_SYS_PATH`). An entry may name the
   `ansible_collections` directory or its parent. The first match wins.
 - **No layout needed for the working directory.** Unlike ansible-test, the
-  current directory doesn't matter and nothing replaces the user's path. So
-  `alai run` only has to put the tree on `ANSIBLE_COLLECTIONS_PATH`, ahead of
-  the user's paths.
+  current directory doesn't matter. So `alai run` only has to set
+  `ANSIBLE_COLLECTIONS_PATH` to the tree; it replaces the user's paths,
+  with `ANSIBLE_COLLECTIONS_SCAN_SYS_PATH=False`, as alai uses only the
+  collections directory it manages ([README.md](README.md#principles)).
+  `<playbook dir>/collections` is still searched by `ansible-playbook`
+  whatever the path says; how `alai run` treats it is open.
 - **Symlinks are fine.** Paths are compared with `os.path.abspath`, never
   resolved. A tree that symlinks to the checkout loads the collection, by
   FQCN, through `ANSIBLE_COLLECTIONS_PATH` or through

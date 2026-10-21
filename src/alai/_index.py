@@ -47,9 +47,18 @@ class IndexDataError(Error):
 class IndexConfig(Record):
     """An index's ``config.json``, with its paths made absolute."""
 
-    __slots__ = ("collections_url", "dl", "format", "index_url", "root")
+    __slots__ = ("collections_url", "dl", "format", "index_url", "plugins_url", "root")
 
-    def __init__(self, *, root: str, format: int, index_url: str, collections_url: str, dl: str) -> None:  # noqa: A002
+    def __init__(
+        self,
+        *,
+        root: str,
+        format: int,  # noqa: A002
+        index_url: str,
+        collections_url: str,
+        dl: str,
+        plugins_url: str | None = None,
+    ) -> None:
         self.root = root
         """The index root URL, after following any ``moved-to``."""
         self.format = format
@@ -58,6 +67,8 @@ class IndexConfig(Record):
         self.collections_url = collections_url
         self.dl = dl
         """The artifact URL template."""
+        self.plugins_url = plugins_url
+        """The plugin index, ``plugins.jsonl``, or None if the index has none."""
 
 
 class Listed(Record):
@@ -153,8 +164,10 @@ class IndexClient:
     files"), so a run where nothing changed costs those two requests.
     """
 
-    def __init__(self, index: Index, fetcher: Fetcher, cache_dir: str) -> None:
+    def __init__(self, index: Index, fetcher: Fetcher, cache_dir: str, *, prefetch: bool = True) -> None:
         self.index = index
+        self._prefetch = prefetch
+        """Whether to start fetching ``collections.json`` with ``config.json``: not for a command that won't use it."""
         self._fetcher = fetcher
         self._cache_dir = cache_dir
         self._lock = threading.Lock()
@@ -166,7 +179,8 @@ class IndexClient:
         """The index's ``config.json``, following ``moved-to`` to where the index is now."""
         with self._lock:
             if self._config is None:
-                self._prefetch_collections()
+                if self._prefetch:
+                    self._prefetch_collections()
                 self._config = self._load_config()
             return self._config
 
@@ -181,6 +195,16 @@ class IndexClient:
                     raise IndexDataError(f"{url} not found")
                 self._collections = parse_collections(data, url)
             return self._collections
+
+    def plugins(self) -> bytes | None:
+        """The index's plugin index, ``plugins.jsonl``, or None if it has none."""
+        config = self.config()
+        if config.plugins_url is None:
+            return None
+        data = self._fetcher.get(config.plugins_url, self._cache_path(config.root, config.plugins_url))
+        if data is None:
+            debug(f"{config.plugins_url} not found, though {config.root}config.json lists it")
+        return data
 
     def has(self, name: str) -> bool:
         """Whether the index lists collection ``name``."""
@@ -299,6 +323,9 @@ def parse_config(data: bytes, root: str, url: str) -> tuple[IndexConfig, str | N
     collections_path = paths.get("collections")  # pyright: ignore[reportUnknownVariableType]
     if not isinstance(index_path, str) or not isinstance(collections_path, str):
         raise IndexDataError(f"{url}: 'formats.{number}' must have 'index' and 'collections' paths")
+    plugins_path = paths.get("plugins")  # pyright: ignore[reportUnknownVariableType]
+    if plugins_path is not None and not isinstance(plugins_path, str):
+        raise IndexDataError(f"{url}: 'formats.{number}.plugins' must be a path")
 
     dl = obj.get("dl")
     if not isinstance(dl, str) or not any(p in dl for p in _DL_PLACEHOLDERS):
@@ -314,6 +341,7 @@ def parse_config(data: bytes, root: str, url: str) -> tuple[IndexConfig, str | N
         index_url=index_url if index_url.endswith("/") else f"{index_url}/",
         collections_url=urllib.parse.urljoin(root, collections_path),
         dl=dl,
+        plugins_url=urllib.parse.urljoin(root, plugins_path) if plugins_path else None,
     )
     return config, moved_to or None
 

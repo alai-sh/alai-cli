@@ -12,6 +12,85 @@
 #   setup        shell commands run before recording starts, not shown
 #   commands     shell commands typed and run in the recording, in order
 
+# The index's plugin index, plugins.jsonl, for `alai find`: lines taken from
+# the real index, for the collections below and a few more.
+plugins = [
+    { type = "connection", name = "docker_api", collection = "community.docker", since = "1.1.0", short_description = "Run tasks in docker containers" },
+    { type = "filter", name = "expanduser", collection = "ansible.builtin", since = "1.5", short_description = "Returns a path with C(~) translation." },
+    { type = "filter", name = "to_datetime", collection = "ansible.builtin", since = "2.4", short_description = "Get C(datetime) from string" },
+    { type = "filter", name = "to_json", collection = "ansible.builtin", short_description = "Convert variable to JSON string" },
+    { type = "filter", name = "to_nice_json", collection = "ansible.builtin", short_description = "Convert variable to 'nicely formatted' JSON string" },
+    { type = "filter", name = "to_nice_yaml", collection = "ansible.builtin", short_description = "Convert variable to YAML string" },
+    { type = "filter", name = "to_uuid", collection = "ansible.builtin", since = "2.9", short_description = "namespaced UUID generator" },
+    { type = "filter", name = "to_yaml", collection = "ansible.builtin", short_description = "Convert variable to YAML string" },
+    { type = "filter", name = "ipaddr", collection = "ansible.netcommon", since = "0.0.2", until = "2.6.0", routing = { redirect = "ansible.utils.ipaddr" } },
+    { type = "filter", name = "ipaddr", collection = "ansible.utils", since = "2.5.0" },
+    { type = "filter", name = "ipcut", collection = "ansible.utils", since = "2.11.0" },
+    { type = "filter", name = "ipmath", collection = "ansible.builtin", routing = { redirect = "ansible.netcommon.ipmath" } },
+    { type = "filter", name = "ipmath", collection = "ansible.netcommon", since = "0.0.2", until = "2.6.0" },
+    { type = "filter", name = "ipmath", collection = "ansible.utils", since = "2.5.0" },
+    { type = "filter", name = "ipsubnet", collection = "ansible.utils", since = "2.5.0" },
+    { type = "filter", name = "ipv4", collection = "ansible.utils", since = "2.5.0" },
+    { type = "filter", name = "ipv6", collection = "ansible.utils", since = "2.5.0" },
+    { type = "filter", name = "to_paths", collection = "ansible.utils", since = "1.0.0" },
+    { type = "filter", name = "to_xml", collection = "ansible.utils", since = "2.1.0" },
+    { type = "filter", name = "to_days", collection = "community.general", since = "0.1.4", short_description = "Converts a duration string to days" },
+    { type = "filter", name = "to_hours", collection = "community.general", since = "0.1.4", short_description = "Converts a duration string to hours" },
+    { type = "filter", name = "to_ini", collection = "community.general", since = "8.2.0" },
+    { type = "filter", name = "to_milliseconds", collection = "community.general", since = "0.1.4", short_description = "Converts a duration string to milliseconds" },
+    { type = "filter", name = "to_minutes", collection = "community.general", since = "0.1.4", short_description = "Converts a duration string to minutes" },
+    { type = "filter", name = "to_months", collection = "community.general", since = "0.1.4", short_description = "Convert a duration string to months" },
+    { type = "filter", name = "to_seconds", collection = "community.general", since = "0.1.4", short_description = "Converts a duration string to seconds" },
+    { type = "filter", name = "to_time_unit", collection = "community.general", since = "0.1.4", short_description = "Converts a duration string to the given time unit" },
+    { type = "inventory", name = "docker_containers", collection = "community.docker", since = "1.1.0", short_description = "Ansible dynamic inventory plugin for Docker containers" },
+    { type = "inventory", name = "docker_machine", collection = "community.docker", since = "0.1.0", short_description = "Docker Machine inventory source" },
+    { type = "inventory", name = "docker_swarm", collection = "community.docker", since = "0.1.0", short_description = "Ansible dynamic inventory plugin for Docker swarm nodes" },
+    { type = "lookup", name = "to_paths", collection = "ansible.utils", since = "1.0.0", short_description = "Flatten a complex object into a dictionary of paths and values" },
+    { type = "module", name = "copy", collection = "ansible.builtin", short_description = "Copy files to remote locations" },
+    { type = "module", name = "docker_container", collection = "ansible.builtin", routing = { redirect = "community.docker.docker_container" } },
+    { type = "module", name = "iptables", collection = "ansible.builtin", since = "2.0", short_description = "Modify iptables rules" },
+    { type = "module", name = "user", collection = "ansible.builtin", since = "0.2", short_description = "Manage user accounts" },
+    { type = "module", name = "cli_command", collection = "ansible.netcommon", since = "0.0.1", short_description = "Run a cli command on cli-based network devices" },
+    { type = "module", name = "firewalld", collection = "ansible.posix", since = "1.1.0", short_description = "Manage arbitrary ports/services with firewalld" },
+    { type = "module", name = "firewalld_info", collection = "ansible.posix", since = "1.3.0", short_description = "Gather information about firewalld" },
+    { type = "module", name = "synchronize", collection = "ansible.posix", since = "0.1.0", short_description = "A wrapper around rsync to make common tasks in your playbooks quick and easy" },
+    { type = "module", name = "user", collection = "awx.awx", since = "19.2.1", short_description = "create, update, or destroy Automation Platform Controller users." },
+    { type = "module", name = "ios_config", collection = "cisco.ios", since = "0.0.1", short_description = "Module to manage configuration sections." },
+    { type = "module", name = "ios_user", collection = "cisco.ios", since = "0.0.1", short_description = "Module to manage the aggregates of local users." },
+    { type = "module", name = "docker_compose_v2", collection = "community.docker", since = "3.6.0", short_description = "Manage multi-container Docker applications with Docker Compose CLI plugin" },
+    { type = "module", name = "docker_compose_v2_exec", collection = "community.docker", since = "3.13.0", short_description = "Run command in a container of a Compose service" },
+    { type = "module", name = "docker_container", collection = "community.docker", since = "0.1.0", short_description = "manage Docker containers" },
+    { type = "module", name = "docker_container_info", collection = "community.docker", since = "0.1.0", short_description = "Retrieves facts about docker container" },
+    { type = "module", name = "docker_context_info", collection = "community.docker", since = "4.4.0", short_description = "Retrieve information on Docker contexts for the current user" },
+    { type = "module", name = "docker_host_info", collection = "community.docker", since = "0.1.0", short_description = "Retrieves facts about docker host and lists of objects of the services" },
+    { type = "module", name = "docker_image_info", collection = "community.docker", since = "0.1.0", short_description = "Inspect docker images" },
+    { type = "module", name = "docker_network_info", collection = "community.docker", since = "0.1.0", short_description = "Retrieves facts about docker network" },
+    { type = "module", name = "docker_node_info", collection = "community.docker", since = "0.1.0", short_description = "Retrieves facts about docker swarm node from Swarm Manager" },
+    { type = "module", name = "ali_instance_info", collection = "community.general", since = "0.1.1", short_description = "Gather information on instances of Alibaba Cloud ECS" },
+    { type = "module", name = "btrfs_info", collection = "community.general", since = "6.6.0", short_description = "Query btrfs filesystem info" },
+    { type = "module", name = "dnsimple_info", collection = "community.general", since = "4.2.0", short_description = "Pull basic info from DNSimple API" },
+    { type = "module", name = "docker_container", collection = "community.general", since = "0.1.1", until = "2.0.0", short_description = "manage docker containers", routing = { redirect = "community.docker.docker_container" } },
+    { type = "module", name = "docker_container_info", collection = "community.general", since = "0.1.1", until = "2.0.0", short_description = "Retrieves facts about docker container", routing = { redirect = "community.docker.docker_container_info" } },
+    { type = "module", name = "ejabberd_user", collection = "community.general", since = "0.1.1", short_description = "Manages users for ejabberd servers" },
+    { type = "module", name = "firewalld", collection = "community.general", since = "0.1.1", until = "1.0.0", short_description = "Manage arbitrary ports/services with firewalld" },
+    { type = "module", name = "gconftool2_info", collection = "community.general", since = "6.0.0", short_description = "Retrieve GConf configurations" },
+    { type = "module", name = "git_config_info", collection = "community.general", since = "8.1.0", short_description = "Read git configuration" },
+    { type = "module", name = "gitlab_user", collection = "community.general", since = "0.1.1", short_description = "Creates/updates/deletes/blocks/unblocks GitLab Users" },
+    { type = "module", name = "influxdb_user", collection = "community.general", since = "0.1.1", short_description = "Manage InfluxDB users" },
+    { type = "module", name = "ipa_config", collection = "community.general", since = "0.1.1", short_description = "Manage Global FreeIPA Configuration Settings" },
+    { type = "module", name = "ipa_dnsrecord", collection = "community.general", since = "0.1.1", short_description = "Manage FreeIPA DNS records" },
+    { type = "module", name = "ipa_dnszone", collection = "community.general", since = "0.1.1", short_description = "Manage FreeIPA DNS Zones" },
+    { type = "module", name = "ipa_getkeytab", collection = "community.general", since = "9.5.0", short_description = "Manage keytab file in FreeIPA" },
+    { type = "module", name = "ipa_group", collection = "community.general", since = "0.1.1", short_description = "Manage FreeIPA group" },
+    { type = "module", name = "ipa_hbacrule", collection = "community.general", since = "0.1.1", short_description = "Manage FreeIPA HBAC rule" },
+    { type = "module", name = "ipa_user", collection = "community.general", since = "0.1.1", short_description = "Manage FreeIPA users" },
+    { type = "module", name = "keycloak_user", collection = "community.general", since = "7.1.0", short_description = "Create and configure a user in Keycloak" },
+    { type = "module", name = "mysql_user", collection = "community.mysql", since = "0.1.0", until = "5.0.0", short_description = "Adds or removes a user from a MySQL or MariaDB database", routing = { redirect = "ansible.mysql.mysql_user", deprecation = { removal_version = "6.0.0", warning_text = "Use ansible.mysql.mysql_user instead." } } },
+    { type = "module", name = "postgresql_user", collection = "community.postgresql", since = "0.1.0", short_description = "Create, alter, or remove a user (role) from a PostgreSQL server instance" },
+    { type = "module", name = "user", collection = "grafana.grafana", since = "6.0.0", short_description = "Manage Users in Grafana" },
+    { type = "module", name = "user", collection = "microsoft.ad", since = "1.0.0", short_description = "Manage Active Directory users" },
+]
+
 # The collections the local index serves, by name: each version, and the
 # collections it depends on. Versions are taken from Galaxy so the output reads
 # as it would for real, but the artifacts hold only a README.
@@ -26,6 +105,7 @@
     { vers = "11.5.0", deps = { "ansible.netcommon" = ">=8.1.0", "ansible.posix" = ">=2.0.0" } },
     { vers = "11.6.0", deps = { "ansible.netcommon" = ">=8.1.0", "ansible.posix" = ">=2.0.0" } },
 ]
+"community.docker" = [{ vers = "4.8.1" }]
 "community.general" = [{ vers = "10.7.8" }, { vers = "10.7.9" }, { vers = "11.0.0" }]
 
 [[recording]]
@@ -108,6 +188,53 @@ title = "Uninstalling a collection outside a project"
 directory = "ansible"
 setup = ["alai collection install -q --collections-dir ./collections cisco.ios"]
 commands = ["alai collection uninstall --collections-dir ./collections cisco.ios"]
+
+[[recording]]
+name = "find"
+title = "Finding plugins"
+files = { "alai.toml" = "[project]\n" }
+setup = ["alai add -q community.general"]
+commands = ["alai find docker_container", "alai find to_"]
+
+[[recording]]
+name = "find-search"
+title = "Searching by part of a name, or the whole name"
+files = { "alai.toml" = "[project]\n" }
+setup = ["alai add -q community.general"]
+commands = ["alai find user", "alai find -x user", "alai find --installed user"]
+
+[[recording]]
+name = "find-types"
+title = "Searching one type, or several"
+files = { "alai.toml" = "[project]\n" }
+setup = ["alai add -q ansible.utils"]
+commands = ["alai find -t filter to_", "alai find -t filter -t test 'ip[a-z]*'"]
+
+[[recording]]
+name = "find-globs"
+title = "Searching with globs"
+files = { "alai.toml" = "[project]\n" }
+commands = ["alai find '*_info'", "alai find 'community.docker.*'"]
+
+[[recording]]
+name = "find-quoting"
+title = "Why globs need quotes"
+files = { "alai.toml" = "[project]\n", "docker_container_info" = "" }
+commands = ["ls", "alai find *_info", "alai find '*_info'"]
+
+[[recording]]
+name = "find-redirects"
+title = "An old name that no longer leads anywhere, and an ansible.legacy name"
+files = { "alai.toml" = "[project]\n" }
+setup = ["alai add -q ansible.netcommon"]
+commands = ["alai find ansible.builtin.ipmath", "alai find ansible.legacy.copy"]
+
+[[recording]]
+name = "find-detail"
+title = "A plugin's details and where its redirects lead"
+files = { "alai.toml" = "[project]\n" }
+setup = ["alai add -q community.general"]
+commands = ["alai find community.general.docker_container"]
 
 [[recording]]
 name = "config-show"
@@ -199,3 +326,15 @@ recording = "collection-uninstall-outside"
 
 [[reference."config show"]]
 recording = "config-show"
+
+[[reference.find]]
+recording = "find"
+description = """
+`community.general` 11.0.0 is installed. Its `docker_container` was removed
+in 2.0.0, but it still redirects to `community.docker`'s, so a playbook
+that uses either name keeps working once `community.docker` is installed.
+`to_` matches part of each filter's name, underlined on a terminal.
+"""
+
+[[reference.find]]
+recording = "find-detail"

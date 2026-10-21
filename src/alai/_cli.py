@@ -15,7 +15,7 @@ import sys
 
 from . import _output
 from ._args import HelpFormatter, add_global_args, verbose_count
-from ._commands import add, collection, config, lock, remove, shell_completion, sync
+from ._commands import add, collection, config, find, lock, remove, shell_completion, sync
 from ._common import Error
 
 EXIT_ERROR = 2
@@ -68,6 +68,7 @@ def _build_parser() -> argparse.ArgumentParser:
     add.register(commands)
     collection.register(commands)
     config.register(commands)
+    find.register(commands)
     lock.register(commands)
     remove.register(commands)
     shell_completion.register(commands)
@@ -79,12 +80,15 @@ def _build_parser() -> argparse.ArgumentParser:
 def _complete(parser: argparse.ArgumentParser) -> None:
     """Print the completions the shell asked for through argcomplete's environment variables, then exit."""
     from argcomplete import autocomplete
-    from argcomplete.completers import DirectoriesCompleter
+    from argcomplete.completers import ChoicesCompleter, DirectoriesCompleter
 
     def set_completers(parser: argparse.ArgumentParser) -> None:
         for action in parser._actions:
             if action.metavar == "DIR":
                 action.completer = DirectoriesCompleter()  # pyright: ignore[reportAttributeAccessIssue]
+            elif suggestions := getattr(action, "suggestions", None):
+                # Values to offer without argparse's choices, which would reject any others.
+                action.completer = ChoicesCompleter(suggestions)  # pyright: ignore[reportAttributeAccessIssue]
             elif isinstance(action, argparse._SubParsersAction):
                 for subparser in action.choices.values():  # pyright: ignore[reportUnknownVariableType]
                     set_completers(subparser)

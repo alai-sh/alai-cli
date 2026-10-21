@@ -24,9 +24,14 @@ color = "auto"
 
 BOLD = "1"
 DIM = "2"
+ITALIC = "3"
+UNDERLINE = "4"
 RED = "31"
 GREEN = "32"
 YELLOW = "33"
+BLUE = "34"
+MAGENTA = "35"
+CYAN = "36"
 WHITE = "37"
 live: _c.Callable[[str], None] | None = None
 """How the ``_progress.Live`` drawing now, if any, writes a message above itself."""
@@ -39,21 +44,22 @@ def progress_enabled() -> bool:
     return not env_bool(os.environ, "ALAI_NO_PROGRESS") and os.environ.get("TERM") != "dumb"
 
 
-def color_enabled() -> bool:
-    """Whether to colour stderr: ``--color always`` or ``never`` if given; else not with ``NO_COLOR``, and always with
-    ``FORCE_COLOR`` (``NO_COLOR`` winning if both are set), and otherwise on a terminal that isn't ``TERM=dumb``."""
+def color_enabled(*, stdout: bool = False) -> bool:
+    """Whether to colour stderr, or stdout with ``stdout``: ``--color always`` or ``never`` if given; else not with
+    ``NO_COLOR``, and always with ``FORCE_COLOR`` (``NO_COLOR`` winning if both are set), and otherwise on a terminal
+    that isn't ``TERM=dumb``."""
     if color != "auto":
         return color == "always"
     if os.environ.get("NO_COLOR"):
         return False
     if os.environ.get("FORCE_COLOR"):
         return True
-    return sys.stderr.isatty() and os.environ.get("TERM") != "dumb"
+    return (sys.stdout if stdout else sys.stderr).isatty() and os.environ.get("TERM") != "dumb"
 
 
-def styled(text: str, *codes: str) -> str:
-    """``text`` in the given styles (``BOLD``, ``GREEN``…), when colour is on."""
-    if not text or not codes or not color_enabled():
+def styled(text: str, *codes: str, stdout: bool = False) -> str:
+    """``text`` in the given styles (``BOLD``, ``GREEN``…), when colour is on for stderr, or stdout with ``stdout``."""
+    if not text or not codes or not color_enabled(stdout=stdout):
         return text
     return f"\x1b[{';'.join(codes)}m{text}\x1b[0m"
 

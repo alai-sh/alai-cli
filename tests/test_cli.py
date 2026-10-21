@@ -349,6 +349,20 @@ def test_complete_choices(tmp_path: Path) -> None:
     assert complete(tmp_path, "alai config show --link-mode h") == ["hardlink "]
 
 
+def test_complete_suggestions(tmp_path: Path) -> None:
+    assert complete(tmp_path, "alai find -t fi") == ["filter "]
+    # With several, the shell adds no space after any of them.
+    assert sorted(complete(tmp_path, "alai find --type c")) == ["cache", "callback", "cliconf", "connection"]
+
+
+def test_suggestions_not_enforced(tmp_path: Path) -> None:
+    from alai._cli import _build_parser
+
+    args = _build_parser().parse_args(["find", "-t", "a_type_from_the_future", "x"])
+
+    assert args.types == ["a_type_from_the_future"]
+
+
 def test_complete_directories(isolated: Path, tmp_path: Path) -> None:
     (isolated / "playbooks").mkdir()
     (isolated / "plays.yml").touch()
