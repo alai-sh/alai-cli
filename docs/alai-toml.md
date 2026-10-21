@@ -111,6 +111,17 @@ How files get from the cache into the
 - `symlink`: a link to the cached file. These break in execution
   environments and containers, so it's opt-in only.
 
+!!! danger "Avoid `symlink`"
+
+    A symlinked file is the cached copy itself, so anything that writes to
+    an installed file writes to the cache. Every project that installs that
+    collection version links or copies its files from the cached copy, so
+    the edit reaches every other project installed with `symlink`, and
+    every install from then on, in any link mode, until the cache is
+    cleared. Clearing the cache, in turn, breaks every collection installed
+    with `symlink`, as uv warns of its own `symlink` mode. Use another mode
+    unless you have a reason not to.
+
 Any other value uses that mode or fails. Setting `auto` at a higher level
 brings the fallback back when a lower level picks a mode, for example
 `--link-mode auto` in a project whose `alai.toml` sets `copy`.
