@@ -22,6 +22,7 @@ nav = [
   { "Shell completion" = "shell-completion.md" },
   { "CLI reference" = "cli.md" },
   { "Roadmap" = "roadmap.md" },
+  { "Acknowledgements" = "acknowledgements.md" },
 ]
 
 # The terminal recordings in the CLI reference: asciinema-player, vendored at a

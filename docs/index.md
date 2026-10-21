@@ -19,6 +19,26 @@ alai is designed to run on Linux and macOS only. There is no Windows support
 as Ansible itself cannot run on Windows and thus has no need for collections
 to be managed there.
 
+## Installing
+
+Install alai with [uv](https://docs.astral.sh/uv/getting-started/installation/),
+from the latest source on GitHub:
+
+```console
+$ uv tool install https://github.com/alai-sh/alai-cli/archive/refs/heads/main.tar.gz
+```
+
+uv puts the `alai` command on your `PATH`, in an environment of its own,
+and finds or downloads a Python 3.10 or later for it. To update to the
+latest source, run the same command with `--reinstall`; `uv tool upgrade`
+doesn't look for new commits. `uv tool uninstall alai` removes it.
+
+!!! note "Until alai is on PyPI"
+
+    Installing from GitHub is temporary. Once alai is published on PyPI,
+    `uv tool install alai` will install it, and `uv tool upgrade alai`
+    will update it.
+
 ## A quick look
 
 Start a project, add the collections it needs, and they're resolved, locked
@@ -112,3 +132,5 @@ project is a matter of linking files, not downloading them.
 - [CLI reference](cli.md): every command and option, with recordings of
   them running.
 - [Roadmap](roadmap.md): what's planned next.
+- [Acknowledgements](acknowledgements.md): the projects alai is inspired
+  by and built on.

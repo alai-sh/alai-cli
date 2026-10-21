@@ -10,6 +10,25 @@
   [README.md](README.md) and the larger "Not done yet" items in no
   particular order, and an item moves out of it into the rest of the docs
   when it's built.
+- **The landing page installs from GitHub until alai is on PyPI** (asked
+  for 2026-10-21): `uv tool install` of the `main` branch's archive,
+  `https://github.com/alai-sh/alai-cli/archive/refs/heads/main.tar.gz`,
+  under a note that it's temporary. Tried with uv 0.13.0 on 2026-10-21:
+  it installed and ran, but `uv tool upgrade alai` said "Nothing to
+  upgrade" for a URL source, so the page says to update with `--reinstall`.
+  At the first PyPI release, replace both with `uv tool install alai` and
+  `uv tool upgrade alai`, and drop the note, here and in `README.md`.
+- **`README.md` is a short landing page** (asked for 2026-10-21): what alai
+  is, why, installing, a first project with real output, common tasks, and
+  links into the docs. It's also the PyPI description, so its links are
+  absolute, and the preview warning is a plain blockquote rather than
+  GitHub's `> [!WARNING]`, which PyPI doesn't render. Its output is static,
+  from a run against `index.alai.sh`, not a recording; its speed figures are
+  the landing page's.
+- **An acknowledgements page** (asked for 2026-10-21), last in the nav:
+  the projects alai is modelled on (uv, ModuleFast, Cargo's registry index,
+  PwshSpectreConsole for the recorded docs) and the ones it's built with.
+  Add to it when a dependency or a borrowed idea is.
 - **Zensical over Sphinx.** There's no public Python API to autodoc, and
   Zensical needs little maintenance.
 - **Plain Markdown plus admonitions**, so the docs could move to another

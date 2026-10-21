@@ -75,7 +75,7 @@ url = "https://ansible-index.example.com/"
 ```
 
 ```console
-$ ALAI_LINK_MODE=symlink alai -v config show --index staging=https://staging.example.com/
+$ ALAI_LINK_MODE=clone alai -v config show --index staging=https://staging.example.com/
 Project
   root  ~/project (found by alai.toml)
 
@@ -87,7 +87,7 @@ Config files, highest precedence first
 Settings
   project.collections_dir  ~/project/collections  default
   cache_dir                ~/.cache/alai          default
-  link_mode                symlink                ALAI_LINK_MODE
+  link_mode                clone                  ALAI_LINK_MODE
                            hardlink               ~/project/alai.toml, overridden
                            copy                   ~/.config/alai/alai.toml, overridden
   system_certs             true                   default
@@ -103,9 +103,9 @@ variable, a file, or `default`. `-v` adds the values a higher level
 overrode, the files looked for but not found, and, on stderr, a debug line for
 each index dropped (here the user file's `internal`).
 
-- `link_mode` is `symlink`: the environment variable beats both files, and
+- `link_mode` is `clone`: the environment variable beats both files, and
   the project file's `hardlink` beats the user file's `copy`. Adding
-  `--link-mode clone` would make it `clone`.
+  `--link-mode copy` would make it `copy`.
 - The `--index` index comes first, then the file indexes. Both files define
   `internal`, so the project's URL is kept and the user's is dropped (see
   [Indexes](#indexes)). The built-in default index goes last.
