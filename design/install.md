@@ -337,13 +337,6 @@ on 2026-10-21 in a project with `requests` and its four dependencies:
   requirements file, as `uv pip install -r requirements.txt` takes pip's:
   shelved, see [requirements-file.md](requirements-file.md).
 
-- **Upgrading a group** (asked for 2026-10-20): one flag that upgrades
-  every collection a group names, `--upgrade-group NAME` say, on `lock`,
-  `sync`, `add` and `remove`, as `-P` does for one collection; today it
-  takes a `-P` per collection. Open: whether it also upgrades what those
-  collections depend on (`-P` doesn't), whether the project's own
-  collections count as a group for it, and whether uv has an equivalent to
-  follow (not checked).
 - **Speed**: replacing `tarfile` with a native extension, and making
   clones cheaper; see [performance.md](performance.md).
 - **Verifying against `FILES.json` later.** Every published collection

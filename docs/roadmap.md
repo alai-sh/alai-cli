@@ -34,8 +34,6 @@
   `alai collection install -r`. Waiting on how people use the file's
   `source:` and `signatures:` entries; if you depend on them, say so in the
   issue tracker.
-- **Upgrading a whole group** with one flag, rather than `-P` for each of
-  its collections.
 - **A pre-release setting**, to always allow or never allow pre-releases,
   for the whole project or one collection.
 - **Excluding newer versions**: `--exclude-newer DATE`, and an

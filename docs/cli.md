@@ -84,6 +84,7 @@ $ alai add [OPTIONS] REQUIREMENT [REQUIREMENT ...]
 | `--locked` | Resolve, and exit 1 without writing anything if alai.lock is missing or would change |
 | `-U`, `--upgrade` | Choose the newest versions that fit, ignoring alai.lock |
 | `-P`, `--upgrade-collection NAME` | Choose the newest version of collection NAME that fits; can be repeated |
+| `--upgrade-group NAME` | Choose the newest version of every collection group NAME lists that fits; can be repeated |
 | `--reinstall` | Reinstall every collection, even those already at the right version |
 | `--reinstall-collection NAME` | Reinstall collection NAME, even if it's already at the right version; can be repeated |
 
@@ -262,6 +263,7 @@ $ alai lock [OPTIONS]
 | `--check` | Resolve, but don't write alai.lock; exit 1 if it's missing or would change |
 | `-U`, `--upgrade` | Choose the newest versions that fit, ignoring alai.lock |
 | `-P`, `--upgrade-collection NAME` | Choose the newest version of collection NAME that fits; can be repeated |
+| `--upgrade-group NAME` | Choose the newest version of every collection group NAME lists that fits; can be repeated |
 
 ### Settings
 
@@ -301,6 +303,7 @@ $ alai remove [OPTIONS] NAME [NAME ...]
 | `--locked` | Resolve, and exit 1 without writing anything if alai.lock is missing or would change |
 | `-U`, `--upgrade` | Choose the newest versions that fit, ignoring alai.lock |
 | `-P`, `--upgrade-collection NAME` | Choose the newest version of collection NAME that fits; can be repeated |
+| `--upgrade-group NAME` | Choose the newest version of every collection group NAME lists that fits; can be repeated |
 | `--reinstall` | Reinstall every collection, even those already at the right version |
 | `--reinstall-collection NAME` | Reinstall collection NAME, even if it's already at the right version; can be repeated |
 
@@ -352,6 +355,7 @@ $ alai sync [OPTIONS]
 | `--inexact` | Keep installed collections alai.lock doesn't list, rather than removing them |
 | `-U`, `--upgrade` | Choose the newest versions that fit, ignoring alai.lock |
 | `-P`, `--upgrade-collection NAME` | Choose the newest version of collection NAME that fits; can be repeated |
+| `--upgrade-group NAME` | Choose the newest version of every collection group NAME lists that fits; can be repeated |
 | `--reinstall` | Reinstall every collection, even those already at the right version |
 | `--reinstall-collection NAME` | Reinstall collection NAME, even if it's already at the right version; can be repeated |
 

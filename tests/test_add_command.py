@@ -202,6 +202,26 @@ class TestUpgrade:
 
         assert installed(project) == {"b.b": "1.1.0"}
 
+    def test_add_upgrades_a_group(self, project: Path) -> None:
+        write(project, '[project]\ncollections = ["c.c"]\n[project.groups.test]\ncollections = ["b.b<1.1"]\n')
+        _ = main(["sync"])
+        write(project, '[project]\ncollections = ["c.c"]\n[project.groups.test]\ncollections = ["b.b"]\n')
+
+        # The group is upgraded in the lock; add installs only the default groups and its own, so test isn't.
+        assert main(["add", "--upgrade-group", "test", "d.d"]) == 0
+
+        assert 'name = "b.b"\nversion = "1.1.0"' in (project / "alai.lock").read_text()
+        assert installed(project) == {"c.c": "1.0.0", "d.d": "1.0.0"}
+
+    def test_remove_upgrades_a_group(self, project: Path) -> None:
+        write(project, '[project]\ncollections = ["c.c", "d.d"]\n[project.groups.dev]\ncollections = ["b.b<1.1"]\n')
+        _ = main(["sync"])
+        write(project, '[project]\ncollections = ["c.c", "d.d"]\n[project.groups.dev]\ncollections = ["b.b"]\n')
+
+        assert main(["remove", "--upgrade-group", "dev", "d.d"]) == 0
+
+        assert installed(project) == {"b.b": "1.1.0", "c.c": "1.0.0"}
+
     def test_add_reinstalls(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         write(project, '[project]\ncollections = ["b.b", "c.c"]\n')
         _ = main(["sync"])
@@ -228,7 +248,14 @@ class TestUpgrade:
         assert edited(cdir) == set()
         assert installed(project) == {"c.c": "1.0.0"}
 
-    @pytest.mark.parametrize("argv", [["add", "--frozen", "-U", "c.c"], ["remove", "--frozen", "-P", "c.c", "c.c"]])
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["add", "--frozen", "-U", "c.c"],
+            ["remove", "--frozen", "-P", "c.c", "c.c"],
+            ["add", "--frozen", "--upgrade-group", "test", "c.c"],
+        ],
+    )
     def test_frozen_refuses(self, project: Path, capsys: pytest.CaptureFixture[str], argv: list[str]) -> None:
         write(project)
 

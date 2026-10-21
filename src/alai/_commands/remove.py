@@ -9,7 +9,7 @@ import argparse
 
 from .._args import HelpFormatter, add_global_args, add_settings_args, settings_from_args
 from .add import add_edit_args, check_locked
-from .lock import EXIT_STALE, upgrade_from_args
+from .lock import EXIT_STALE
 from .sync import reinstall_from_args
 
 
@@ -30,6 +30,7 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
 
 def run(args: argparse.Namespace) -> int:
     from .._edit import remove
+    from .._project import upgrade_from_args
 
     settings = settings_from_args(args)
     group = "dev" if args.dev else args.group

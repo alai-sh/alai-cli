@@ -197,6 +197,24 @@ members' `requires-python`.
   carries over; the long one says "collection", the word alai uses
   everywhere else, rather than uv's `--upgrade-package`, and isn't kept as
   an alias since nothing is released.
+- **`--upgrade-group NAME`** (asked for 2026-10-20), on `lock`, `sync`,
+  `add` and `remove`, is `-P` for every collection group `NAME` lists in
+  `alai.toml`, as uv's `--upgrade-group`. Tried with uv 0.13.0 on
+  2026-10-21, with everything locked old and the requirements then
+  loosened: `uv lock --upgrade-group test` upgraded what `test` lists
+  (`requests`, `attrs`) and nothing they depend on (`idna` stayed at 3.4,
+  `urllib3` at 1.26.20), and a package the group shares with the project
+  (`six`, through group `lint`) was upgraded for both, as the lock has one
+  version of it. It can be repeated and combined with `-P`. A group
+  `alai.toml` doesn't have is an error before resolving, as uv's "Group
+  `nope` is not defined in the project's `dependency-groups` table", here
+  worded as `sync --group`'s is (`--upgrade-group: alai.toml has no group
+  'nope' (it has 'test')`). The project's own collections aren't a group
+  for it, as uv's dependencies aren't; `-U` or `-P` covers them. It's not on
+  `collection install`, as uv 0.13.0 lists it in `uv pip install --help` but
+  refuses it, with or without `--group`: "`--upgrade-group` is not supported
+  in `uv pip` commands". For `add` and `remove` the group is read from
+  `alai.toml` as edited (`_project.Upgrade`).
 - **`-U` works with `lock --check` and `--locked`**, on `sync`, `add` and
   `remove` alike (decided 2026-10-21): it fails only if the upgrade would
   change `alai.lock`, so it checks that the lock already has the newest

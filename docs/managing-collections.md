@@ -71,6 +71,7 @@ when you ask:
 
 ```console
 $ alai lock --upgrade-collection cisco.ios   # just cisco.ios
+$ alai lock --upgrade-group test             # what the test group lists
 $ alai lock --upgrade                        # everything
 $ alai sync
 ```
@@ -111,7 +112,7 @@ it is.
 | `--no-sync` | Lock, but don't install |
 | `--frozen` | Only edit `alai.toml`, without locking or installing; a name alone is written as it is |
 | `--locked` | Resolve, and exit 1 without writing anything if `alai.lock` is missing or the change would alter it. An `alai add` of what's already there goes on to install, so a setup script can run it every time, in CI say. Can't be used with `--frozen` |
-| `-U`, `-P NAME` | Upgrade every collection, or `NAME`, while locking, as [`alai lock`](#locking) does |
+| `-U`, `-P NAME`, `--upgrade-group NAME` | Upgrade every collection, `NAME`, or what group `NAME` lists, while locking, as [`alai lock`](#locking) does |
 | `--reinstall`, `--reinstall-collection NAME` | Reinstall every collection, or `NAME`, while installing, as [`alai sync`](#installing) does |
 
 Adding a collection keeps every other locked version that still fits, even
@@ -182,6 +183,7 @@ To move to newer versions anyway:
 |---|---|
 | `-U`, `--upgrade` | Choose the newest version of every collection that fits |
 | `-P NAME`, `--upgrade-collection NAME` | Choose the newest version of collection `NAME` that fits; can be repeated |
+| `--upgrade-group NAME` | The same for every collection group `NAME` lists, but not what they depend on; can be repeated. A collection the group shares with the project, or another group, is upgraded for all of them, since it's locked once |
 | `--check` | Resolve as usual but write nothing, and exit 1 if `alai.lock` is missing or would change: `alai.toml` asks for something different, or the indexes no longer give the locked versions. A newer release alone doesn't count, since locked versions are kept while they fit. On failure it lists the collections that would change and what in `alai.toml` differs from what was locked. With `--offline`, it resolves from the cache |
 
 `alai lock` also takes the index, `--system-certs` and
@@ -235,6 +237,7 @@ installing links their files from there, as
 | `--inexact` | Keep installed collections `alai.lock` doesn't list, rather than removing them. For a collections directory other tools also install to |
 | `-U`, `--upgrade` | Lock again choosing the newest version of every collection that fits, then install. Can't be used with `--frozen` |
 | `-P NAME`, `--upgrade-collection NAME` | The same for collection `NAME` only; can be repeated |
+| `--upgrade-group NAME` | The same for what group `NAME` lists, as for [`alai lock`](#locking); can be repeated |
 | `--reinstall` | Reinstall every collection, even those already at their locked version, from the cache. Shown as `~ NAME==VERSION` |
 | `--reinstall-collection NAME` | The same for collection `NAME` only; can be repeated. One that isn't locked is ignored |
 

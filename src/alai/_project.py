@@ -5,19 +5,61 @@
 
 from __future__ import annotations
 
+import argparse
 import collections.abc as _c
 import typing as _t
 
-from ._common import ConfigError
+from ._common import ConfigError, Record
 from ._config import RawManifest, Settings, raw_manifest, read_toml
 from ._lock import Lock, changes, input_changes
-from ._manifest import Manifest, parse_manifest
+from ._manifest import Manifest, collection_name, parse_manifest
 from ._output import detail, home_path, lock_change, status, warn
 from ._progress import Live, Task
 
 if _t.TYPE_CHECKING:
     from ._resolve import Resolution
     from ._semver import Version
+
+
+class Upgrade(Record):
+    """What to upgrade while resolving: everything (``-U``), the collections named (``-P``), and every collection the
+    groups named list in ``alai.toml`` (``--upgrade-group``), as uv's flags of the same names do."""
+
+    __slots__ = ("collections", "everything", "groups")
+
+    def __init__(
+        self, *, everything: bool = False, collections: _c.Iterable[str] = (), groups: _c.Iterable[str] = ()
+    ) -> None:
+        self.everything = everything
+        self.collections = frozenset(collections)
+        self.groups = tuple(dict.fromkeys(groups))
+
+    def __bool__(self) -> bool:
+        return self.everything or bool(self.collections) or bool(self.groups)
+
+    def names(self, manifest: Manifest | None) -> bool | set[str]:
+        """What to upgrade, for the resolver: everything, the collections named, or nothing (False). A group is the
+        collections it lists directly in ``manifest``, not what they depend on, as uv's ``--upgrade-group`` is; one
+        ``manifest`` doesn't have is an error, as uv's is."""
+        known = manifest.groups if manifest is not None else {}
+        for group in self.groups:
+            if group not in known:
+                have = ", ".join(f"'{g}'" for g in sorted(known))
+                raise ConfigError(
+                    f"--upgrade-group: alai.toml has no group '{group}'" + (f" (it has {have})" if have else "")
+                )
+        if self.everything:
+            return True
+        return set(self.collections) | {r.name for group in self.groups for r in known[group]} or False
+
+
+def upgrade_from_args(args: argparse.Namespace) -> Upgrade:
+    """What ``-U``, ``-P`` and ``--upgrade-group`` ask to upgrade."""
+    try:
+        collections = {collection_name(n) for n in args.upgrade_collection}
+    except ValueError as e:
+        raise ConfigError(f"--upgrade-collection: {e}") from None
+    return Upgrade(everything=args.upgrade, collections=collections, groups=getattr(args, "upgrade_group", []))
 
 
 def load_project(settings: Settings, why: str) -> tuple[RawManifest, Manifest]:
@@ -35,11 +77,12 @@ def resolve_project(
     raw: RawManifest,
     existing: Lock | None,
     *,
-    upgrade: bool | _c.Collection[str] = False,
+    upgrade: Upgrade | None = None,
 ) -> tuple[Lock, Resolution]:
-    """Resolve the project against its indexes, keeping ``existing``'s versions while they fit, and warn of anything
-    the resolution reported. The lock isn't written."""
-    resolution = resolve_manifest(settings, manifest, locked=existing, upgrade=upgrade)
+    """Resolve the project against its indexes, keeping ``existing``'s versions while they fit, except those
+    ``upgrade`` names, and warn of anything the resolution reported. The lock isn't written."""
+    names = upgrade.names(manifest) if upgrade is not None else False
+    resolution = resolve_manifest(settings, manifest, locked=existing, upgrade=names)
     return Lock(raw, resolution.collections), resolution
 
 
