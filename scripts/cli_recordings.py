@@ -41,8 +41,9 @@ from index_server import IndexServer
 SCENARIOS = pathlib.Path("scripts/cli_recordings.toml")
 OUTPUT = pathlib.Path("docs/casts")
 COLUMNS = 100
-ROWS = 40
-"""The terminal's size while recording; the file's height is cut to the rows the recording uses."""
+ROWS = 48
+"""The terminal's size while recording; the file's height is cut to the rows the recording uses. A recording that
+needs more fails, as its first lines would scroll away before it ends."""
 
 PROMPT = "\x1b[1;34m{cwd}\x1b[0m \x1b[1;32m$\x1b[0m "
 """The shell's prompt: the working directory, with the home directory as ~, as most shells show it."""
@@ -75,7 +76,8 @@ def main(names: list[str]) -> int:
         collections = {
             name: [v(str(s["vers"]), s.get("deps")) for s in versions] for name, versions in scenarios["index"].items()
         }
-        _ = make_index(root / "index", collections, artifacts=True)
+        plugins = [{"v": 1, **line} for line in scenarios["plugins"]]
+        _ = make_index(root / "index", collections, artifacts=True, plugins=plugins)
         with IndexServer(root / "index") as server:
             # The index points at its artifacts as file:// URLs; served over HTTP, they take time as downloads do.
             config = root / "index" / "config.json"
@@ -159,10 +161,14 @@ def _record(recording: dict[str, object], home: pathlib.Path, env: dict[str, str
         clock = events[-1][0] + AFTER_OUTPUT
     events.append((clock, _prompt(cwd, home)))
 
+    rows = _rows_used("".join(data for _, data in events))
+    if rows > ROWS:
+        msg = f"{recording['name']}: needs {rows} rows, more than the {ROWS} recorded; shorten it or raise ROWS"
+        raise RuntimeError(msg)
     header = {
         "version": 2,
         "width": COLUMNS,
-        "height": _rows_used("".join(data for _, data in events)),
+        "height": rows,
         "title": recording["title"],
         "env": {"TERM": env["TERM"], "SHELL": "/bin/sh"},
     }
@@ -217,13 +223,29 @@ def _run(command: str, cwd: pathlib.Path, env: dict[str, str]) -> tuple[list[tup
     return output, status
 
 
+_TERMINAL_RE = re.compile(r"\x1b\[([0-9;?]*)([A-Za-z])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b.|\r|\n|[^\x1b\r\n]")
+
+
 def _rows_used(output: str) -> int:
-    """The rows the output reaches, following the newlines and the cursor moving up as progress redraws."""
-    row = deepest = 0
-    for match in re.finditer(r"\n|\x1b\[(\d*)A", output):
-        row = row + 1 if match.group() == "\n" else max(0, row - int(match.group(1) or 1))
+    """The rows the output reaches as the terminal draws it: following newlines, lines wider than ``COLUMNS`` wrapping
+    onto the next row, and the cursor moving up as progress redraws. Escape sequences, links (OSC 8) included, take no
+    room."""
+    row = column = deepest = 0
+    for match in _TERMINAL_RE.finditer(output):
+        text = match.group()
+        if match.group(2) == "A":
+            row = max(0, row - int(match.group(1) or 1))
+        elif text == "\r":
+            column = 0
+        elif text == "\n":
+            row, column = row + 1, 0
+        elif not text.startswith("\x1b"):
+            # As xterm does, a line that fills the width only wraps when another character follows.
+            if column == COLUMNS:
+                row, column = row + 1, 0
+            column += 1
         deepest = max(deepest, row)
-    return min(deepest + 1, ROWS)
+    return deepest + 1
 
 
 def _as_dict(value: object) -> dict[str, object]:

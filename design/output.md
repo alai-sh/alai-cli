@@ -102,7 +102,8 @@ The rest is planned.
 ## Planned
 
 - **JSON per command**, as `--output-format json` (uv's and cargo's style),
-  only on commands that produce data: `config show`, and later listing
+  only on commands that produce data: `alai find` has it
+  ([find.md](find.md)); `config show`, and later listing
   installed collections, a dependency tree, outdated checks. The JSON is a
   contract: it carries a version field or has a written schema, and its field
   names don't follow changes to the human-readable text. Warnings, progress

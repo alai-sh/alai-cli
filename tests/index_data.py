@@ -38,11 +38,13 @@ def make_index(
     *,
     raw_lines: dict[str, str] | None = None,
     artifacts: bool = False,
+    plugins: list[dict[str, object]] | None = None,
 ) -> str:
     """Write an index in the spec's layout, returning its file:// root URL.
 
     With ``artifacts``, each version gets a real tarball under ``root/dl``, which ``dl`` points at, and its line the
-    tarball's ``cksum`` and ``size``, so it can be installed.
+    tarball's ``cksum`` and ``size``, so it can be installed. With ``plugins``, it has a plugin index of those lines
+    (see ``plugin``).
     """
     (root / "index").mkdir(parents=True, exist_ok=True)
     dl = (
@@ -53,7 +55,13 @@ def make_index(
     _ = (root / "config.json").write_text(
         json.dumps(
             {
-                "formats": {"1": {"index": "index/", "collections": "collections.json"}},
+                "formats": {
+                    "1": {
+                        "index": "index/",
+                        "collections": "collections.json",
+                        **({"plugins": "plugins.jsonl"} if plugins is not None else {}),
+                    }
+                },
                 "dl": dl,
                 "moved-to": None,
             }
@@ -90,7 +98,15 @@ def make_index(
             "sha256": hashlib.sha256(data).hexdigest(),
         }
     _ = (root / "collections.json").write_text(json.dumps({"v": 1, "namespaces": listing}))
+    if plugins is not None:
+        _ = (root / "plugins.jsonl").write_text("".join(json.dumps(line) + "\n" for line in plugins))
     return root.as_uri() + "/"
+
+
+def plugin(fqcn: str, type_: str = "module", **fields: object) -> dict[str, object]:
+    """One plugin index line: ``plugin("a.a.thing", since="1.0.0", routing={...})``."""
+    collection, name = fqcn.rsplit(".", 1)
+    return {"v": 1, "type": type_, "name": name, "collection": collection, **fields}
 
 
 def _artifact(directory: Path, name: str, version: str) -> tuple[str, int]:

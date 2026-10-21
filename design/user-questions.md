@@ -34,6 +34,46 @@ the question go away?
 
 See [install.md](install.md#installing-by-hand) and what uv does there.
 
+## Collections outside the collections directory
+
+**Today:** alai uses only the project's collections directory. `alai find`
+counts nothing else as installed, and `alai run`, when it exists, will set
+`ANSIBLE_COLLECTIONS_PATH` to that directory alone and turn off
+`ANSIBLE_COLLECTIONS_SCAN_SYS_PATH`, so collections in
+`~/.ansible/collections`, other configured paths, or the `ansible`
+package's `site-packages` aren't loaded (2026-10-21). This keeps the lock
+the whole truth about what runs.
+
+**The alternative:** an opt-in to add other paths, such as the `ansible`
+package's collections or a shared directory.
+
+**Ask:** does anyone rely on collections from `~/.ansible/collections` or
+the `ansible` package alongside a project's? Would they rather add them to
+the project, or need them left out of the lock (for example, collections a
+platform provides)?
+
+See [README.md](README.md#principles).
+
+## How `alai find` ranks and marks collections
+
+**Today:** with no popularity numbers, `alai find` ranks collections in the
+`ansible` package first, then others in their namespaces, and greys out and
+ranks last "probable copies": collections at least half of whose plugins
+are named as in one package collection (2026-10-21). Removed plugins are
+only listed when named in full.
+
+**The alternatives:** rank by something else people trust, such as a
+collection being certified or validated by Red Hat, or let a project or
+user config list collections to prefer; flag copies some other way, or not
+at all; list removed plugins for partial matches too.
+
+**Ask:** does the order put the collection you were after near the top for
+the names you search for? Has a collection you use been greyed out as a
+copy? Do you look up old names to find where they went, and is listing
+removed plugins only for whole names the right default?
+
+See [find.md](find.md#ranking).
+
 ## requirements.yml
 
 **Today:** `-r requirements.yml` is shelved. The mapping onto `alai.toml`

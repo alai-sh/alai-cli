@@ -33,7 +33,12 @@
   Zensical needs little maintenance.
 - **Plain Markdown plus admonitions**, so the docs could move to another
   generator without a rewrite. The recordings are links with a class
-  (`attr_list`), so even they read as Markdown.
+  (`attr_list`), so even they read as Markdown. So are the coloured markers
+  in [finding-plugins.md](../docs/finding-plugins.md#what-the-markers-mean)
+  (asked for 2026-10-21, to match what `alai find` prints): code spans
+  with a class from `docs/assets/ansi.css`, `` `✓`{ .ansi-green } ``, in
+  the recordings' palette, the same trade as the recordings: a generator
+  without `attr_list` would show `{ .ansi-green }` as text.
 - **Deployed to GitHub Pages on every push to `main`** that could change the
   docs (`.github/workflows/docs.yml`), not tied to a release. This is fine
   while alai is pre-release. At the first real release, decide whether docs
@@ -127,8 +132,13 @@ each example from the help and record it with Spectre.Console's recorder.
   being recorded; any other failure is recorded, as some recordings show
   errors on purpose. The typing is drawn at a steady 40 ms a character; the
   output keeps the time it really took. The file's height is cut to the rows the recording
-  reaches, following newlines and the cursor moving up as progress
-  redraws. Considered: the asciinema CLI (another tool to install, and
+  reaches, following newlines, lines wider than the terminal wrapping onto
+  the next row (escape sequences and OSC 8 links taking no room), and the
+  cursor moving up as progress redraws; counting newlines alone made the
+  player too short when a long path wrapped. Recordings run in a 100 by 48 terminal, and one that reaches
+  past row 48 fails the build, as its first lines would scroll away
+  before the end (raised from 40 when `find-search`'s first command
+  scrolled off, 2026-10-21). Considered: the asciinema CLI (another tool to install, and
   recording a whole shell session makes typing and setup harder to
   control) and vhs (needs ttyd and ffmpeg, and makes GIFs or videos, which
   can't be selected or themed).

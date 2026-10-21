@@ -20,6 +20,7 @@ $ alai [OPTIONS] <COMMAND>
 | [`add`](#alai-add) | Add collections to alai.toml, then lock and sync |
 | [`collection`](#alai-collection) | Install or uninstall collections outside the project's requirements and alai.lock |
 | [`config`](#alai-config) | Inspect alai's settings |
+| [`find`](#alai-find) | Find which collections have a plugin, role or playbook |
 | [`lock`](#alai-lock) | Resolve the project's collections into alai.lock |
 | [`remove`](#alai-remove) | Remove collections from alai.toml, then lock and sync |
 | [`generate-shell-completion`](#alai-generate-shell-completion) | Print the script that enables Tab completion in a shell |
@@ -239,6 +240,50 @@ $ alai config show [OPTIONS] [key]
 |---|---|
 | `--collections-dir DIR` | Install collections under DIR/ansible_collections |
 | `--link-mode {auto,clone,hardlink,copy,symlink}` | How files get from the cache into the collections directory |
+| `--system-certs`, `--no-system-certs` | Verify TLS certificates with the operating system's trust store (the default) |
+| `--offline`, `--no-offline` | Use only what's cached, without connecting to any index |
+| `--index NAME=URL` | An index to resolve from, before those in config files; can be repeated |
+| `--default-index [NAME=]URL` | Replace the default index |
+
+Also takes the [global options](#global-options).
+
+## alai find
+
+Find plugins, roles and playbooks by name in the indexes' plugin indexes, with the ones in installed collections and ansible.builtin first. QUERY is part of a name (user finds win_user too), a glob ('*_info', 'community.general.*'), or a FQCN, which shows that plugin's details: where its redirects lead, and how to install it.
+
+[Finding plugins](casts/find.cast){ .alai-cast }
+
+`community.general` 11.0.0 is installed. Its `docker_container` was removed in 2.0.0, but it still redirects to `community.docker`'s, so a playbook that uses either name keeps working once `community.docker` is installed. `to_` matches part of each filter's name, underlined on a terminal.
+{: .alai-cast-description }
+
+[A plugin's details and where its redirects lead](casts/find-detail.cast){ .alai-cast }
+
+```console
+$ alai find [OPTIONS] QUERY
+```
+
+### Arguments
+
+| Argument | Description |
+|---|---|
+| `QUERY` | Part of a name, a glob, or a FQCN |
+
+### Options
+
+| Option | Description |
+|---|---|
+| `-t`, `--type TYPE` | Only this type, as ansible-doc `-t` names them (module, filter, lookup...), or role or playbook; can be repeated |
+| `-x`, `--exact` | Match whole names only, not names that contain QUERY |
+| `--installed` | Only plugins in installed collections and ansible.builtin |
+| `--include-removed` | List removed plugins that match part of a name too; ones named exactly always are |
+| `--limit N` | List at most N matches from collections that aren't installed, 0 for all; 10 on a terminal, all when the output is piped or `--output-format` is json |
+| `--output-format {text,json}` | Text, the default, or json for scripts |
+
+### Settings
+
+| Option | Description |
+|---|---|
+| `--collections-dir DIR` | Install collections under DIR/ansible_collections |
 | `--system-certs`, `--no-system-certs` | Verify TLS certificates with the operating system's trust store (the default) |
 | `--offline`, `--no-offline` | Use only what's cached, without connecting to any index |
 | `--index NAME=URL` | An index to resolve from, before those in config files; can be repeated |

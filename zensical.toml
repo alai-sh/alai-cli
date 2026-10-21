@@ -15,6 +15,7 @@ nav = [
   { "Projects" = "projects.md" },
   { "Managing collections" = "managing-collections.md" },
   { "Installing by hand" = "installing-by-hand.md" },
+  { "Finding plugins" = "finding-plugins.md" },
   { "Coming from ansible-galaxy" = "ansible-galaxy.md" },
   { "Configuration" = "configuration.md" },
   { "Indexes" = "indexes.md" },
@@ -30,6 +31,7 @@ nav = [
 extra_css = [
   "assets/asciinema-player-3.17.0/asciinema-player.css",
   "assets/cast.css",
+  "assets/ansi.css",
 ]
 extra_javascript = [
   "assets/asciinema-player-3.17.0/asciinema-player.min.js",

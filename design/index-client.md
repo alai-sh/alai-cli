@@ -210,6 +210,12 @@ from a machine ~250 ms (TCP plus TLS) from Cloudflare.
   `CollectionVersion.problem` set, so the resolver can skip it with a warning
   only when it would have considered it (see [versions.md](versions.md)).
 
+- **The plugin index is fetched only by `alai find`** (2026-10-21), with
+  `IndexClient.plugins()`, cached and revalidated like any index file.
+  `IndexClient(prefetch=False)` skips starting `collections.json` with
+  `config.json`, which `find` doesn't use. Searching it is in
+  [find.md](find.md).
+
 ## What `index.alai.sh` does today
 
 - Served over HTTP/2 by Cloudflare from R2, with `ETag`,

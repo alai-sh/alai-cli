@@ -17,6 +17,17 @@ rather than `<index>:ns.name`, say), the decision here holds.
   record what was tried against uv (with the version and date), and the
   reason wherever alai differs, such as `-P/--upgrade-collection` rather
   than uv's `--upgrade-package`, since alai says "collection" throughout.
+- **Only the collections directory alai manages** (2026-10-21). alai
+  works with the project's `collections_dir` and nothing else Ansible
+  could load collections from: not `~/.ansible/collections`, other
+  `ANSIBLE_COLLECTIONS_PATH` entries, or the `ansible` package's
+  collections in `site-packages`. Anything outside it would let collections
+  the lock doesn't list into a run, so the lock would stop describing what
+  runs. `alai run` will point Ansible at that directory alone
+  (`ANSIBLE_COLLECTIONS_PATH` set to it and
+  `ANSIBLE_COLLECTIONS_SCAN_SYS_PATH=False`); widening it would be an
+  explicit opt-in later, never the default. `alai find` counts only it as
+  installed, with `ansible.builtin`.
 - **Linux and macOS only.** alai doesn't run on Windows, as Ansible's
   control node doesn't, so the code has no Windows paths. macOS has code of
   its own (`clonefile`), so CI tests it too, with the oldest and newest
@@ -53,6 +64,7 @@ those items; change it with them.
 | [install.md](install.md) | Installing locked collections: downloading artifacts, the extracted-collection cache, extraction as ansible-galaxy does it, what counts as installed, link modes and exact syncing |
 | [index-client.md](index-client.md) | Fetching and caching the index: the HTTP library, cache layout, revalidation, proxies, errors, and what `index.alai.sh` does |
 | [performance.md](performance.md) | Where the time goes, measured on `sivel.acd`: extraction, cloning, and the planned Rust extension and how it's packaged |
+| [find.md](find.md) | `alai find`: searching the plugin index, ranking without download counts, probable copies, following routing as ansible-core does, and the output |
 | [output.md](output.md) | Verbosity, what goes to stdout and stderr, JSON, colour and progress |
 | [documentation.md](documentation.md) | What the published docs cover, the generator, the generated CLI reference and its terminal recordings, and how they're deployed |
 | [collection-development.md](collection-development.md) | Collection source repos and `ansible-test`: future work, and what today's code must keep possible |

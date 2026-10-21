@@ -8,6 +8,20 @@ inspired by [uv](https://docs.astral.sh/uv/).
     alai is in preview and its interface isn't stable yet. Expect breaking
     changes as workflows are worked out and adjusted.
 
+!!! note "A word on how alai is made"
+
+    alai is written with the help of AI coding tools. That doesn't mean a
+    model was handed a prompt and left to get on with it: a human argues
+    over every design decision, the reasoning behind them is written down
+    in the repository, and features are tried by hand against real
+    projects before they land, then tried again when they don't behave.
+    Think of it as pair programming where one of the pair never needs a
+    coffee break.
+
+    If you'd rather not use software built this way, that's a fair
+    position, and it seemed better to say so here than after you've read
+    the rest of the docs. No hard feelings.
+
 alai installs the collections an Ansible project needs into the project
 itself, in `collections/ansible_collections/` next to your playbooks, where
 `ansible-playbook` finds them with no extra configuration. It records the
@@ -121,6 +135,8 @@ project is a matter of linking files, not downloading them.
   workflows for teams and CI.
 - [Installing by hand](installing-by-hand.md): installing and uninstalling
   collections outside the project's lock, and how that differs.
+- [Finding plugins](finding-plugins.md): which collection has a module,
+  filter or role, and where a moved or removed one went.
 - [Coming from ansible-galaxy](ansible-galaxy.md): moving a project over,
   and the differences you may run into.
 - [Configuration](configuration.md): where alai reads its settings from,
