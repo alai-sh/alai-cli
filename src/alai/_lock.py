@@ -72,10 +72,38 @@ class LockedCollection(Record):
         """The names of the locked collections it depends on, sorted."""
 
 
-class Lock(Record):
-    __slots__ = ("collections", "manifest")
+class LockedRoot(Record):
+    """The collection the project's root holds, locked as ``source = { editable = "." }``, as uv locks its own package:
+    the checkout itself, linked in, so it has no checksum or size."""
 
-    def __init__(self, manifest: RawManifest, collections: _c.Iterable[LockedCollection]) -> None:
+    __slots__ = ("dependencies", "name", "path", "requires_ansible", "version")
+
+    def __init__(
+        self,
+        name: str,
+        version: Version,
+        *,
+        path: str = ".",
+        requires_ansible: str | None = None,
+        dependencies: tuple[str, ...] = (),
+    ) -> None:
+        self.name = name
+        self.version = version
+        self.path = path
+        """Relative to the project root; always ``.`` until workspaces of several collections exist."""
+        self.requires_ansible = requires_ansible
+        self.dependencies = dependencies
+        """The names of the locked collections its ``galaxy.yml`` asks for, sorted."""
+
+
+class Lock(Record):
+    __slots__ = ("collections", "manifest", "root")
+
+    def __init__(
+        self, manifest: RawManifest, collections: _c.Iterable[LockedCollection], root: LockedRoot | None = None
+    ) -> None:
+        self.root = root
+        """A collection project's own collection; not in ``collections``. None in a playbook project."""
         self.manifest = manifest
         """What it was resolved from, as written in ``alai.toml``: the project's requirements and groups (the lock's
         ``[project]``), and the overrides and sources for the whole resolution (its ``[overrides]`` and
@@ -96,7 +124,8 @@ class Lock(Record):
         found: set[str] = set()
         while wanted:
             name = wanted.pop()
-            if name in found:
+            # The project's own collection is linked in, not installed from the lock's index entries.
+            if name in found or (self.root is not None and name == self.root.name):
                 continue
             collection = by_name.get(name)
             if collection is None:
@@ -124,6 +153,14 @@ def stale(lock: Lock | None, manifest: Manifest, index_urls: _c.Collection[str])
         return "it doesn't exist"
     if not lock.is_current(manifest):
         return "alai.toml asks for something else than when it was locked"
+    root = manifest.root
+    if (lock.root is None) != (root is None) or (
+        lock.root is not None
+        and root is not None
+        and (lock.root.name, lock.root.version, lock.root.requires_ansible)
+        != (root.name, root.version, root.requires_ansible)
+    ):
+        return "galaxy.yml or meta/runtime.yml has changed since it was locked"
     for collection in lock.collections:
         if collection.source.url not in index_urls:
             return f"{collection.name} comes from {collection.source.url}, which isn't a configured index"
@@ -152,7 +189,10 @@ def changes(before: Lock | None, after: Lock) -> list[tuple[str, str]]:
                 lines.append((name, f"Updated {name} v{was.version} -> v{now.version}"))
             elif was.source.url != now.source.url:
                 lines.append((name, f"Updated {name} v{now.version}, now from {now.source.url}"))
-    return lines
+    if before.root is not None and after.root is not None and before.root.version != after.root.version:
+        name = after.root.name
+        lines.append((name, f"Updated {name} v{before.root.version} -> v{after.root.version}"))
+    return sorted(lines)
 
 
 def input_changes(lock: Lock, manifest: Manifest) -> list[str]:
@@ -242,15 +282,22 @@ def parse_lock(table: _c.Mapping[str, object], path: str) -> Lock:
     if not isinstance(entries, list):
         raise LockError(f"{path}: 'collection' must be an array of tables ([[collection]])")
     locked: dict[str, LockedCollection] = {}
+    root: LockedRoot | None = None
     for i, entry in enumerate(_t_list(entries)):
         collection = _parse_collection(entry, f"{path}: collection[{i}]")
-        if collection.name in locked:
+        if collection.name in locked or (root is not None and root.name == collection.name):
             raise LockError(f"{path}: collection[{i}]: '{collection.name}' is locked more than once")
-        locked[collection.name] = collection
-    for collection in locked.values():
-        if missing := [d for d in collection.dependencies if d not in locked]:
+        if isinstance(collection, LockedRoot):
+            if root is not None:
+                raise LockError(f"{path}: collection[{i}]: only one collection can be the project's own")
+            root = collection
+        else:
+            locked[collection.name] = collection
+    names = {*locked, *([root.name] if root is not None else [])}
+    for collection in [*locked.values(), *([root] if root is not None else [])]:
+        if missing := [d for d in collection.dependencies if d not in names]:
             raise LockError(f"{path}: '{collection.name}' depends on '{missing[0]}', which isn't locked")
-    return Lock(manifest, locked.values())
+    return Lock(manifest, locked.values(), root)
 
 
 def render_lock(lock: Lock) -> str:
@@ -276,7 +323,11 @@ def render_lock(lock: Lock) -> str:
         f"groups.{_key(name)}.requirements = {_array(manifest.groups[name])}\n" for name in sorted(manifest.groups)
     )
 
+    root = lock.root
     for c in lock.collections:
+        if root is not None and root.name < c.name:
+            out.append(_render_root(root))
+            root = None
         out.append("\n[[collection]]\n")
         out.append(f"name = {_string(c.name)}\n")
         out.append(f"version = {_string(c.version.text)}\n")
@@ -286,6 +337,17 @@ def render_lock(lock: Lock) -> str:
         if c.requires_ansible is not None:
             out.append(f"requires_ansible = {_string(c.requires_ansible)}\n")
         out.append(f"dependencies = {_array(sorted(c.dependencies))}\n")
+    if root is not None:
+        out.append(_render_root(root))
+    return "".join(out)
+
+
+def _render_root(root: LockedRoot) -> str:
+    out = ["\n[[collection]]\n", f"name = {_string(root.name)}\n", f"version = {_string(root.version.text)}\n"]
+    out.append(f"source = {{ editable = {_string(root.path)} }}\n")
+    if root.requires_ansible is not None:
+        out.append(f"requires_ansible = {_string(root.requires_ansible)}\n")
+    out.append(f"dependencies = {_array(sorted(root.dependencies))}\n")
     return "".join(out)
 
 
@@ -374,7 +436,7 @@ def _strings(value: object, where: str) -> list[str]:
     return value  # pyright: ignore[reportUnknownVariableType]
 
 
-def _parse_collection(entry: object, where: str) -> LockedCollection:
+def _parse_collection(entry: object, where: str) -> LockedCollection | LockedRoot:
     table = as_table(entry)
     if table is None:
         raise LockError(f"{where}: expected a table")
@@ -390,6 +452,18 @@ def _parse_collection(entry: object, where: str) -> LockedCollection:
     source_table = as_table(table.get("source"))
     if source_table is None:
         raise LockError(f"{where}: 'source' is required and must be a table, such as {{ index = \"...\" }}")
+    requires_ansible = table.get("requires_ansible")
+    if requires_ansible is not None and not isinstance(requires_ansible, str):
+        raise LockError(f"{where}: 'requires_ansible' must be a string")
+    dependencies = table.get("dependencies", [])
+    if not isinstance(dependencies, list) or not all(isinstance(d, str) for d in _t_list(dependencies)):
+        raise LockError(f"{where}: 'dependencies' must be an array of collection names")
+    names = tuple(sorted(str(d) for d in _t_list(dependencies)))
+
+    if set(source_table) == {"editable"}:
+        if source_table["editable"] != ".":
+            raise LockError(f"{where}: an editable source other than '.' needs a newer alai")
+        return LockedRoot(name, version, requires_ansible=requires_ansible, dependencies=names)
     url = source_table.get("index")
     if not isinstance(url, str) or set(source_table) != {"index"}:
         kinds = ", ".join(sorted(source_table)) or "none"
@@ -401,12 +475,6 @@ def _parse_collection(entry: object, where: str) -> LockedCollection:
     size = table.get("size")
     if not isinstance(size, int) or isinstance(size, bool) or size < 0:
         raise LockError(f"{where}: 'size' is required and must be a non-negative integer")
-    requires_ansible = table.get("requires_ansible")
-    if requires_ansible is not None and not isinstance(requires_ansible, str):
-        raise LockError(f"{where}: 'requires_ansible' must be a string")
-    dependencies = table.get("dependencies", [])
-    if not isinstance(dependencies, list) or not all(isinstance(d, str) for d in _t_list(dependencies)):
-        raise LockError(f"{where}: 'dependencies' must be an array of collection names")
 
     return LockedCollection(
         name,
@@ -415,7 +483,7 @@ def _parse_collection(entry: object, where: str) -> LockedCollection:
         cksum=cksum,
         size=size,
         requires_ansible=requires_ansible,
-        dependencies=tuple(sorted(_t_list(dependencies))),  # pyright: ignore[reportArgumentType]
+        dependencies=names,
     )
 
 

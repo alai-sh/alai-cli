@@ -74,6 +74,54 @@ removed plugins only for whole names the right default?
 
 See [find.md](find.md#ranking).
 
+## Collections `alai run` doesn't remove
+
+**Today (planned):** `alai run` syncs inexactly, as `uv run` does: a
+collection in the directory that `alai.lock` doesn't list stays, with a
+warning naming it, and Ansible can load it. `alai run --exact` and `alai
+sync` remove it (2026-10-21).
+
+**The alternatives:** exact by default, so only locked collections are ever
+loaded; or an error before running, with a flag to run anyway.
+
+**Ask:** do people keep collections they're working on in the project's
+collections directory before adding them? Does the warning get read, or do
+unlisted collections end up in runs unnoticed?
+
+See [run.md](run.md#what-uv-run-does).
+
+## Where a collection's test tree lives
+
+**Today (planned):** a collection project installs into a
+tree in alai's cache, with the checkout linked in, never inside the
+checkout; a `collections_dir` inside the checkout is an error
+(2026-10-21).
+
+**The alternative:** `./collections` in the checkout, as uv keeps `.venv`
+in the project, with a `collections/.gitignore` alai writes.
+
+**Ask:** do people want the tree where they can see it? Would they accept
+adding `collections` to `galaxy.yml`'s `build_ignore`, which
+`ansible-galaxy collection build` otherwise needs to keep the dependencies
+out of the artifact?
+
+See [collection-development.md](collection-development.md#where-the-tree-lives).
+
+## `[project]` in a collection project
+
+**Today (planned):** in a collection project's `alai.toml`, `[project]
+collections` and `[project] requires_ansible` are errors, as `galaxy.yml`
+and `meta/runtime.yml` already say them (2026-10-21).
+
+**The alternative:** let them override the collection's files, to test
+against a different `requires_ansible` or dependency than the collection
+publishes.
+
+**Ask:** do people test a collection against requirements other than the
+ones it publishes, and how do they do it today?
+
+See [collection-development.md](collection-development.md#decisions).
+
 ## requirements.yml
 
 **Today:** `-r requirements.yml` is shelved. The mapping onto `alai.toml`

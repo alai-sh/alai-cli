@@ -23,8 +23,9 @@ what's planned on top of it, and the questions still open.
   live next to it. One lockfile has to install to one place whichever
   directory alai runs from. Letting a nearer `ansible.cfg` choose the root
   would give one repo two collection trees.
-- **Marker order**: `alai.toml`, then `ansible.cfg`, then
-  `collections/ansible_collections/`. `ansible.cfg` is a weaker signal than
+- **Marker order**: `alai.toml`, then `galaxy.yml` (2026-10-21, see
+  [collection-development.md](collection-development.md)), then
+  `ansible.cfg`, then `collections/ansible_collections/`. `ansible.cfg` is a weaker signal than
   alai's own file because repos often hold several (per environment, per
   playbook directory, in test fixtures), and Ansible itself only reads it from
   the current directory, never a parent. The home directory got no special
@@ -75,10 +76,10 @@ what's planned on top of it, and the questions still open.
   tables, as `pyproject.toml` has `[dependency-groups]`, were considered, but
   then which tables were project-only would be a list to learn rather than
   visible in the file. TOML defines `[project]` from its sub-tables, so a
-  collection repo's file can hold only `[project.groups.test]` and
+  collection project's file can hold only `[project.groups.test]` and
   `[project.overrides]`, and the check catches either form. A top-level
   `[groups]` is just an unknown key, which the project file's suggestion
-  points at `project.groups`. A collection repo's `[project] requires_ansible`
+  points at `project.groups`. A collection project's `[project] requires_ansible`
   or `collections`, if allowed, would override what `meta/runtime.yml` and
   `galaxy.yml` say (see
   [collection-development.md](collection-development.md#open-questions)).
@@ -272,7 +273,7 @@ requirements.yml` would warn about and skip roles
 
 Planned alongside it:
 
-- **Collection source repos** keep their dependencies in `galaxy.yml`, which
+- **Collection projects** keep their dependencies in `galaxy.yml`, which
   alai reads instead of `project.collections`. Their `alai.toml` holds groups
   and settings. See [collection-development.md](collection-development.md).
 - **More kinds in `[project.sources]`**: git, URL and local path sources a
@@ -306,6 +307,3 @@ No `name` or `version`: a playbook project isn't published.
   read from `ansible.cfg`.
 - **`ANSIBLE_COLLECTIONS_PATH`.** It will be used to find what Ansible can
   already see, for shadowing warnings, never for where alai installs.
-- **`galaxy.yml`** isn't a marker until collection repos are supported; see
-  [collection-development.md](collection-development.md) for where it fits
-  in the order.

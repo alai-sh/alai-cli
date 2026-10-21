@@ -119,7 +119,7 @@ each example from the help and record it with Spectre.Console's recorder.
   per download, so the progress shows as it would over a network; without
   it everything finishes before the first frame is drawn.
 - **A recorder of our own**, about 200 lines on the standard library: each
-  command runs in a pseudo-terminal of 100 by 40, with an empty home,
+  command runs in a pseudo-terminal, with an empty home,
   config and cache, so alai colours and draws progress as it would for a
   user and nothing from the machine building the docs shows. `config show`
   shortens the home directory to `~`, so the temporary paths don't show
@@ -135,10 +135,14 @@ each example from the help and record it with Spectre.Console's recorder.
   reaches, following newlines, lines wider than the terminal wrapping onto
   the next row (escape sequences and OSC 8 links taking no room), and the
   cursor moving up as progress redraws; counting newlines alone made the
-  player too short when a long path wrapped. Recordings run in a 100 by 48 terminal, and one that reaches
+  player too short when a long path wrapped. Recordings run in an 80 by 48 terminal, and one that reaches
   past row 48 fails the build, as its first lines would scroll away
   before the end (raised from 40 when `find-search`'s first command
-  scrolled off, 2026-10-21). Considered: the asciinema CLI (another tool to install, and
+  scrolled off, 2026-10-21). The width was 100 until 2026-10-21: the
+  player fits each recording to the page's width, so 100 columns made the
+  text too small to read comfortably. A recording can set `columns`; the
+  `alai find` tables keep 100, as at 80 they cut descriptions and redirect
+  targets short, so their text is smaller than the rest. Considered: the asciinema CLI (another tool to install, and
   recording a whole shell session makes typing and setup harder to
   control) and vhs (needs ttyd and ffmpeg, and makes GIFs or videos, which
   can't be selected or themed).

@@ -22,12 +22,27 @@ inspired by [uv](https://docs.astral.sh/uv/).
     position, and it seemed better to say so here than after you've read
     the rest of the docs. No hard feelings.
 
-alai installs the collections an Ansible project needs into the project
-itself, in `collections/ansible_collections/` next to your playbooks, where
-`ansible-playbook` finds them with no extra configuration. It records the
-exact versions it chose in a lock file, so every machine and CI run gets the
-same collections, and installs them in a fraction of the time
-`ansible-galaxy` takes.
+alai installs the collections an Ansible project needs into a
+self-contained location of that project's own. This separates the collections
+a project uses from other projects and keeps things self contained and
+isolated. [`alai run`](running-ansible.md) runs Ansible with those
+collections and no others. It records the exact versions it chose in a
+lock file, so every machine and CI run gets the same collections, and
+installs them in a fraction of the time `ansible-galaxy` takes.
+
+Everything alai manages is a project: a directory of Ansible content and
+the collections it needs. A project is one of two kinds (see
+[Projects](projects.md#playbook-projects-and-collection-projects)):
+
+- **Playbook projects**, for using collections: playbooks, roles,
+  inventories or any other Ansible content. The collections go in
+  `collections/` beside its `alai.toml`, where `ansible-playbook` finds
+  them with or without `alai run`.
+- **Collection projects**, for writing one: a collection's own repository,
+  with its `galaxy.yml`. The collection you're developing is installed
+  beside its dependencies, linked to your checkout, so `ansible-test`,
+  `ansible-doc` and playbooks see your edits straight away, wherever it's
+  checked out.
 
 alai is designed to run on Linux and macOS only. There is no Windows support
 as Ansible itself cannot run on Windows and thus has no need for collections
@@ -61,7 +76,9 @@ and installed in one step:
 [Adding collections to a new project](casts/add.cast){ .alai-cast }
 
 `alai.toml` now lists what the project needs, `alai.lock` the exact versions
-chosen, and `collections/` holds them. Commit the first two; anyone else
+chosen, and the project's collections directory holds them: `collections/`
+beside `alai.toml` here, where `ansible-playbook` finds them even without
+`alai run`. Commit the first two; anyone else
 runs `alai sync` to get the same collections.
 
 ## Why alai
@@ -82,9 +99,15 @@ runs `alai sync` to get the same collections.
   interrupted install leaves what was there, never half a collection.
   Installs don't depend on the Galaxy API being up, and with `--offline`
   alai installs from its cache without connecting at all.
-- **Collections per project.** Each project has its own `collections/`,
+- **Collections per project.** Each project has its own collections,
   instead of one shared `~/.ansible/collections` where one project's
-  upgrade changes another's.
+  upgrade changes another's, and `alai run` makes sure Ansible loads only
+  those.
+- **Collection development.** A
+  [collection project](projects.md#collection-projects) no longer needs to
+  be in the `ansible_collections/<namespace>/<name>` directory layout, and
+  its dependencies never end up in the collection you build or the files
+  `ansible-test sanity` checks.
 - **No Ansible needed to install.** alai doesn't need ansible-core
   installed, so a CI job or container can fetch collections before, or
   without, installing Ansible.
@@ -133,6 +156,11 @@ project is a matter of linking files, not downloading them.
 - [Managing collections](managing-collections.md): adding, removing,
   locking and installing a project's collections, and the recommended
   workflows for teams and CI.
+- [Running Ansible](running-ansible.md): running `ansible-playbook` and
+  the other Ansible commands with the project's collections, and setting
+  up a shell, CI or an editor to do the same.
+- [Editors](editors.md): running and debugging Ansible from VS Code with
+  the project's collections.
 - [Installing by hand](installing-by-hand.md): installing and uninstalling
   collections outside the project's lock, and how that differs.
 - [Finding plugins](finding-plugins.md): which collection has a module,

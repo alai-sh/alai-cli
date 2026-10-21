@@ -43,7 +43,8 @@ def make_index(
     """Write an index in the spec's layout, returning its file:// root URL.
 
     With ``artifacts``, each version gets a real tarball under ``root/dl``, which ``dl`` points at, and its line the
-    tarball's ``cksum`` and ``size``, so it can be installed. With ``plugins``, it has a plugin index of those lines
+    tarball's ``cksum`` and ``size``, so it can be installed: one holding only a README, or the file a version's
+    ``tarball`` key names, such as a collection downloaded from Galaxy. With ``plugins``, it has a plugin index of those lines
     (see ``plugin``).
     """
     (root / "index").mkdir(parents=True, exist_ok=True)
@@ -83,9 +84,12 @@ def make_index(
                 "origin": "native",
                 "published": "2026-01-01T00:00:00Z",
             }
-            if artifacts:
+            tarball = spec.get("tarball")
+            if isinstance(tarball, Path):
+                line["cksum"], line["size"] = _copy_artifact(root / "dl", tarball)
+            elif artifacts:
                 line["cksum"], line["size"] = _artifact(root / "dl", name, str(spec["vers"]))
-            line.update({k: val for k, val in spec.items() if k not in ("vers", "deps", "yanked")})
+            line.update({k: val for k, val in spec.items() if k not in ("vers", "deps", "yanked", "tarball")})
             lines.append(json.dumps(line))
         if raw_lines and name in raw_lines:
             lines.append(raw_lines[name])
@@ -107,6 +111,14 @@ def plugin(fqcn: str, type_: str = "module", **fields: object) -> dict[str, obje
     """One plugin index line: ``plugin("a.a.thing", since="1.0.0", routing={...})``."""
     collection, name = fqcn.rsplit(".", 1)
     return {"v": 1, "type": type_, "name": name, "collection": collection, **fields}
+
+
+def _copy_artifact(directory: Path, tarball: Path) -> tuple[str, int]:
+    directory.mkdir(parents=True, exist_ok=True)
+    data = tarball.read_bytes()
+    cksum = hashlib.sha256(data).hexdigest()
+    _ = (directory / f"{cksum}.tar.gz").write_bytes(data)
+    return cksum, len(data)
 
 
 def _artifact(directory: Path, name: str, version: str) -> tuple[str, int]:

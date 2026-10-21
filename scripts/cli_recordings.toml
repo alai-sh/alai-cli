@@ -11,6 +11,9 @@
 #   files        files written to that directory first, by relative path
 #   setup        shell commands run before recording starts, not shown
 #   commands     shell commands typed and run in the recording, in order
+#   columns      the terminal's width, 80 unless set: wider for output that
+#                fills the terminal, such as alai find's, at the cost of
+#                smaller text, as the player fits each to the page's width
 
 # The index's plugin index, plugins.jsonl, for `alai find`: lines taken from
 # the real index, for the collections below and a few more.
@@ -100,7 +103,12 @@ plugins = [
     { vers = "8.7.1", deps = { "ansible.utils" = ">=6.0.0" } },
 ]
 "ansible.posix" = [{ vers = "2.1.0" }, { vers = "2.2.2" }]
-"ansible.utils" = [{ vers = "6.0.0" }, { vers = "6.1.1" }]
+# 6.1.1 is the real collection, downloaded from the index's artifact store, for
+# the recording that runs a module from it; it has no dependencies.
+"ansible.utils" = [
+    { vers = "6.0.0" },
+    { vers = "6.1.1", download = "961b587874b54a0e30e2614ec5c6f673d036cc37b823ed8b164092405f8ada6b" },
+]
 "cisco.ios" = [
     { vers = "11.5.0", deps = { "ansible.netcommon" = ">=8.1.0", "ansible.posix" = ">=2.0.0" } },
     { vers = "11.6.0", deps = { "ansible.netcommon" = ">=8.1.0", "ansible.posix" = ">=2.0.0" } },
@@ -124,6 +132,73 @@ commands = [
     "alai add cisco.ios",
     "alai add community.general -P ansible.posix",
 ]
+
+[[recording]]
+name = "run"
+title = "Running an Ansible module from a collection just added"
+# ansible-core comes from the docs environment. The ansible.cfg only turns off
+# the warning that no inventory was parsed, as the module runs on localhost.
+files = { "alai.toml" = "[project]\n", "ansible.cfg" = "[inventory]\ninventory_unparsed_warning = False\n" }
+commands = [
+    "alai add ansible.utils",
+    "alai run ansible localhost -m ansible.utils.fact_diff -a 'before=port:80 after=port:8080'",
+]
+
+[[recording]]
+name = "run-collection-playbook"
+title = "Running a collection's playbook by name"
+directory = "my_col"
+# A collection project: its galaxy.yml, one module and a playbook using it by
+# its short name. The ansible.cfg only turns off the warnings that there's no
+# inventory, as the playbook runs on localhost.
+files."alai.toml" = ""
+files."ansible.cfg" = "[defaults]\nlocalhost_warning = False\n\n[inventory]\ninventory_unparsed_warning = False\n"
+files."galaxy.yml" = """
+namespace: my_ns
+name: my_col
+version: 1.0.0
+readme: README.md
+authors: [Example]
+"""
+files."README.md" = "# my_ns.my_col\n"
+files."plugins/modules/hello.py" = """
+#!/usr/bin/python
+from __future__ import annotations
+
+DOCUMENTATION = r'''
+module: hello
+short_description: Return a greeting
+options:
+  name:
+    description: Who to greet.
+    type: str
+    required: true
+'''
+
+from ansible.module_utils.basic import AnsibleModule
+
+
+def main() -> None:
+    module = AnsibleModule(argument_spec=dict(name=dict(type='str', required=True)))
+    module.exit_json(changed=False, msg=f"Hello, {module.params['name']}!")
+
+
+if __name__ == '__main__':
+    main()
+"""
+files."playbooks/site.yml" = """
+- hosts: localhost
+  gather_facts: false
+  tasks:
+  - name: Greet with the collection's own module, by its short name
+    hello:
+      name: world
+    register: greeting
+
+  - ansible.builtin.debug:
+      msg: '{{ greeting.msg }}'
+"""
+commands = ["cat playbooks/site.yml", "alai run ansible-playbook my_ns.my_col.site"]
 
 [[recording]]
 name = "remove"
@@ -191,6 +266,7 @@ commands = ["alai collection uninstall --collections-dir ./collections cisco.ios
 
 [[recording]]
 name = "find"
+columns = 100
 title = "Finding plugins"
 files = { "alai.toml" = "[project]\n" }
 setup = ["alai add -q community.general"]
@@ -198,6 +274,7 @@ commands = ["alai find docker_container", "alai find to_"]
 
 [[recording]]
 name = "find-search"
+columns = 100
 title = "Searching by part of a name, or the whole name"
 files = { "alai.toml" = "[project]\n" }
 setup = ["alai add -q community.general"]
@@ -205,6 +282,7 @@ commands = ["alai find user", "alai find -x user", "alai find --installed user"]
 
 [[recording]]
 name = "find-types"
+columns = 100
 title = "Searching one type, or several"
 files = { "alai.toml" = "[project]\n" }
 setup = ["alai add -q ansible.utils"]
@@ -212,12 +290,14 @@ commands = ["alai find -t filter to_", "alai find -t filter -t test 'ip[a-z]*'"]
 
 [[recording]]
 name = "find-globs"
+columns = 100
 title = "Searching with globs"
 files = { "alai.toml" = "[project]\n" }
 commands = ["alai find '*_info'", "alai find 'community.docker.*'"]
 
 [[recording]]
 name = "find-quoting"
+columns = 100
 title = "Why globs need quotes"
 files = { "alai.toml" = "[project]\n", "docker_container_info" = "" }
 commands = ["ls", "alai find *_info", "alai find '*_info'"]
@@ -272,6 +352,12 @@ upgrades `ansible.posix`, and only `ansible.posix`, to the newest version that
 fits, 2.2.2. `-P` takes the name of the collection to upgrade, which needn't be
 one being added: here it's already in `alai.toml`. Give `-P` again to upgrade
 more than one, or use `-U` to upgrade every collection.
+"""
+
+[[reference.run]]
+recording = "run"
+description = """
+`alai run` runs Ansible where it can find the collections alai manages.
 """
 
 [[reference.remove]]

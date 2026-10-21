@@ -26,6 +26,9 @@ from ._semver import VersionReq
 
 _MAX_ROUNDS = 5000
 """How many rounds resolvelib may take, each pinning one collection or backtracking from one."""
+_PROJECT = ""
+"""The index name of the project's own collection, when its root is one: no configured index can be called this, so
+it's never fetched, and its one version is the checkout's."""
 
 
 class ResolutionError(Error):
@@ -149,6 +152,7 @@ def resolve(
             dependencies=tuple(sorted({name for name, _ in c.version.deps})),
         )
         for c in sorted(chosen.values(), key=lambda c: c.name)
+        if c.index != _PROJECT
     )
     reasons = provider.reasons(chosen, result.criteria, locked, upgrade)
     return Resolution(collections, tuple(provider.warnings(chosen)), reasons)
@@ -209,6 +213,23 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
         origin: str = "the project",
     ) -> None:
         self._manifest = manifest
+        root = manifest.root
+        self._root = (
+            None
+            if root is None
+            else CollectionVersion(
+                root.name,
+                root.version,
+                deps=(),
+                cksum="",
+                size=0,
+                requires_ansible=None,
+                yanked=False,
+                origin="",
+                published="",
+            )
+        )
+        """The project's own collection as its one candidate, when the root is one."""
         self._origin = origin
         self._report = report
         self._installed = installed or {}
@@ -286,6 +307,9 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
             self._report(identifier, len(self._files))
         # Every requirement on a name agrees on its index: it's worked out from the name alone.
         index = reqs[0].index
+        if index == _PROJECT and (root := self._root) is not None:
+            # The checkout is the only version there is, at what its galaxy.yml says, whatever the indexes have.
+            return [_Candidate(identifier, root, index)] if all(r.req.contains(root.version) for r in reqs) else []
         file = None if index is None else self._file(index, identifier)
         if index is None or file is None:
             return []
@@ -324,6 +348,7 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
         return requirement.req.contains(candidate.version.version)
 
     def get_dependencies(self, candidate: _Candidate) -> list[_Requirement]:
+        # The project's own collection has no dependencies here: its galaxy.yml's are the project's requirements.
         dependencies: list[_Requirement] = []
         for name, req in candidate.version.deps:
             text = _dependency_text(name, req)
@@ -348,6 +373,8 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
         project = self._manifest.requires_ansible
         for name in sorted(chosen):
             candidate = chosen[name]
+            if candidate.index == _PROJECT:
+                continue
             if candidate.version.yanked:
                 out.append(f"{candidate} is yanked")
             # A newer version that would have fitted, skipped because its metadata couldn't be read.
@@ -384,6 +411,8 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
         """
         out: dict[str, str] = {}
         for name, candidate in sorted(chosen.items()):
+            if candidate.index == _PROJECT:
+                continue
             reqs = [info.requirement for info in criteria[name].information]
             was = locked.get(name) if locked is not None else None
             if was is None:
@@ -465,6 +494,10 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
         for name, reqs in sorted(by_name.items()):
             index = reqs[0].index
             parents = ", ".join(sorted({r.parent for r in reqs}))
+            if index == _PROJECT and self._root is not None:
+                lines.append(f"{name} {self._root.version}, the project's own collection, doesn't meet:")
+                lines.extend(f"  {r.text} (from {r.parent})" for r in reqs)
+                continue
             if index is None:
                 lines.append(f"no configured index has {name}, which {parents} needs")
                 continue
@@ -482,6 +515,9 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
     def _index_for(self, name: str) -> str | None:
         """Where a collection comes from, whatever asked for it: its ``[project.sources]`` entry, else the first
         index whose listing has it, as uv's default ``first-index`` strategy does. None if no index has it."""
+        root = self._manifest.root
+        if root is not None and name == root.name:
+            return _PROJECT
         pin = self._manifest.sources.get(name)
         if pin is not None:
             return pin.index
@@ -492,7 +528,7 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
         by_index: dict[str, set[str]] = {}
         for name in names:
             index = self._index_for(name)
-            if index is not None and (index, name) not in self._files:
+            if index is not None and index != _PROJECT and (index, name) not in self._files:
                 by_index.setdefault(index, set()).add(name)
         for index, wanted in by_index.items():
             self._indexes[index].prefetch(sorted(wanted))

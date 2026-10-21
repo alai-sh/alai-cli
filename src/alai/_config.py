@@ -58,14 +58,18 @@ class Index(Record):
 
 
 class Project(Record):
-    __slots__ = ("config_file", "marker", "root")
+    __slots__ = ("collection_file", "config_file", "marker", "root")
 
-    def __init__(self, root: str, config_file: str | None, marker: str | None) -> None:
+    def __init__(
+        self, root: str, config_file: str | None, marker: str | None, collection_file: str | None = None
+    ) -> None:
         self.root = root
         self.config_file = config_file
         """The project's ``alai.toml``, if it has one."""
         self.marker = marker
         """The marker that chose ``root``, or None when no marker was found."""
+        self.collection_file = collection_file
+        """The root's ``galaxy.yml`` in a collection project, else None."""
 
 
 class Overrides(Record):
@@ -388,6 +392,12 @@ def load_settings(
     offline = merged.values.get("offline")
     indexes = [i for i in merged.lists.get("indexes", ()) if isinstance(i, Index)]
     sources = {s.target: merged.sources.get(s.target, "default") for s in SETTINGS if not s.many}
+    if not isinstance(cache_dir, str):
+        cache_dir = default_cache_dir(environ)
+    if not isinstance(collections_dir, str):
+        collections_dir = _default_collections_dir(project, cache_dir)
+    elif project.collection_file is not None:
+        _check_tree(project.root, collections_dir, sources["collections_dir"])
     return Settings(
         project=project,
         config_files=tuple(f.path for f in searched if f.read),
@@ -395,10 +405,8 @@ def load_settings(
         no_config=no_config and not config_file,
         sources=sources,
         overridden={target: tuple(values) for target, values in merged.overridden.items()},
-        collections_dir=collections_dir
-        if isinstance(collections_dir, str)
-        else os.path.join(project.root, "collections"),
-        cache_dir=cache_dir if isinstance(cache_dir, str) else default_cache_dir(environ),
+        collections_dir=collections_dir,
+        cache_dir=cache_dir,
         link_mode=link_mode if isinstance(link_mode, LinkMode) else LinkMode.AUTO,
         indexes=_resolve_indexes(indexes),
         system_certs=system_certs if isinstance(system_certs, bool) else True,
@@ -406,22 +414,53 @@ def load_settings(
     )
 
 
+def _default_collections_dir(project: Project, cache_dir: str | None) -> str:
+    """``<root>/collections``, or for a collection project a tree of its own in the cache, keyed by the checkout's
+    path, as the checkout can't hold its own dependencies: see ``design/collection-development.md``."""
+    if project.collection_file is None:
+        return os.path.join(project.root, "collections")
+    if cache_dir is None:
+        raise ConfigError("cannot find the home directory for the cache, set ALAI_CACHE_DIR or ALAI_COLLECTIONS_DIR")
+    import hashlib
+
+    key = hashlib.sha256(os.fsencode(project.root)).hexdigest()[:16]
+    return os.path.join(cache_dir, "envs", key)
+
+
+def _check_tree(root: str, collections_dir: str, source: str) -> None:
+    """A collection project's checkout and the tree it's linked into mustn't hold each other: the tree inside would be part of
+    the collection to ansible-galaxy and ansible-test, and the checkout inside would leave nowhere for its link, with
+    an exact sync removing whatever is beside it."""
+    tree = os.path.realpath(collections_dir)
+    for inner, outer, what in ((tree, root, "inside the collection"), (root, tree, "holds the collection")):
+        if os.path.commonpath((inner, outer)) == outer:
+            raise ConfigError(
+                f"collections_dir {collections_dir} (from {source}) {what} at {root}; "
+                + "a collection's dependencies are installed into a directory outside its checkout"
+            )
+
+
 def find_project(start: str) -> Project:
     """Find the project root by walking up from ``start``.
 
-    The nearest ``alai.toml`` wins, then the nearest ``ansible.cfg``, then the nearest
-    ``collections/ansible_collections``.
+    The nearest ``alai.toml`` wins, then the nearest ``galaxy.yml``, then the nearest ``ansible.cfg``, then the
+    nearest ``collections/ansible_collections``. A ``galaxy.yml`` beside the chosen ``alai.toml``, or the chosen
+    ``galaxy.yml``, makes it a collection project.
     """
     start = os.path.realpath(start)
+    galaxy: Project | None = None
     ansible_cfg: Project | None = None
     collections: Project | None = None
 
     directory = start
     while True:
         alai_toml = os.path.join(directory, CONFIG_FILE_NAME)
+        galaxy_yml = os.path.join(directory, "galaxy.yml")
         if os.path.isfile(alai_toml):
-            return Project(directory, alai_toml, CONFIG_FILE_NAME)
+            return Project(directory, alai_toml, CONFIG_FILE_NAME, galaxy_yml if os.path.isfile(galaxy_yml) else None)
 
+        if galaxy is None and os.path.isfile(galaxy_yml):
+            galaxy = Project(directory, None, "galaxy.yml", galaxy_yml)
         if ansible_cfg is None and os.path.isfile(os.path.join(directory, "ansible.cfg")):
             ansible_cfg = Project(directory, None, "ansible.cfg")
         if collections is None and os.path.isdir(os.path.join(directory, "collections", "ansible_collections")):
@@ -429,7 +468,7 @@ def find_project(start: str) -> Project:
 
         parent = os.path.dirname(directory)
         if parent == directory:
-            return ansible_cfg or collections or Project(start, None, None)
+            return galaxy or ansible_cfg or collections or Project(start, None, None)
         directory = parent
 
 

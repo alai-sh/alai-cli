@@ -6,11 +6,9 @@
 from __future__ import annotations
 
 import argparse
-import time
 
 from .._args import HelpFormatter, add_global_args, add_settings_args, settings_from_args
 from .._common import ConfigError
-from .._output import error, shown_path, summary
 from .lock import EXIT_STALE, add_upgrade_args
 
 
@@ -23,7 +21,23 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         + "changed since. The project's collections are installed with the 'dev' group, if there is one.",
         formatter_class=HelpFormatter,
     )
-    check = sync.add_mutually_exclusive_group()
+    _ = add_check_args(sync)
+    _ = sync.add_argument(
+        "--inexact",
+        action="store_true",
+        help="keep installed collections alai.lock doesn't list, rather than removing them",
+    )
+    _ = add_group_args(sync)
+    add_upgrade_args(sync, groups=True)
+    add_reinstall_args(sync)
+    add_global_args(sync, suppress=True)
+    add_settings_args(sync, "resolve", "install")
+    sync.set_defaults(parser=sync, handler=run)
+
+
+def add_check_args(parser: argparse.ArgumentParser) -> argparse._MutuallyExclusiveGroup:
+    """``--locked`` and ``--frozen``, for the commands that sync: ``sync`` and ``run``."""
+    check = parser.add_mutually_exclusive_group()
     _ = check.add_argument(
         "--locked",
         action="store_true",
@@ -34,12 +48,12 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         action="store_true",
         help="install from alai.lock as it is, without checking it against alai.toml",
     )
-    _ = sync.add_argument(
-        "--inexact",
-        action="store_true",
-        help="keep installed collections alai.lock doesn't list, rather than removing them",
-    )
-    groups = sync.add_argument_group("groups")
+    return check
+
+
+def add_group_args(parser: argparse.ArgumentParser) -> argparse._ArgumentGroup:
+    """The options choosing which groups to install, for the commands that sync: ``sync`` and ``run``."""
+    groups = parser.add_argument_group("groups")
     _ = groups.add_argument(
         "--group", metavar="NAME", action="append", default=[], help="also install group NAME; can be repeated"
     )
@@ -61,11 +75,7 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
     _ = groups.add_argument("--no-default-groups", action="store_true", help="don't install the 'dev' group")
     _ = groups.add_argument("--no-dev", action="store_true", help="the same as --no-group dev")
     _ = groups.add_argument("--only-dev", action="store_true", help="the same as --only-group dev")
-    add_upgrade_args(sync, groups=True)
-    add_reinstall_args(sync)
-    add_global_args(sync, suppress=True)
-    add_settings_args(sync, "resolve", "install")
-    sync.set_defaults(parser=sync, handler=run)
+    return groups
 
 
 def add_reinstall_args(parser: argparse.ArgumentParser) -> None:
@@ -98,40 +108,14 @@ def reinstall_from_args(args: argparse.Namespace) -> bool | set[str]:
 
 
 def run(args: argparse.Namespace) -> int:
-    from .._lock import lock_path, read_lock, stale, write_lock
-    from .._project import load_project, lock_unchanged, report_changes, resolve_project, upgrade_from_args
-    from .._sync import install_locked, selected_groups
+    from .._sync import sync_project
 
-    started = time.monotonic()
     settings = settings_from_args(args)
-    raw, manifest = load_project(settings, "alai sync installs what it lists")
-    project, groups = selected_groups(args, manifest)
-    upgrade = upgrade_from_args(args)
-    reinstall = reinstall_from_args(args)
-    if upgrade and args.frozen:
-        raise ConfigError("--upgrade, --upgrade-collection and --upgrade-group resolve, which --frozen doesn't")
-    path = lock_path(settings.project.root)
-    existing = read_lock(path)
-
-    if (args.locked or args.frozen) and existing is None:
-        flag = "--locked" if args.locked else "--frozen"
-        error(f"there's no {shown_path(path)}, and {flag} was given; run alai lock")
-        return EXIT_STALE
-    if args.frozen and existing is not None:
-        lock = existing
-    elif upgrade or args.locked or existing is None or stale(existing, manifest, {i.url for i in settings.indexes}):
-        lock, resolution = resolve_project(settings, manifest, raw, existing, upgrade=upgrade)
-        summary("Resolved", len(lock.collections), time.monotonic() - started, dim=True)
-        if args.locked:
-            if not lock_unchanged(existing, manifest, lock):
-                report_changes(existing, manifest, lock, resolution, inputs=True)
-                error(f"{shown_path(path)} is out of date, and --locked was given; run alai lock")
-                return EXIT_STALE
-        else:
-            _ = write_lock(path, lock)
-    else:
-        lock = existing
-        summary("Resolved", len(lock.collections), time.monotonic() - started, dim=True)
-
-    install_locked(settings, lock.select(groups, project=project), exact=not args.inexact, reinstall=reinstall)
-    return 0
+    synced = sync_project(
+        args,
+        settings,
+        "alai sync installs what it lists",
+        exact=not args.inexact,
+        reinstall=reinstall_from_args(args),
+    )
+    return EXIT_STALE if synced is None else 0

@@ -19,9 +19,9 @@ from . import _toml_edit
 from ._common import NAME_RE, ConfigError
 from ._config import Settings, raw_manifest
 from ._lock import Lock, lock_path, read_lock, write_lock
-from ._manifest import Manifest, Requirement, collection_name, parse_manifest
+from ._manifest import Requirement, collection_name
 from ._output import error, home_path, shown_path, summary
-from ._project import Upgrade, lock_unchanged, report_changes, resolve_project
+from ._project import Upgrade, lock_unchanged, report_changes, resolve_project, with_root
 from ._sync import DEFAULT_GROUPS, install_locked
 
 if sys.version_info >= (3, 11):
@@ -118,7 +118,7 @@ def _add(
     with one. A name alone is written with the lowest version it can have, ``>=`` the version locked for it, once
     resolving has found one; with ``frozen`` nothing is resolved, so it's written as given.
     """
-    config, text = _read(settings)
+    config, text = _read(settings, group)
     path = _array_path(group)
     parsed = [_requirement(r) for r in requirements]
     bare: list[str] = []
@@ -173,7 +173,7 @@ def _remove(
     upgrade: Upgrade | None = None,
     reinstall: bool | set[str] = False,
 ) -> bool:
-    config, text = _read(settings)
+    config, text = _read(settings, group)
     path = _array_path(group)
     for given in names:
         try:
@@ -222,19 +222,16 @@ def _lock_and_sync(
     writes ``pyproject.toml`` when the requirement is only spelt differently, and ``alai.lock`` kept as it is.
     """
     started = time.monotonic()
-    manifest = _manifest(text, config)
+    raw, manifest = with_root(settings, raw_manifest(tomllib.loads(text), config))
     path = lock_path(settings.project.root)
     existing = read_lock(path)
     if locked and existing is None:
         error(f"there's no {shown_path(path)}, and --locked was given; run alai lock")
         return False
-    lock, resolution = resolve_project(
-        settings, manifest, raw_manifest(tomllib.loads(text), config), existing, upgrade=upgrade
-    )
+    lock, resolution = resolve_project(settings, manifest, raw, existing, upgrade=upgrade)
     final = finish(text, lock)
-    raw = raw_manifest(tomllib.loads(final), config)
-    manifest = parse_manifest(raw)
-    lock = Lock(raw, lock.collections)
+    raw, manifest = with_root(settings, raw_manifest(tomllib.loads(final), config))
+    lock = Lock(raw, lock.collections, lock.root)
     summary("Resolved", len(lock.collections), time.monotonic() - started, dim=True)
     if locked and not lock_unchanged(existing, manifest, lock):
         report_changes(existing, manifest, lock, resolution, inputs=True)
@@ -245,13 +242,27 @@ def _lock_and_sync(
         _ = write_lock(path, lock)
     if sync:
         groups = sorted({g for g in DEFAULT_GROUPS if g in manifest.groups} | ({group} if group else set()))
-        install_locked(settings, lock.select(groups), exact=True, reinstall=reinstall)
+        install_locked(
+            settings,
+            lock.select(groups),
+            exact=True,
+            reinstall=reinstall,
+            editable=lock.root,
+            editable_path=settings.project.root,
+        )
     return True
 
 
-def _read(settings: Settings) -> tuple[str, str]:
-    """The project's ``alai.toml`` path and text, as written: its newlines kept, so edits keep them too."""
+def _read(settings: Settings, group: str | None) -> tuple[str, str]:
+    """The project's ``alai.toml`` path and text, as written: its newlines kept, so edits keep them too. In a
+    collection project only a group can be edited, as the rest is in ``galaxy.yml``."""
     config = settings.project.config_file
+    if settings.project.collection_file is not None and group is None:
+        raise ConfigError(
+            f"{home_path(settings.project.root)} is a collection project, whose collections are galaxy.yml's "
+            + "dependencies, which alai can't edit yet: change them by hand, then run alai lock, or give --group "
+            + "for collections only its tests need"
+        )
     if config is None:
         raise ConfigError(
             f"there's no alai.toml in {home_path(settings.project.root)}: create one with a [project] table first"
@@ -276,10 +287,6 @@ def _write(config: str, text: str) -> None:
         if os.path.exists(temp):
             os.remove(temp)
         raise ConfigError(f"can't write {config}: {e.strerror or e}") from None
-
-
-def _manifest(text: str, config: str) -> Manifest:
-    return parse_manifest(raw_manifest(tomllib.loads(text), config))
 
 
 def _array_path(group: str | None) -> tuple[str, ...]:

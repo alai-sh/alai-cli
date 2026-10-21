@@ -11,7 +11,7 @@ import typing as _t
 
 from ._common import ConfigError, Record
 from ._config import RawManifest, Settings, raw_manifest, read_toml
-from ._lock import Lock, changes, input_changes
+from ._lock import Lock, LockedRoot, changes, input_changes
 from ._manifest import Manifest, collection_name, parse_manifest
 from ._output import detail, home_path, lock_change, status, warn
 from ._progress import Live, Task
@@ -63,12 +63,59 @@ def upgrade_from_args(args: argparse.Namespace) -> Upgrade:
 
 
 def load_project(settings: Settings, why: str) -> tuple[RawManifest, Manifest]:
-    """The project's ``alai.toml`` as written and as parsed; ``why`` says, in the error, why a command needs one."""
+    """The project's ``alai.toml`` as written and as parsed; ``why`` says, in the error, why a command needs one.
+
+    In a collection project, ``alai.toml`` is optional: see ``with_root``.
+    """
     project = settings.project
     if project.config_file is None:
-        raise ConfigError(f"there's no alai.toml in {home_path(project.root)}: {why}")
-    raw = raw_manifest(read_toml(project.config_file), project.config_file)
-    return raw, parse_manifest(raw)
+        if project.collection_file is None:
+            raise ConfigError(f"there's no alai.toml in {home_path(project.root)}: {why}")
+        raw = RawManifest(
+            project.collection_file,
+            collections=[],
+            requires_ansible=None,
+            groups={},
+            overrides={},
+            ignore_requires_ansible=[],
+        )
+    else:
+        raw = raw_manifest(read_toml(project.config_file), project.config_file)
+    return with_root(settings, raw)
+
+
+def with_root(settings: Settings, raw: RawManifest) -> tuple[RawManifest, Manifest]:
+    """``raw``, the project's ``alai.toml``, as resolved: as it is, or in a collection project, with
+    the requirements and ``requires_ansible`` its ``galaxy.yml`` and ``meta/runtime.yml`` give, which ``alai.toml``
+    mustn't repeat. See ``design/collection-development.md``."""
+    galaxy_file = settings.project.collection_file
+    if galaxy_file is None:
+        return raw, parse_manifest(raw)
+
+    from ._galaxy import read_root_collection
+
+    root = read_root_collection(galaxy_file)
+    for key, value, instead in (
+        ("collections", raw.collections, "galaxy.yml's dependencies"),
+        ("requires_ansible", raw.requires_ansible, "meta/runtime.yml's requires_ansible"),
+    ):
+        if value:
+            raise ConfigError(
+                f"{raw.path}: 'project.{key}' can't be set beside a collection's galaxy.yml, "
+                + f"{instead} say that; a [project.groups.<name>] holds collections only its tests need"
+            )
+    raw = RawManifest(
+        raw.path,
+        collections=list(root.dependencies),
+        requires_ansible=root.requires_ansible,
+        groups=raw.groups,
+        overrides=raw.overrides,
+        ignore_requires_ansible=raw.ignore_requires_ansible,
+        sources=raw.sources,
+    )
+    manifest = parse_manifest(raw)
+    manifest.root = root
+    return raw, manifest
 
 
 def resolve_project(
@@ -83,7 +130,15 @@ def resolve_project(
     ``upgrade`` names, and warn of anything the resolution reported. The lock isn't written."""
     names = upgrade.names(manifest) if upgrade is not None else False
     resolution = resolve_manifest(settings, manifest, locked=existing, upgrade=names)
-    return Lock(raw, resolution.collections), resolution
+    root = None
+    if manifest.root is not None:
+        root = LockedRoot(
+            manifest.root.name,
+            manifest.root.version,
+            requires_ansible=manifest.root.requires_ansible,
+            dependencies=tuple(sorted(r.name for r in manifest.collections)),
+        )
+    return Lock(raw, resolution.collections, root), resolution
 
 
 def resolve_manifest(
@@ -125,7 +180,12 @@ def resolve_manifest(
 
 def lock_unchanged(existing: Lock | None, manifest: Manifest, lock: Lock) -> bool:
     """Whether resolving again left ``existing`` as it was: locked from the same inputs, to the same collections."""
-    return existing is not None and existing.is_current(manifest) and existing.collections == lock.collections
+    return (
+        existing is not None
+        and existing.is_current(manifest)
+        and existing.collections == lock.collections
+        and existing.root == lock.root
+    )
 
 
 def report_changes(

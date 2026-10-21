@@ -20,9 +20,11 @@ $ alai [OPTIONS] <COMMAND>
 | [`add`](#alai-add) | Add collections to alai.toml, then lock and sync |
 | [`collection`](#alai-collection) | Install or uninstall collections outside the project's requirements and alai.lock |
 | [`config`](#alai-config) | Inspect alai's settings |
+| [`env`](#alai-env) | Print the environment variables alai run sets, for a shell to use |
 | [`find`](#alai-find) | Find which collections have a plugin, role or playbook |
 | [`lock`](#alai-lock) | Resolve the project's collections into alai.lock |
 | [`remove`](#alai-remove) | Remove collections from alai.toml, then lock and sync |
+| [`run`](#alai-run) | Run a command, such as ansible-playbook, with the project's collections |
 | [`generate-shell-completion`](#alai-generate-shell-completion) | Print the script that enables Tab completion in a shell |
 | [`sync`](#alai-sync) | Install the collections alai.lock lists, locking first if needed |
 
@@ -247,6 +249,30 @@ $ alai config show [OPTIONS] [key]
 
 Also takes the [global options](#global-options).
 
+## alai env
+
+Print the environment variables that make Ansible load collections from the project's collections directory and nowhere else, as alai run sets them: eval "$(alai env)" in a shell. Nothing is locked or installed; a warning says when the collections directory doesn't match alai.lock.
+
+```console
+$ alai env [OPTIONS]
+```
+
+### Options
+
+| Option | Description |
+|---|---|
+| `--output-format {sh,fish,pwsh,dotenv}` | What to print: sh, export lines for POSIX shells; fish or pwsh, the same for fish and PowerShell; or dotenv, KEY=VALUE lines for env files. fish when SHELL is fish, else sh |
+
+### Settings
+
+| Option | Description |
+|---|---|
+| `--collections-dir DIR` | Install collections under DIR/ansible_collections |
+| `--index NAME=URL` | An index to resolve from, before those in config files; can be repeated |
+| `--default-index [NAME=]URL` | Replace the default index |
+
+Also takes the [global options](#global-options).
+
 ## alai find
 
 Find plugins, roles and playbooks by name in the indexes' plugin indexes, with the ones in installed collections and ansible.builtin first. QUERY is part of a name (user finds win_user too), a glob ('*_info', 'community.general.*'), or a FQCN, which shows that plugin's details: where its redirects lead, and how to install it.
@@ -351,6 +377,66 @@ $ alai remove [OPTIONS] NAME [NAME ...]
 | `--upgrade-group NAME` | Choose the newest version of every collection group NAME lists that fits; can be repeated |
 | `--reinstall` | Reinstall every collection, even those already at the right version |
 | `--reinstall-collection NAME` | Reinstall collection NAME, even if it's already at the right version; can be repeated |
+
+### Settings
+
+| Option | Description |
+|---|---|
+| `--collections-dir DIR` | Install collections under DIR/ansible_collections |
+| `--link-mode {auto,clone,hardlink,copy,symlink}` | How files get from the cache into the collections directory |
+| `--system-certs`, `--no-system-certs` | Verify TLS certificates with the operating system's trust store (the default) |
+| `--offline`, `--no-offline` | Use only what's cached, without connecting to any index |
+| `--index NAME=URL` | An index to resolve from, before those in config files; can be repeated |
+| `--default-index [NAME=]URL` | Replace the default index |
+
+Also takes the [global options](#global-options).
+
+## alai run
+
+Install what alai.lock lists, locking first if needed, as alai sync does, then run COMMAND with Ansible loading collections from the project's collections directory and nowhere else. Collections there that alai.lock doesn't list are kept, with a warning unless `--inexact` is given, or removed with `--exact`. Everything after COMMAND is passed to it.
+
+[Running an Ansible module from a collection just added](casts/run.cast){ .alai-cast }
+
+`alai run` runs Ansible where it can find the collections alai manages.
+{: .alai-cast-description }
+
+```console
+$ alai run [OPTIONS] COMMAND ...
+```
+
+### Arguments
+
+| Argument | Description |
+|---|---|
+| `COMMAND` | The command to run, found on PATH |
+| `ARG` | The command's arguments |
+
+### Options
+
+| Option | Description |
+|---|---|
+| `--locked` | Resolve, and exit 1 rather than install if alai.lock is missing or would change. Can't be used with `--frozen` or `--no-sync` |
+| `--frozen` | Install from alai.lock as it is, without checking it against alai.toml. Can't be used with `--locked` or `--no-sync` |
+| `--no-sync` | Run without locking or installing anything first. Can't be used with `--locked` or `--frozen` |
+| `--exact` | Remove installed collections alai.lock doesn't list, as alai sync does, rather than warn of them. Can't be used with `--inexact` |
+| `--inexact` | Keep installed collections alai.lock doesn't list without warning of them. Can't be used with `--exact` |
+| `-U`, `--upgrade` | Choose the newest versions that fit, ignoring alai.lock |
+| `-P`, `--upgrade-collection NAME` | Choose the newest version of collection NAME that fits; can be repeated |
+| `--upgrade-group NAME` | Choose the newest version of every collection group NAME lists that fits; can be repeated |
+| `--reinstall` | Reinstall every collection, even those already at the right version |
+| `--reinstall-collection NAME` | Reinstall collection NAME, even if it's already at the right version; can be repeated |
+
+### Groups
+
+| Option | Description |
+|---|---|
+| `--group NAME` | Also install group NAME; can be repeated |
+| `--no-group NAME` | Don't install group NAME, even if another option asks for it; can be repeated |
+| `--only-group NAME` | Install only group NAME, without the project's own collections; can be repeated |
+| `--all-groups` | Install every group |
+| `--no-default-groups` | Don't install the 'dev' group |
+| `--no-dev` | The same as `--no-group dev` |
+| `--only-dev` | The same as `--only-group dev` |
 
 ### Settings
 

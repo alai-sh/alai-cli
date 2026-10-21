@@ -11,12 +11,13 @@ import collections.abc as _c
 import os
 import time
 
+from . import _output
 from ._common import ConfigError
 from ._config import Index, Settings
-from ._install import Linker, install, plan, remove, unlink_namespace
-from ._lock import LockedCollection
+from ._install import Linker, install, link_editable, plan, remove, unlink_namespace
+from ._lock import LockedCollection, LockedRoot
 from ._manifest import Manifest
-from ._output import change, summary
+from ._output import change, error, shown_path, summary
 from ._progress import Live, Task
 
 DEFAULT_GROUPS = ("dev",)
@@ -54,6 +55,72 @@ def selected_groups(args: argparse.Namespace, manifest: Manifest) -> tuple[bool,
     return True, sorted(chosen - excluded)
 
 
+def sync_project(
+    args: argparse.Namespace,
+    settings: Settings,
+    why: str,
+    *,
+    exact: bool,
+    reinstall: bool | set[str] = False,
+    brief: bool = False,
+) -> tuple[Manifest, list[str]] | None:
+    """Lock the project if needed and install what the options select, as ``alai sync`` does; ``why`` says, in the
+    error, why the command needs an ``alai.toml``. ``reinstall`` is as for ``install_locked``. With ``brief``, as ``uv run`` syncs, only the phases that changed
+    something are reported, and each collection's line only with ``-v``.
+
+    The manifest and the names of the collections installed, the project's own included, or None when ``--locked``
+    or ``--frozen`` failed, which has been reported.
+    """
+    from ._lock import lock_path, read_lock, stale, write_lock
+    from ._project import load_project, lock_unchanged, report_changes, resolve_project, upgrade_from_args
+
+    started = time.monotonic()
+    raw, manifest = load_project(settings, why)
+    project, groups = selected_groups(args, manifest)
+    upgrade = upgrade_from_args(args)
+    if upgrade and args.frozen:
+        raise ConfigError("--upgrade, --upgrade-collection and --upgrade-group resolve, which --frozen doesn't")
+    path = lock_path(settings.project.root)
+    existing = read_lock(path)
+
+    if (args.locked or args.frozen) and existing is None:
+        flag = "--locked" if args.locked else "--frozen"
+        error(f"there's no {shown_path(path)}, and {flag} was given; run alai lock")
+        return None
+    if args.frozen and existing is not None:
+        lock = existing
+    elif upgrade or args.locked or existing is None or stale(existing, manifest, {i.url for i in settings.indexes}):
+        lock, resolution = resolve_project(settings, manifest, raw, existing, upgrade=upgrade)
+        if not brief:
+            summary("Resolved", len(lock.collections), time.monotonic() - started, dim=True)
+        if args.locked:
+            if not lock_unchanged(existing, manifest, lock):
+                report_changes(existing, manifest, lock, resolution, inputs=True)
+                error(f"{shown_path(path)} is out of date, and --locked was given; run alai lock")
+                return None
+        else:
+            _ = write_lock(path, lock)
+    else:
+        lock = existing
+        if not brief:
+            summary("Resolved", len(lock.collections), time.monotonic() - started, dim=True)
+
+    wanted = lock.select(groups, project=project)
+    root = lock.root if project else None
+    if root is not None and manifest.root is None:
+        raise ConfigError(f"{shown_path(path)} locks {root.name} as the project's own, but there's no galaxy.yml")
+    install_locked(
+        settings,
+        wanted,
+        exact=exact,
+        reinstall=reinstall,
+        brief=brief,
+        editable=root,
+        editable_path=settings.project.root,
+    )
+    return manifest, [c.name for c in wanted] + ([root.name] if root is not None else [])
+
+
 def install_locked(
     settings: Settings,
     wanted: list[LockedCollection],
@@ -61,10 +128,15 @@ def install_locked(
     exact: bool,
     keep_unversioned: bool = False,
     reinstall: bool | set[str] = False,
+    brief: bool = False,
+    editable: LockedRoot | None = None,
+    editable_path: str = "",
 ) -> None:
     """Make the collections directory hold ``wanted``: download what isn't cached, then remove and install. With
     ``keep_unversioned``, a collection whose version can't be read is left as it is. ``reinstall``, all of ``wanted``
-    or the names given, replaces those already at their version from the cache, as uv reinstalls from its own."""
+    or the names given, replaces those already at their version from the cache, as uv reinstalls from its own. With
+    ``brief``, nothing is said when nothing changed, and each collection's line only with ``-v``. ``editable``, the
+    project's own collection, is linked to its checkout at ``editable_path`` rather than installed."""
 
     started = time.monotonic()
     cdir = settings.collections_dir
@@ -74,10 +146,18 @@ def install_locked(
         exact=exact,
         keep_unversioned=keep_unversioned,
         reinstall=reinstall,
+        keep=[editable.name] if editable is not None else [],
     )
     by_name = {c.name: c for c in wanted}
+    # Linked first, so a namespace link it replaces is already gone when the plan's own unlinking runs.
+    linked = editable is not None and link_editable(cdir, editable.name, editable_path)
+    if linked and editable is not None:
+        summary("Linked", 1, time.monotonic() - started)
+        if not brief or _output.verbosity >= 1:
+            change("+", editable.name, f"=={editable.version.text} (from {editable_path})")
     if not (todo.install or todo.remove or todo.unlink):
-        summary("Checked", len(wanted), time.monotonic() - started, dim=True)
+        if not brief and not linked:
+            summary("Checked", len(wanted) + (editable is not None), time.monotonic() - started, dim=True)
         return
 
     started = time.monotonic()
@@ -106,6 +186,8 @@ def install_locked(
     if todo.install:
         summary("Installed", len(todo.install), time.monotonic() - started)
 
+    if brief and _output.verbosity < 1:
+        return
     lines: list[tuple[str, str, str]] = []
     for path, target in links.items():
         lines.append(("-", os.path.basename(path), f" (namespace link to {target})"))

@@ -331,6 +331,33 @@ on 2026-10-21 in a project with `requests` and its four dependencies:
   anything is resolved: keeping a collection as it is and reinstalling it
   ask for opposite things. uv has nothing like it to compare with.
 
+## The project's own collection
+
+In a collection project (see
+[collection-development.md](collection-development.md)), `sync` links it
+into the tree rather than installing it (`link_editable`, 2026-10-21):
+
+- **An absolute symlink** to the checkout at
+  `ansible_collections/<namespace>/<name>`, as uv's editable installs record
+  an absolute path, so the tree's own location doesn't matter.
+- **Left as it is when it already points there**, and replaced, through a
+  temporary link renamed over it, when it's missing or points elsewhere. A
+  directory there is removed first. A namespace that's a link is replaced
+  with a real directory, as for any install.
+- **Its place is always alai's** (decided with the user, 2026-10-22), even
+  with `collections_dir` pointed somewhere the user set up: whatever is at
+  `<namespace>/<name>`, a copy, an installed release or another link, is
+  replaced by the link to the checkout, as it's the project's own collection.
+  Refusing a directory without a `MANIFEST.json`, as a hand-made copy might
+  be, was considered and rejected: collections aren't meant to be edited in
+  place, and keeping edits is `alai run`'s inexact sync's job for collections
+  the lock doesn't list, not the project's own.
+- **Never removed by an exact sync** (`plan(..., keep=...)`), though it's
+  not in the lock's index entries. `--only-group` leaves it out, as uv's
+  `--only-group` leaves out the project.
+- **Reported as `Linked`**, with ` + ns.col==1.0.0 (from <checkout>)`, as
+  uv shows an editable install's source.
+
 ## Not done yet
 
 - **`collection install -r requirements.yml`**, ansible-galaxy's

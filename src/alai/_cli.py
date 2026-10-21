@@ -15,7 +15,7 @@ import sys
 
 from . import _output
 from ._args import HelpFormatter, add_global_args, verbose_count
-from ._commands import add, collection, config, find, lock, remove, shell_completion, sync
+from ._commands import add, collection, config, env, find, lock, remove, run, shell_completion, sync
 from ._common import Error
 
 EXIT_ERROR = 2
@@ -68,9 +68,11 @@ def _build_parser() -> argparse.ArgumentParser:
     add.register(commands)
     collection.register(commands)
     config.register(commands)
+    env.register(commands)
     find.register(commands)
     lock.register(commands)
     remove.register(commands)
+    run.register(commands)
     shell_completion.register(commands)
     sync.register(commands)
 

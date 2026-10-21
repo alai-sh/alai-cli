@@ -79,9 +79,9 @@ How alai chooses one version of every collection a project needs, in
     open-ended. Where alai differs from uv is the reporting: a chosen version
     whose upper bound ends inside the project's range gives a warning, so a
     lock that doesn't cover all of `requires_ansible` says so, where uv is
-    silent. `sync` and `run` will go further and check the installed
-    ansible-core against every locked collection's own range, upper bounds
-    included, as ansible-core itself warns at load time. A project range with
+    silent. The installed ansible-core is checked against every loaded
+    collection's own range, upper bounds included, by ansible-core itself
+    at load time, not by alai ([run.md](run.md#checking-ansible-core)). A project range with
     no lower bound filters nothing; `ignore_requires_ansible` skips the
     check and the warning for the collections it lists; no
     `requires_ansible` in the project skips both for all.

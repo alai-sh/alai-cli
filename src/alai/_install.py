@@ -115,11 +115,13 @@ def plan(
     exact: bool,
     keep_unversioned: bool = False,
     reinstall: bool | _c.Set[str] = False,
+    keep: _c.Collection[str] = (),
 ) -> Plan:
     """What makes ``collections_dir`` hold the ``locked`` versions: matched by version alone, as uv does, so a
     collection edited in place is left as it is, and one with no readable version is replaced, unless
     ``keep_unversioned`` says to count it as the version wanted. ``reinstall``, every locked collection or the names
-    given, replaces one at its locked version all the same."""
+    given, replaces one at its locked version all the same. ``keep`` names collections managed some other way, such as
+    an editable link, which are never removed."""
     present = installed(collections_dir)
     needed = {name.split(".")[0] for name in locked}
     unlink = [
@@ -134,7 +136,7 @@ def plan(
             (have.version == version and not again) or (keep_unversioned and have.version is None)
         )
         (unchanged if kept else install).append(name)
-    remove = [c for name, c in sorted(present.items()) if name not in locked] if exact else []
+    remove = [c for name, c in sorted(present.items()) if name not in locked and name not in keep] if exact else []
     replace = [present[name] for name in install if name in present]
     return Plan(install, remove, unchanged, unlink, replace)
 
@@ -173,8 +175,47 @@ def install(collections_dir: str, name: str, source: str, linker: Linker) -> Non
     trace(f"{name}: installed to {target} from {source}")
 
 
+def linked(collections_dir: str, name: str, source: str) -> bool:
+    """Whether ``<namespace>/<name>`` is already the symlink ``link_editable`` makes to ``source``."""
+    namespace, short = name.split(".")
+    target = os.path.join(namespaces_dir(collections_dir), namespace, short)
+    return os.path.islink(target) and os.readlink(target) == os.path.abspath(source)
+
+
+def link_editable(collections_dir: str, name: str, source: str) -> bool:
+    """Make ``<namespace>/<name>`` a symlink to the checkout at ``source``, replacing what's there, so edits in the
+    checkout are seen without installing again; False when it already was one.
+
+    The link is the absolute path, as uv's editable installs record theirs, so it doesn't break if the tree moves.
+    """
+    namespace, short = name.split(".")
+    parent = os.path.join(namespaces_dir(collections_dir), namespace)
+    target = os.path.join(parent, short)
+    source = os.path.abspath(source)
+    if linked(collections_dir, name, source):
+        return False
+    try:
+        if os.path.islink(parent):
+            unlink_namespace(parent)
+        os.makedirs(parent, exist_ok=True)
+        temp = os.path.join(parent, f"{_TEMP}link-{short}-{secrets.token_hex(4)}")
+        os.symlink(source, temp)
+        if os.path.lexists(target) and not os.path.islink(target):
+            # A directory can't be renamed over. The project's own collection's place is always alai's, wherever
+            # collections_dir is, so whatever is there goes.
+            _rmtree(target)
+        os.rename(temp, target)
+        _remove_galaxy_info(collections_dir, name)
+    except OSError as e:
+        raise InstallError(f"can't link {name} at {target} to {source}: {_reason(e)}") from None
+    trace(f"{name}: linked {target} to {source}")
+    return True
+
+
 def unlink_namespace(path: str) -> None:
-    """Remove a namespace symlink, never what it points at."""
+    """Remove a namespace symlink, never what it points at; nothing if it isn't one now."""
+    if not os.path.islink(path):
+        return
     try:
         os.remove(path)
     except FileNotFoundError:
