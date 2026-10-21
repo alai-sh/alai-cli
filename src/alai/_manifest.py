@@ -16,7 +16,7 @@ import re
 from ._common import NAME_RE, ConfigError, Record
 from ._config import Project, RawManifest, raw_manifest, read_toml
 from ._pep440 import SpecifierSet
-from ._semver import VersionReq
+from ._semver import Version, VersionReq
 
 _NAME_PART_RE = re.compile(r"[a-z_][a-z0-9_]*")
 # The name, up to the first character that can only start a version requirement.
@@ -63,15 +63,51 @@ class IndexPin(Record):
         self.index = index
 
 
+class RootCollection(Record):
+    """The collection a project's root holds: what ``galaxy.yml`` names it, and what it needs."""
+
+    __slots__ = ("dependencies", "name", "path", "requires_ansible", "version")
+
+    def __init__(
+        self,
+        name: str,
+        version: Version,
+        path: str,
+        *,
+        dependencies: tuple[str, ...] = (),
+        requires_ansible: str | None = None,
+    ) -> None:
+        self.name = name
+        """``namespace.name``."""
+        self.version = version
+        self.path = path
+        """The checkout: the directory holding ``galaxy.yml``."""
+        self.dependencies = dependencies
+        """``galaxy.yml``'s ``dependencies`` as requirement strings in ``alai.toml``'s syntax, such as
+        ``ansible.utils>=2.0.0``, in the order written."""
+        self.requires_ansible = requires_ansible
+        """``meta/runtime.yml``'s ``requires_ansible``, or None when it doesn't set one."""
+
+
 class Manifest(Record):
     """What the project's ``alai.toml`` says the project needs."""
 
-    __slots__ = ("collections", "groups", "ignore_requires_ansible", "overrides", "path", "requires_ansible", "sources")
+    __slots__ = (
+        "collections",
+        "groups",
+        "ignore_requires_ansible",
+        "overrides",
+        "path",
+        "requires_ansible",
+        "root",
+        "sources",
+    )
 
     def __init__(
         self,
         path: str,
         *,
+        root: RootCollection | None = None,
         collections: tuple[Requirement, ...] = (),
         requires_ansible: SpecifierSet | None = None,
         groups: dict[str, tuple[Requirement, ...]] | None = None,
@@ -80,7 +116,10 @@ class Manifest(Record):
         sources: dict[str, IndexPin] | None = None,
     ) -> None:
         self.path = path
-        """The ``alai.toml`` it was read from."""
+        """The ``alai.toml`` it was read from, or a collection project's ``galaxy.yml`` without one."""
+        self.root = root
+        """A collection project's own collection, whose ``galaxy.yml`` and ``meta/runtime.yml`` give ``collections``
+        and ``requires_ansible``, or None in a playbook project."""
         self.collections = collections
         self.requires_ansible = requires_ansible
         """The ansible-core versions the project targets, or None for any."""

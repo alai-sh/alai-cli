@@ -101,12 +101,13 @@ each entry's `dependencies`, plus the groups asked for. A root needs no
 `dependencies` of its own: every requirement names a collection, so its
 direct dependencies are its requirements' names.
 
-### A collection project (planned)
+### A collection project
 
-When collection repositories are supported (see
-[collection-development.md](collection-development.md)), the collection
-itself is the root, as a uv project is an entry with `source = { editable =
-"." }`:
+Implemented on 2026-10-21 (see
+[collection-development.md](collection-development.md)). The collection
+itself is an entry, as a uv project with a build system is an entry with
+`source = { editable = "." }` (a uv project without one is `source = {
+virtual = "." }`, which alai's `[project]` table plays the part of):
 
 ```yaml
 # galaxy.yml
@@ -124,47 +125,47 @@ requires_ansible: ">=2.16"
 ```
 
 ```toml
-# alai.toml: what galaxy.yml and meta/runtime.yml can't say. A [project] with
-# requires_ansible or collections would override them.
+# alai.toml: only what galaxy.yml and meta/runtime.yml can't say;
+# [project] collections or requires_ansible here is an error.
 [project.groups.test]
 collections = ["ansible.posix", "community.crypto>=2"]
-
-[project.overrides]
-"ansible.netcommon" = ">=6"
 ```
 
 ```toml
 # alai.lock
-version = 2
+version = 1
 
-[overrides]
-"ansible.netcommon" = ">=6"
+[project]
+requires_ansible = ">=2.16"                                # meta/runtime.yml
+requirements = ["ansible.netcommon>=5.0.0", "ansible.utils"]   # galaxy.yml, in alai.toml's syntax
+groups.test.requirements = ["ansible.posix", "community.crypto>=2"]
 
 [[collection]]
 name = "corp.tools"
 version = "1.4.0"                                          # galaxy.yml
-source = { project = "." }                                 # the checkout, linked into the test tree
-requires_ansible = ">=2.16"                                # meta/runtime.yml
-requirements = ["ansible.netcommon>=5.0.0", "ansible.utils"]   # galaxy.yml's dependencies
-groups.test.requirements = ["ansible.posix", "community.crypto>=2"]
+source = { editable = "." }                                # the checkout, linked into the tree
+requires_ansible = ">=2.16"
+dependencies = ["ansible.netcommon", "ansible.utils"]
 
 [[collection]]
 name = "ansible.netcommon"
-version = "8.7.1"
-source = { index = "https://index.alai.sh/" }
 # ...
 ```
 
-There's no `[project]`: the root is the entry whose source is `project`,
-which has `requirements` rather than `dependencies`, and no `cksum`, since it
-changes with every edit. `lock --check` compares each of its inputs with the
-file it came from. `galaxy.yml`'s mapping becomes requirement strings, with
-`"*"` dropped. The format becomes `2`, so an alai that only knows playbook
-projects refuses the lock rather than misreading it. A workspace of several
-collections is the same with several `project` sources (`{ project =
-"collections/corp/tools" }`), sharing one `[overrides]`, and the resolution's
-`requires_ansible` is the roots' ranges combined, as uv combines its
-members' `requires-python`.
+- **The inputs stay in `[project]`**, for both kinds of project, so
+  staleness, `--locked` and `lock --check` work one way. The plan had put
+  them on the root entry, as uv puts a package's on its `[package.metadata]`;
+  that's for when several roots exist (a workspace), each with its own.
+- **`galaxy.yml`'s dependencies are rewritten in `alai.toml`'s syntax**:
+  parsed as ansible-galaxy parses them (`VersionReq.parse_index`), so a bare
+  `1.0.0` is `==1.0.0` and `"*"` is dropped.
+- **The root entry has no `cksum` or `size`**, as it changes with every
+  edit, and its `dependencies` are its requirements' names. A change to its
+  name, version or `requires_ansible` makes the lock stale, as a change to
+  the requirements does.
+- **`version` stays `1`.** Nothing is released, so there's no older alai to
+  protect from misreading it. One that reads an `editable` source other than
+  `.` is refused as needing a newer alai, for workspaces.
 
 ## Decisions
 
@@ -288,9 +289,12 @@ members' `requires-python`.
   ambiguous) and entries get their ansible-core range, behind a `version`
   bump: an alai that doesn't know forks must refuse such a lock, which
   today's reader already does ("locked more than once").
-- **`requires_ansible` per entry** lets `sync` and `run` warn when the
-  installed ansible-core is outside a locked collection's range, including
-  upper bounds the resolver ignored (see [resolver.md](resolver.md)).
+- **`requires_ansible` per entry** records each locked version's own
+  range, upper bounds the resolver ignored included (see
+  [resolver.md](resolver.md)). It was kept for `sync` and `run` to check
+  the installed ansible-core against, but ansible-core does that as it
+  loads each collection ([run.md](run.md#checking-ansible-core)); it
+  stays for forked locks and for what a future command may report.
 - **Unknown keys are ignored when reading**, as in the index spec, so a
   newer alai can add an optional key without breaking older ones in the same
   team. `version` is bumped only for a change an older alai would misread,
@@ -301,7 +305,10 @@ members' `requires-python`.
 
 Local directories (including editable installs) and git repositories, through
 the planned `[sources]` table in `alai.toml`. They change the lock in three
-ways, which is why `source` is a table naming its kind now:
+ways, which is why `source` is a table naming its kind now. Editable
+directories are `{ editable = "<path>" }`, as uv 0.13 locks an editable path
+dependency and its own package (`{ editable = "." }`), and a plain directory
+`{ path = "<path>" }`:
 
 ```toml
 [[collection]]
@@ -313,7 +320,7 @@ dependencies = ["community.general"]
 [[collection]]
 name = "corp.dev"
 version = "0.1.0"
-source = { path = "../corp.dev", editable = true }
+source = { editable = "../corp.dev" }
 dependencies = []
 ```
 

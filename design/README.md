@@ -35,17 +35,24 @@ rather than `<index>:ns.name`, say), the decision here holds.
 
 ## Roadmap
 
-What comes before `alai run`, which needs these settled first (2026-10-20):
+Next, in order (2026-10-21):
 
 1. **Path, editable and git sources** in `[project.sources]`, likely as
    local paths (plain and editable), then git, then tarball URLs and
    files: [lockfile.md](lockfile.md#planned-other-sources) and
-   [install.md](install.md).
-2. **Collection projects**: `galaxy.yml` as the manifest, installing into a
-   tree alai owns with the checkout linked in:
-   [collection-development.md](collection-development.md).
-3. **`alai run`**, and with it the ansible-core check against the locked
-   collections' `requires_ansible` ([environments.md](environments.md)).
+   [install.md](install.md). A sibling checkout of a dependency, linked
+   into a collection project's tree, is one of their uses.
+2. **`alai build`, and the collection defined in `alai.toml`**, before the
+   first release (raised 2026-10-21): `alai add` and `alai remove` can't
+   edit `galaxy.yml` without a YAML editor that keeps its formatting, so a
+   collection whose metadata lives in `alai.toml` is how they'll work in a
+   collection project. The open questions are in
+   [collection-development.md](collection-development.md#open-questions).
+
+Done on 2026-10-21: `alai run` and `alai env` ([run.md](run.md)), and
+collection projects
+([collection-development.md](collection-development.md)), with what's
+left of those in each note's "Not done yet".
 
 Shelved: `-r requirements.yml` ([requirements-file.md](requirements-file.md));
 what to ask users about it is in [user-questions.md](user-questions.md).
@@ -67,5 +74,7 @@ those items; change it with them.
 | [find.md](find.md) | `alai find`: searching the plugin index, ranking without download counts, probable copies, following routing as ansible-core does, and the output |
 | [output.md](output.md) | Verbosity, what goes to stdout and stderr, JSON, colour and progress |
 | [documentation.md](documentation.md) | What the published docs cover, the generator, the generated CLI reference and its terminal recordings, and how they're deployed |
-| [collection-development.md](collection-development.md) | Collection source repos and `ansible-test`: future work, and what today's code must keep possible |
+| [run.md](run.md) | `alai run` and `alai env`: bringing your own Python environment, environment variables only, syncing first, and what's open |
+| [collection-development.md](collection-development.md) | Collection projects and `ansible-test`: future work, and what today's code must keep possible |
+| [upstream.md](upstream.md) | Changes needed in ansible-test and ansible-core, mostly for collection projects: where, why, what alai does meanwhile and what to remove once each is released |
 | [user-questions.md](user-questions.md) | Decisions taken for now that users may want the other way, and questions only users can answer: what to ask, and where the reasoning is |

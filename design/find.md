@@ -385,7 +385,7 @@ into `ansible.builtin`, which the index lacked until it was synced.
   marked `✓` though it's missing (its `since` is its `version_added`, but
   there's no installed version to compare it with); with a newer one,
   plugins added after the index's release aren't listed at all. Fixing it
-  needs the installed ansible-core's version, which `alai run` will find
-  ([environments.md](environments.md)), to mark the first `↑`; the second
+  needs the installed ansible-core's version, which alai doesn't look for
+  ([run.md](run.md#checking-ansible-core)), to mark the first `↑`; the second
   needs the index to carry builtins per release, or the release it used,
   which is for the spec.

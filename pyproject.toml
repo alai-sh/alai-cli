@@ -26,6 +26,8 @@ dependencies = [
     # Older releases fail on the argparse internals of current Python 3.12 and later releases.
     "argcomplete >= 3.5.2",
     "tomli >= 1.1.0; python_version < '3.11'",
+    # galaxy.yml and meta/runtime.yml, read with the same parser ansible-core uses.
+    "pyyaml >= 6.0",
     # Dependency resolution, as pip and ansible-galaxy use; the floor is the release tested.
     "resolvelib >= 1.2",
     # The OS trust store for TLS; the floor is the release tested.
@@ -50,12 +52,17 @@ dev = [
     "pytest >= 8",
     "pytest-xdist",
     "tox-uv",
+    # Type stubs for PyYAML, for basedpyright.
+    "types-pyyaml",
     # Lets basedpyright check the Python 3.10 import path.
     "tomli >= 1.1.0",
 ]
 docs = [
     # zensical needs Python 3.11 or later; the marker lets uv still lock this group for 3.10.
     "zensical >= 0.0.71; python_version >= '3.11'",
+    # The run recording runs a module with it; pinned so the recording is the same on every build. A release
+    # candidate, as 2.21 doesn't run on Python 3.15: move to 2.22.0 once it's out.
+    "ansible-core == 2.22.0rc1; python_version >= '3.13'",
 ]
 
 [tool.uv]

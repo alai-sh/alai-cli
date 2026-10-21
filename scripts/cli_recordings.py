@@ -40,7 +40,9 @@ from index_server import IndexServer
 
 SCENARIOS = pathlib.Path("scripts/cli_recordings.toml")
 OUTPUT = pathlib.Path("docs/casts")
-COLUMNS = 100
+COLUMNS = 80
+"""The terminal's width while recording, unless a recording sets ``columns``. The player fits the recording to the
+page's width, so fewer columns means larger text."""
 ROWS = 48
 """The terminal's size while recording; the file's height is cut to the rows the recording uses. A recording that
 needs more fails, as its first lines would scroll away before it ends."""
@@ -52,6 +54,10 @@ TYPING = 0.04
 BEFORE_ENTER = 0.5
 AFTER_OUTPUT = 1.5
 """Seconds to hold on each command's output before typing the next."""
+
+DOWNLOADS = "https://dl.alai.sh/sha256/{prefix}/{cksum}.tar.gz"
+"""Where a version with a ``download`` checksum in ``[index]`` is fetched from: the real artifact, for a recording that
+runs Ansible against it."""
 
 # Seconds the index takes to answer, so the progress shows as it would over a network. Downloads take longest.
 INDEX_DELAY = 0.15
@@ -73,9 +79,7 @@ def main(names: list[str]) -> int:
     OUTPUT.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="alai-casts-") as temp:
         root = pathlib.Path(temp)
-        collections = {
-            name: [v(str(s["vers"]), s.get("deps")) for s in versions] for name, versions in scenarios["index"].items()
-        }
+        collections = {name: [_version(s, root) for s in versions] for name, versions in scenarios["index"].items()}
         plugins = [{"v": 1, **line} for line in scenarios["plugins"]]
         _ = make_index(root / "index", collections, artifacts=True, plugins=plugins)
         with IndexServer(root / "index") as server:
@@ -95,6 +99,29 @@ def main(names: list[str]) -> int:
                 for job in concurrent.futures.as_completed(jobs):
                     _ = sys.stderr.write(f"recorded {job.result()}\n")
     return 0
+
+
+def _version(spec: dict[str, object], root: pathlib.Path) -> dict[str, object]:
+    """An ``[index]`` version for ``make_index``: one with a ``download`` checksum gets that real artifact, fetched and
+    checked against it, in place of one holding only a README."""
+    version = v(str(spec["vers"]), spec.get("deps"))  # pyright: ignore[reportArgumentType]
+    cksum = spec.get("download")
+    if isinstance(cksum, str):
+        import hashlib
+        import urllib.request
+
+        url = DOWNLOADS.format(prefix=cksum[:2], cksum=cksum)
+        # Named, as the artifact store refuses urllib's default User-Agent.
+        request = urllib.request.Request(url, headers={"User-Agent": "alai-docs-recordings"})  # noqa: S310 - a fixed https URL
+        with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310 - a fixed https URL
+            data: bytes = response.read()
+        if hashlib.sha256(data).hexdigest() != cksum:
+            msg = f"{url} doesn't match its sha256 {cksum}"
+            raise RuntimeError(msg)
+        tarball = root / f"{cksum}.tar.gz"
+        _ = tarball.write_bytes(data)
+        version["tarball"] = tarball
+    return version
 
 
 def _write(recording: dict[str, object], index: str, bin_dir: pathlib.Path) -> str:
@@ -121,6 +148,10 @@ def _environment(home: pathlib.Path, index: str, bin_dir: pathlib.Path) -> dict[
 
 
 def _record(recording: dict[str, object], home: pathlib.Path, env: dict[str, str]) -> str:
+    columns = recording.get("columns", COLUMNS)
+    if not isinstance(columns, int):
+        msg = f"{recording['name']}: columns must be an integer"
+        raise TypeError(msg)
     project = home / str(recording.get("directory", "project"))
     project.mkdir()
     for path, content in _as_dict(recording.get("files")).items():
@@ -152,7 +183,7 @@ def _record(recording: dict[str, object], home: pathlib.Path, env: dict[str, str
             if not cwd.is_dir() or not cwd.is_relative_to(home):
                 msg = f"{recording['name']}: {command!r} isn't a directory in the recording's home"
                 raise RuntimeError(msg)
-        output, status = ([], 0) if args[0] == "cd" else _run(command, cwd, env)
+        output, status = ([], 0) if args[0] == "cd" else _run(command, cwd, env, columns)
         if status == 127:  # the shell couldn't find the command, rather than it failing on purpose
             msg = f"{recording['name']}: {command!r} wasn't found:\n{''.join(data for _, data in output)}"
             raise RuntimeError(msg)
@@ -161,13 +192,13 @@ def _record(recording: dict[str, object], home: pathlib.Path, env: dict[str, str
         clock = events[-1][0] + AFTER_OUTPUT
     events.append((clock, _prompt(cwd, home)))
 
-    rows = _rows_used("".join(data for _, data in events))
+    rows = _rows_used("".join(data for _, data in events), columns)
     if rows > ROWS:
         msg = f"{recording['name']}: needs {rows} rows, more than the {ROWS} recorded; shorten it or raise ROWS"
         raise RuntimeError(msg)
     header = {
         "version": 2,
-        "width": COLUMNS,
+        "width": columns,
         "height": rows,
         "title": recording["title"],
         "env": {"TERM": env["TERM"], "SHELL": "/bin/sh"},
@@ -183,11 +214,11 @@ def _prompt(cwd: pathlib.Path, home: pathlib.Path) -> str:
     return PROMPT.format(cwd=shown)
 
 
-def _run(command: str, cwd: pathlib.Path, env: dict[str, str]) -> tuple[list[tuple[float, str]], int]:
+def _run(command: str, cwd: pathlib.Path, env: dict[str, str], columns: int) -> tuple[list[tuple[float, str]], int]:
     """Run a command in a pseudo-terminal, returning what it wrote and when, in seconds from its start, and its exit
     status."""
     controller, terminal = pty.openpty()
-    fcntl.ioctl(terminal, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLUMNS, 0, 0))
+    fcntl.ioctl(terminal, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, columns, 0, 0))
     start = time.monotonic()
     process = subprocess.Popen(  # noqa: S602 - the commands are the recording's own
         command,
@@ -226,8 +257,8 @@ def _run(command: str, cwd: pathlib.Path, env: dict[str, str]) -> tuple[list[tup
 _TERMINAL_RE = re.compile(r"\x1b\[([0-9;?]*)([A-Za-z])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b.|\r|\n|[^\x1b\r\n]")
 
 
-def _rows_used(output: str) -> int:
-    """The rows the output reaches as the terminal draws it: following newlines, lines wider than ``COLUMNS`` wrapping
+def _rows_used(output: str, columns: int) -> int:
+    """The rows the output reaches as the terminal draws it: following newlines, lines wider than ``columns`` wrapping
     onto the next row, and the cursor moving up as progress redraws. Escape sequences, links (OSC 8) included, take no
     room."""
     row = column = deepest = 0
@@ -241,7 +272,7 @@ def _rows_used(output: str) -> int:
             row, column = row + 1, 0
         elif not text.startswith("\x1b"):
             # As xterm does, a line that fills the width only wraps when another character follows.
-            if column == COLUMNS:
+            if column == columns:
                 row, column = row + 1, 0
             column += 1
         deepest = max(deepest, row)

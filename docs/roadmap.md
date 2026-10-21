@@ -14,13 +14,11 @@
   from a git repository, or from a tarball URL or file, named in
   [`[project.sources]`](alai-toml.md#projectsources) and pinned in
   `alai.lock` like any other.
-- **Collection projects.** Using alai in a collection's own repository,
-  with its `galaxy.yml` as the list of what it needs, installing its
-  dependencies into a tree alai manages with the checkout linked in, so
-  `ansible-test` and the other Ansible tools find everything.
-- **`alai run`.** Running `ansible-playbook` and the other Ansible commands
-  with the project's collections, checking first that the installed
-  ansible-core is one every locked collection supports.
+- **Building collections**: `alai build`, with the collection's
+  metadata in `alai.toml` instead of `galaxy.yml`, so `alai add` and
+  `alai remove` can edit a collection project's dependencies too.
+- **A sibling checkout of a dependency** linked into a collection
+  repository's tree as an editable source.
 - **Faster installs of large collections**, by moving extraction and
   linking into native code.
 - **Several ansible-core versions per project**: resolving for one

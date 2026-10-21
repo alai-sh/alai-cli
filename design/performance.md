@@ -110,6 +110,11 @@ XFS to write out before sharing their extents; not verified.
 
 ## Planned: a native extension
 
+Open (raised 2026-10-21): whether the extension should parse YAML and TOML
+too, for `galaxy.yml`, `meta/runtime.yml`, `alai.toml` and `alai.lock`.
+PyYAML is used for now, with its C loader where it's built with libyaml,
+and only imported in a collection project.
+
 A separate library, `alai-tar` say, in Rust with pyo3, doing what's slow
 above: reading the tarball, decompressing, hashing, writing files, and
 cloning or linking them into place, with the GIL released so it can use

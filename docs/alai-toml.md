@@ -236,7 +236,9 @@ TOML defines `[project]` from its sub-tables, so a file can have
 ### `project.collections_dir`
 
 - **Type:** [path](configuration.md#paths)
-- **Default:** `collections` in the project root
+- **Default:** for a playbook project, `collections` in the project root; in a
+  [collection project](projects.md#collection-projects), a
+  directory of its own in the cache
 - **Flag:** `--collections-dir <dir>`
 - **Environment variable:** `ALAI_COLLECTIONS_DIR`
 
@@ -267,6 +269,10 @@ The ansible-core versions the project targets, as a
 such as `>=2.17` or `>=2.17,<2.20`: the same syntax as `requires_ansible` in
 a collection's `meta/runtime.yml`.
 
+This currently cannot be set in a
+[collection project](projects.md#collection-projects) and will raise
+an error. Instead collection projects use `meta/runtime.yml` to declare this value.
+
 ### `project.collections`
 
 - **Type:** array of [requirements](#requirements)
@@ -274,6 +280,11 @@ a collection's `meta/runtime.yml`.
 
 The collections the project needs, as an array of
 [requirements](#requirements). A collection can be listed once.
+
+This currently cannot be set in a
+[collection project](projects.md#collection-projects) and will raise
+an error. Instead collection projects use `galaxy.yml` to declare the
+collection's dependencies.
 
 ### `[project.groups.<name>]`
 

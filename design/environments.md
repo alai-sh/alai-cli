@@ -69,9 +69,11 @@ manifest. Instead:
   can write `requires_ansible = ">=2.19"` from the ansible-core it finds, as
   `uv init` writes `requires-python`. Once committed, it's the same for
   everyone.
-- **The installed ansible-core is checked, not used to choose.** `alai sync`
-  and `alai run` compare it with the locked collections' `requires_ansible`
-  and warn, as ansible-core does when it loads a collection.
+- **The installed ansible-core isn't used to choose, or checked.**
+  ansible-core checks each collection's `requires_ansible` as it loads
+  it, so `alai sync` and `alai run` leave that to it rather than find and
+  run ansible-core from outside its environment (decided 2026-10-21, see
+  [run.md](run.md#checking-ansible-core)).
 
 ## Several environments
 
@@ -102,11 +104,11 @@ with its own collections tree, locally or as a CI matrix.
   keeps that place. The others need somewhere else, inside the project
   (`.alai/envs/<name>/`) or in the cache, and are found through `alai run` or
   `ANSIBLE_COLLECTIONS_PATH`.
-- **Collection repos' test trees are environments too.**
+- **Collection projects' test trees are environments too.**
   [collection-development.md](collection-development.md) reserves
   `<cache_dir>/envs/<hash>/` for them: a tree holding the checkout and its
   dependencies, kept outside the checkout. Named environments for a playbook
-  project and test trees for a collection repo should share one design and
+  project and test trees for a collection project should share one design and
   one layout rather than grow two.
 
 ## One lock across the range: overlap, containment or forks
@@ -142,6 +144,7 @@ its `requires_ansible`, upper bounds ignored, starts no later than the
 project's. Containment would reject every collection with an upper bound
 whenever the project's range is open-ended (`>=2.17`). Unlike uv, alai warns
 when a chosen version's upper bound ends inside the project's range, and
-`sync` will check the installed ansible-core against each locked range. Forks
+ansible-core checks each loaded collection's own range at run time
+([run.md](run.md#checking-ansible-core)). Forks
 or per-environment locks remain open for when environments exist; the
 lockfile format leaves room for them (see [lockfile.md](lockfile.md)).
