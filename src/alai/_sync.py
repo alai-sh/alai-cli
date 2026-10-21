@@ -8,17 +8,33 @@ from __future__ import annotations
 
 import argparse
 import collections.abc as _c
+import hashlib
 import os
 import time
+import typing as _t
 
 from . import _output
 from ._common import ConfigError
 from ._config import Index, Settings
-from ._install import Linker, install, link_editable, plan, remove, unlink_namespace
-from ._lock import LockedCollection, LockedRoot
+from ._install import (
+    Linker,
+    Plan,
+    current_umask,
+    install,
+    link_editable,
+    linked,
+    place,
+    plan,
+    remove,
+    unlink_namespace,
+)
+from ._lock import DirectorySource, EditableSource, IndexSource, LockedCollection, LockedRoot
 from ._manifest import Manifest
-from ._output import change, error, shown_path, summary
+from ._output import change, error, home_path, shown_path, summary
 from ._progress import Live, Task
+
+if _t.TYPE_CHECKING:
+    from ._semver import Version
 
 DEFAULT_GROUPS = ("dev",)
 """Groups installed unless asked otherwise, as uv installs its ``dev`` dependency group."""
@@ -109,15 +125,7 @@ def sync_project(
     root = lock.root if project else None
     if root is not None and manifest.root is None:
         raise ConfigError(f"{shown_path(path)} locks {root.name} as the project's own, but there's no galaxy.yml")
-    install_locked(
-        settings,
-        wanted,
-        exact=exact,
-        reinstall=reinstall,
-        brief=brief,
-        editable=root,
-        editable_path=settings.project.root,
-    )
+    install_locked(settings, wanted, exact=exact, reinstall=reinstall, brief=brief, root=root)
     return manifest, [c.name for c in wanted] + ([root.name] if root is not None else [])
 
 
@@ -129,45 +137,40 @@ def install_locked(
     keep_unversioned: bool = False,
     reinstall: bool | set[str] = False,
     brief: bool = False,
-    editable: LockedRoot | None = None,
-    editable_path: str = "",
+    root: LockedRoot | None = None,
 ) -> None:
-    """Make the collections directory hold ``wanted``: download what isn't cached, then remove and install. With
-    ``keep_unversioned``, a collection whose version can't be read is left as it is. ``reinstall``, all of ``wanted``
-    or the names given, replaces those already at their version from the cache, as uv reinstalls from its own. With
-    ``brief``, nothing is said when nothing changed, and each collection's line only with ``-v``. ``editable``, the
-    project's own collection, is linked to its checkout at ``editable_path`` rather than installed."""
-
+    """Make the collections directory hold ``wanted``: download what isn't cached, copy what comes from a directory,
+    link what's editable, then remove and install. With ``keep_unversioned``, a collection whose version can't be
+    read is left as it is. ``reinstall``, all of ``wanted`` or the names given, replaces those already at their
+    version from the cache, or copies them again from their directory, as uv reinstalls from its own. With ``brief``,
+    nothing is said when nothing changed, and each collection's line only with ``-v``. ``root``, the project's own
+    collection, is linked to the project's root."""
     started = time.monotonic()
     cdir = settings.collections_dir
-    todo = plan(
-        cdir,
-        {c.name: c.version for c in wanted},
-        exact=exact,
-        keep_unversioned=keep_unversioned,
-        reinstall=reinstall,
-        keep=[editable.name] if editable is not None else [],
+    links, directories, records, todo = _plan(
+        settings, wanted, root, exact=exact, keep_unversioned=keep_unversioned, reinstall=reinstall
     )
     by_name = {c.name: c for c in wanted}
-    # Linked first, so a namespace link it replaces is already gone when the plan's own unlinking runs.
-    linked = editable is not None and link_editable(cdir, editable.name, editable_path)
-    if linked and editable is not None:
-        summary("Linked", 1, time.monotonic() - started)
+    # Linked first, so a namespace link one replaces is already gone when the plan's own unlinking runs.
+    relinked = [(name, version, path) for name, version, path in links if link_editable(cdir, name, path)]
+    if relinked:
+        summary("Linked", len(relinked), time.monotonic() - started)
         if not brief or _output.verbosity >= 1:
-            change("+", editable.name, f"=={editable.version.text} (from {editable_path})")
+            for name, version, path in relinked:
+                change("+", name, f"=={version.text} (from {home_path(path)})")
     if not (todo.install or todo.remove or todo.unlink):
-        if not brief and not linked:
-            summary("Checked", len(wanted) + (editable is not None), time.monotonic() - started, dim=True)
+        if not brief and not relinked:
+            summary("Checked", len(wanted) + (root is not None), time.monotonic() - started, dim=True)
         return
 
     started = time.monotonic()
-    sources = _fetch([by_name[n] for n in todo.install], settings)
+    sources = _fetch([by_name[n] for n in todo.install if n not in directories], settings)
     if sources.downloaded:
         summary("Prepared", sources.downloaded, time.monotonic() - started)
 
     started = time.monotonic()
     # Where each namespace link pointed, read before it's removed, to say so below.
-    links = {path: _link_target(path) for path in todo.unlink}
+    namespace_targets = {path: _link_target(path) for path in todo.unlink}
     for path in todo.unlink:
         unlink_namespace(path)
     for collection in todo.remove:
@@ -179,9 +182,13 @@ def install_locked(
 
     started = time.monotonic()
     linker = Linker(settings.link_mode)
+    umask = current_umask()
     with Live(Task("Installing collections...", total=len(todo.install), bar=True)) as task:
         for name in todo.install:
-            install(cdir, name, sources.paths[name], linker)
+            if name in directories:
+                _copy_directory(cdir, by_name[name], directories[name], records[name], umask)
+            else:
+                install(cdir, name, sources.paths[name], linker)
             task.advance(f"{name}=={by_name[name].version}")
     if todo.install:
         summary("Installed", len(todo.install), time.monotonic() - started)
@@ -189,7 +196,7 @@ def install_locked(
     if brief and _output.verbosity < 1:
         return
     lines: list[tuple[str, str, str]] = []
-    for path, target in links.items():
+    for path, target in namespace_targets.items():
         lines.append(("-", os.path.basename(path), f" (namespace link to {target})"))
     # One replaced by the same version is a single ~ line, as uv shows a reinstall.
     same = {c.name for c in todo.replace if c.version == by_name[c.name].version}
@@ -198,10 +205,87 @@ def install_locked(
             continue
         version = f"=={collection.version}" if collection.version is not None else " (unknown version)"
         lines.append(("-", collection.name, version))
-    lines.extend(("~" if name in same else "+", name, f"=={by_name[name].version}") for name in todo.install)
+    for name in todo.install:
+        # One from a directory says which, as uv shows a path dependency's source.
+        where = f" (from {home_path(directories[name])})" if name in directories else ""
+        lines.append(("~" if name in same else "+", name, f"=={by_name[name].version}{where}"))
     # By name, a removal before its replacement, as uv lists them.
     for sign, name, rest in sorted(lines, key=lambda line: (line[1], line[0] != "-")):
         change(sign, name, rest)
+
+
+def not_installed(settings: Settings, wanted: list[LockedCollection], root: LockedRoot | None) -> int:
+    """How many of ``wanted``, and ``root``, an inexact ``install_locked`` would install or link."""
+    links, _, _, todo = _plan(settings, wanted, root, exact=False)
+    return len(todo.install) + sum(not linked(settings.collections_dir, name, path) for name, _, path in links)
+
+
+def _plan(
+    settings: Settings,
+    wanted: list[LockedCollection],
+    root: LockedRoot | None,
+    *,
+    exact: bool,
+    keep_unversioned: bool = False,
+    reinstall: bool | set[str] = False,
+) -> tuple[list[tuple[str, Version, str]], dict[str, str], dict[str, dict[str, object]], Plan]:
+    """What ``install_locked`` does: the editable installs to link, by name, version and checkout, the project's own
+    collection first; each collection to copy from a directory, by name, and the record it's installed with; and the
+    plan for the rest."""
+    from ._project import source_dir
+
+    links = [
+        (c.name, c.version, source_dir(settings, c.source.path)) for c in wanted if isinstance(c.source, EditableSource)
+    ]
+    if root is not None:
+        links.insert(0, (root.name, root.version, settings.project.root))
+    directories = {c.name: source_dir(settings, c.source.path) for c in wanted if isinstance(c.source, DirectorySource)}
+    records = {name: directory_record(path) for name, path in directories.items()}
+    todo = plan(
+        settings.collections_dir,
+        {c.name: c.version for c in wanted if not isinstance(c.source, EditableSource)},
+        exact=exact,
+        keep_unversioned=keep_unversioned,
+        reinstall=reinstall,
+        keep=[name for name, _, _ in links],
+        records=records,
+    )
+    return links, directories, records, todo
+
+
+def directory_record(path: str) -> dict[str, object]:
+    """The install record of a collection copied from the directory ``path``: the directory, and the sha256 of its
+    metadata as cache keys, so a change to any of it copies it again: ``galaxy.yml`` for a source, ``MANIFEST.json``
+    for a built collection, whose ``FILES.json`` checksum it holds, and ``meta/runtime.yml``. uv keys a directory
+    on ``pyproject.toml``'s modification time; a hash is as cheap for two small files, and neither misses an edit
+    that keeps the time nor copies again for one that only touched it. Editing any other file doesn't copy it
+    again, as in uv: that's what an editable source, or ``--reinstall-collection``, is for."""
+    keys = {
+        name: _file_sha256(os.path.join(path, name)) for name in ("galaxy.yml", "MANIFEST.json", "meta/runtime.yml")
+    }
+    return {"source": {"directory": path}, "cache_keys": keys}
+
+
+def _file_sha256(path: str) -> str | None:
+    """A small file's sha256, or None when it can't be read, such as a ``meta/runtime.yml`` the collection doesn't
+    have."""
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except OSError:
+        return None
+
+
+def _copy_directory(cdir: str, collection: LockedCollection, path: str, record: dict[str, object], umask: int) -> None:
+    from ._build import install_dir
+
+    place(
+        cdir,
+        collection.name,
+        lambda temp: install_dir(path, temp, collection.name, collection.version, umask=umask),
+        path,
+        record,
+    )
 
 
 def _link_target(path: str) -> str:
@@ -231,7 +315,7 @@ def _fetch(collections: list[LockedCollection], settings: Settings) -> _Sources:
     paths: dict[str, str] = {}
     missing: list[LockedCollection] = []
     for collection in collections:
-        path = cache.cached(collection.cksum)
+        path = cache.cached(_artifact(collection)[1])
         if path is not None:
             paths[collection.name] = path
         else:
@@ -250,14 +334,12 @@ def _fetch(collections: list[LockedCollection], settings: Settings) -> _Sources:
         clients: dict[str, IndexClient] = {}
         artifacts: list[Artifact] = []
         for collection in missing:
-            url = collection.source.url
+            url, cksum, size = _artifact(collection)
             if url not in clients:
                 index = configured.get(url) or Index(url, url, source=f"{settings.project.root}/alai.lock")
                 clients[url] = IndexClient(index, fetcher, settings.cache_dir)
-            dl = artifact_url(clients[url].config(), collection.name, collection.version, collection.cksum)
-            artifacts.append(
-                Artifact(collection.name, collection.version, url=dl, cksum=collection.cksum, size=collection.size)
-            )
+            dl = artifact_url(clients[url].config(), collection.name, collection.version, cksum)
+            artifacts.append(Artifact(collection.name, collection.version, url=dl, cksum=cksum, size=size))
         with Live(Task("Preparing collections...", total=len(artifacts))) as task:
 
             def report(artifact: Artifact, state: str | None) -> None:
@@ -270,3 +352,11 @@ def _fetch(collections: list[LockedCollection], settings: Settings) -> _Sources:
 
             paths.update(ArtifactCache(settings.cache_dir, fetcher).get_all(artifacts, report))
     return _Sources(paths, len(missing))
+
+
+def _artifact(collection: LockedCollection) -> tuple[str, str, int]:
+    """An index's collection's index URL, artifact sha256 and size, which reading a lock requires of every one."""
+    source = collection.source
+    if not isinstance(source, IndexSource) or collection.cksum is None or collection.size is None:
+        raise ValueError(f"{collection.name} doesn't come from an index")
+    return source.url, collection.cksum, collection.size

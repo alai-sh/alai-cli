@@ -210,7 +210,7 @@ def test_config_error(isolated: Path, capsys: pytest.CaptureFixture[str]) -> Non
 
 
 def test_verbose_logs_debug(isolated: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    (isolated / "alai.toml").write_text('[[index]]\nname = "alai"\nurl = "https://pinned/"\n')
+    (isolated / "alai.toml").write_text('[[index]]\nname = "alai"\nurl = "https://pinned/"\ndefault = true\n')
 
     assert main(["-v", "config", "show"]) == 0
     assert "debug: Ignoring index 'alai' from built-in" in capsys.readouterr().err

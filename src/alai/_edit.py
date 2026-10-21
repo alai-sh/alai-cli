@@ -19,9 +19,9 @@ from . import _toml_edit
 from ._common import NAME_RE, ConfigError
 from ._config import Settings, raw_manifest
 from ._lock import Lock, lock_path, read_lock, write_lock
-from ._manifest import Requirement, collection_name
+from ._manifest import PathSource, Requirement, collection_name, is_path
 from ._output import error, home_path, shown_path, summary
-from ._project import Upgrade, lock_unchanged, report_changes, resolve_project, with_root
+from ._project import Upgrade, lock_unchanged, read_path_source, report_changes, resolve_project, with_root
 from ._sync import DEFAULT_GROUPS, install_locked
 
 if sys.version_info >= (3, 11):
@@ -40,6 +40,7 @@ def add(
     locked: bool = False,
     upgrade: Upgrade | None = None,
     reinstall: bool | set[str] = False,
+    editable: bool = False,
 ) -> bool:
     """Add ``requirements`` to the project's collections, or ``group``'s; see ``_add``. False when ``locked`` and
     ``alai.lock`` is missing or would change, having written nothing."""
@@ -54,6 +55,7 @@ def add(
             locked=locked,
             upgrade=upgrade,
             reinstall=reinstall,
+            editable=editable,
         )
 
 
@@ -111,16 +113,27 @@ def _add(
     locked: bool = False,
     upgrade: Upgrade | None = None,
     reinstall: bool | set[str] = False,
+    editable: bool = False,
 ) -> bool:
     """Add ``requirements`` to the project's collections, or ``group``'s.
 
     A collection already there is left as it is when given by name alone, and its requirement replaced when given
     with one. A name alone is written with the lowest version it can have, ``>=`` the version locked for it, once
-    resolving has found one; with ``frozen`` nothing is resolved, so it's written as given.
+    resolving has found one; with ``frozen`` nothing is resolved, so it's written as given. A directory, or with
+    ``editable`` every requirement, is the collection whose source it holds: its name is added alone, and
+    ``[project.sources]`` takes it from there, replacing any entry it had, as ``uv add ../lib`` does.
     """
     config, text = _read(settings, group)
     path = _array_path(group)
-    parsed = [_requirement(r) for r in requirements]
+    parsed: list[Requirement] = []
+    sources: dict[str, PathSource] = {}
+    for given in requirements:
+        if editable or is_path(given):
+            name, source = _path_source(settings, given, editable=editable)
+            parsed.append(Requirement.parse(name))
+            sources[name] = source
+        else:
+            parsed.append(_requirement(given))
     bare: list[str] = []
     for requirement in parsed:
         current = _toml_edit.values(text, path)
@@ -133,8 +146,14 @@ def _add(
                     text = _toml_edit.replace(text, path, names.index(requirement.name), requirement.text)
                 continue
             text = _toml_edit.insert(text, path, _position(names, requirement.name), requirement.text)
-        if not requirement.req.clauses:
+        # One from a directory stays bare, as uv writes a path dependency: there's only ever its one version.
+        if not requirement.req.clauses and requirement.name not in sources:
             bare.append(requirement.name)
+    for name, source in sources.items():
+        table: dict[str, str | bool] = {"path": source.path}
+        if source.editable:
+            table["editable"] = True
+        text = _toml_edit.set_table(text, ("project", "sources", name), table)
     if frozen:
         _write(config, text)
         return True
@@ -185,6 +204,7 @@ def _remove(
         if name not in found:
             raise ConfigError(_not_there(text, name, group))
         text = _toml_edit.remove(text, path, found.index(name))
+        text = _drop_path_source(text, name)
     if frozen:
         _write(config, text)
         return True
@@ -247,10 +267,35 @@ def _lock_and_sync(
             lock.select(groups),
             exact=True,
             reinstall=reinstall,
-            editable=lock.root,
-            editable_path=settings.project.root,
+            root=lock.root,
         )
     return True
+
+
+def _path_source(settings: Settings, given: str, *, editable: bool) -> tuple[str, PathSource]:
+    """The collection in the directory ``given`` and the source taking it from there: written relative to the project
+    root, as uv writes one given from a subdirectory, unless it was given as an absolute path."""
+    expanded = os.path.expanduser(given)
+    where = os.path.abspath(expanded)
+    written = expanded if os.path.isabs(expanded) else os.path.relpath(where, settings.project.root)
+    source = PathSource(written, editable=editable)
+    collection = read_path_source(settings, None, source)
+    return collection.name, source
+
+
+def _drop_path_source(text: str, name: str) -> str:
+    """``text`` without ``name``'s ``[project.sources]`` entry when it's a directory and nothing lists the collection
+    any more, as ``uv remove`` drops its source. An index pin stays: it also applies to what other collections
+    depend on."""
+    data = tomllib.loads(text)
+    raw = raw_manifest(data, "alai.toml")
+    source = raw.sources.get(name)
+    if source is None or "path" not in source:
+        return text
+    listed = [*raw.collections, *(r for items in raw.groups.values() for r in items)]
+    if name in (_name_of(r) for r in listed):
+        return text
+    return _toml_edit.remove_key(text, ("project", "sources", name))
 
 
 def _read(settings: Settings, group: str | None) -> tuple[str, str]:

@@ -25,6 +25,9 @@ classifiers = [
 dependencies = [
     # Older releases fail on the argparse internals of current Python 3.12 and later releases.
     "argcomplete >= 3.5.2",
+    # galaxy.yml's manifest directives, for installing a collection from its source directory, as ansible-galaxy
+    # uses it; the floor is the release tested.
+    "distlib >= 0.4.4",
     "tomli >= 1.1.0; python_version < '3.11'",
     # galaxy.yml and meta/runtime.yml, read with the same parser ansible-core uses.
     "pyyaml >= 6.0",

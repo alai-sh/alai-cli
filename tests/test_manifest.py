@@ -326,8 +326,15 @@ class TestSources:
         [
             ('[project.sources]\n"ansible" = { index = "x" }', r'project\.sources\."ansible": invalid collection name'),
             ('[project.sources]\n"a.b" = { index = "Bad Name" }', "'Bad Name' isn't a valid index name"),
-            ('[project.sources]\n"a.b" = { index = 1 }', r'only \{ index = "<name>" \} is supported so far, got index'),
-            ('[project.sources]\n"a.b" = { git = "https://x" }', "is supported so far, got git"),
+            ('[project.sources]\n"a.b" = { index = 1 }', r'an index source is \{ index = "<name>" \} alone, got index'),
+            (
+                '[project.sources]\n"a.b" = { git = "https://x" }',
+                "got git; git and archive sources aren't supported yet",
+            ),
+            ('[project.sources]\n"a.b" = { path = 1 }', r'a path source is \{ path = "<dir>" \}'),
+            ('[project.sources]\n"a.b" = { path = "" }', r'a path source is \{ path = "<dir>" \}'),
+            ('[project.sources]\n"a.b" = { path = "p", rev = "x" }', "got path, rev"),
+            ('[project.sources]\n"a.b" = { path = "p", editable = "yes" }', "'editable' must be true or false"),
             ('[project.sources]\n"a.b" = { index = "x", path = "p" }', "got index, path"),
             ('[project.sources]\n"a.b" = {}', "got none"),
         ],

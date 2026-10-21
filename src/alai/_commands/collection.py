@@ -36,7 +36,20 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         formatter_class=HelpFormatter,
     )
     _ = install.add_argument(
-        "requirements", metavar="REQUIREMENT", nargs="+", help="a collection, such as ansible.posix or 'cisco.ios>=11'"
+        "requirements",
+        metavar="REQUIREMENT",
+        nargs="*",
+        help="a collection, such as ansible.posix or 'cisco.ios>=11', or a directory holding one, such "
+        + "as ../ns.col, which is copied again every time",
+    )
+    _ = install.add_argument(
+        "-e",
+        "--editable",
+        metavar="DIR",
+        action="append",
+        default=[],
+        help="install the collection in DIR, a source or a built one, as a link to it, so edits there are seen; can be "
+        + "repeated",
     )
     add_upgrade_args(install)
     add_reinstall_args(install)
@@ -68,6 +81,9 @@ def run_install(args: argparse.Namespace) -> int:
     from .._collection import install
     from .._project import upgrade_from_args
 
+    if not args.requirements and not args.editable:
+        parser: argparse.ArgumentParser = args.parser
+        parser.error("the following arguments are required: REQUIREMENT or --editable")
     reinstall = reinstall_from_args(args)
     if reinstall and args.keep_unversioned:
         # Keeping a collection as it is and reinstalling it ask for opposite things.
@@ -78,6 +94,7 @@ def run_install(args: argparse.Namespace) -> int:
         upgrade=upgrade_from_args(args).names(None),
         reinstall=reinstall,
         keep_unversioned=args.keep_unversioned,
+        editable=args.editable,
     )
     return 0
 

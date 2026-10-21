@@ -51,7 +51,7 @@ Every command takes these, before or after its name.
 
 ## alai add
 
-Add collections to the project's alai.toml, then lock and install them. A collection given by name alone is written as >= the version locked for it. Every other line of alai.toml is left as it is.
+Add collections to the project's alai.toml, then lock and install them. A collection given by name alone is written as >= the version locked for it. A directory, given with a / such as ./ns.col, is the collection it holds, from its galaxy.yml or a built one's MANIFEST.json: its name is added, and [project.sources] takes it from there. Every other line of alai.toml is left as it is.
 
 [Adding collections to a new project](casts/add.cast){ .alai-cast }
 
@@ -74,12 +74,13 @@ $ alai add [OPTIONS] REQUIREMENT [REQUIREMENT ...]
 
 | Argument | Description |
 |---|---|
-| `REQUIREMENT` | A collection, such as ansible.posix or 'cisco.ios>=11' |
+| `REQUIREMENT` | A collection, such as ansible.posix or 'cisco.ios>=11', or a directory holding one, such as ../ns.col |
 
 ### Options
 
 | Option | Description |
 |---|---|
+| `--editable` | Add the directories given as editable, so the collection is linked to them rather than copied |
 | `--group NAME` | Add them in group NAME rather than the project. Can't be used with `--dev` |
 | `--dev` | The same as `--group dev`. Can't be used with `--group` |
 | `--no-sync` | Lock, but don't install. Can't be used with `--frozen` |
@@ -144,19 +145,20 @@ With no `alai.toml`, `ansible.cfg` or `collections/ansible_collections` in the c
 {: .alai-cast-description }
 
 ```console
-$ alai collection install [OPTIONS] REQUIREMENT [REQUIREMENT ...]
+$ alai collection install [OPTIONS] [REQUIREMENT ...]
 ```
 
 ### Arguments
 
 | Argument | Description |
 |---|---|
-| `REQUIREMENT` | A collection, such as ansible.posix or 'cisco.ios>=11' |
+| `REQUIREMENT` | A collection, such as ansible.posix or 'cisco.ios>=11', or a directory holding one, such as ../ns.col, which is copied again every time |
 
 ### Options
 
 | Option | Description |
 |---|---|
+| `-e`, `--editable DIR` | Install the collection in DIR, a source or a built one, as a link to it, so edits there are seen; can be repeated |
 | `-U`, `--upgrade` | Choose the newest versions that fit, ignoring alai.lock |
 | `-P`, `--upgrade-collection NAME` | Choose the newest version of collection NAME that fits; can be repeated |
 | `--reinstall` | Reinstall every collection, even those already at the right version |

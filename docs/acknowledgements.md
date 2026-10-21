@@ -34,6 +34,11 @@ alai is useful to you, these may be too.
   either way.
 - **[resolvelib](https://github.com/sarugaku/resolvelib)**, the dependency
   resolver pip and `ansible-galaxy` use, chooses the versions.
+- **[PyYAML](https://pyyaml.org/)** reads a collection's `galaxy.yml` and
+  `meta/runtime.yml`, with the same parser `ansible-core` uses.
+- **[distlib](https://github.com/pypa/distlib)** reads the `manifest`
+  directives in `galaxy.yml` when a collection is installed from its
+  directory, as `ansible-galaxy` does.
 - **[urllib3](https://urllib3.readthedocs.io/)** and
   **[truststore](https://truststore.readthedocs.io/)** download from the
   index, verified against the operating system's certificates.

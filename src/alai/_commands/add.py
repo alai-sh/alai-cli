@@ -17,11 +17,22 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         "add",
         help="add collections to alai.toml, then lock and sync",
         description="Add collections to the project's alai.toml, then lock and install them. A collection given by "
-        + "name alone is written as >= the version locked for it. Every other line of alai.toml is left as it is.",
+        + "name alone is written as >= the version locked for it. A directory, given with a / such as ./ns.col, is "
+        + "the collection it holds, from its galaxy.yml or a built one's MANIFEST.json: its name is added, and "
+        + "[project.sources] takes it from there. Every other line of alai.toml is left as it is.",
         formatter_class=HelpFormatter,
     )
     _ = add.add_argument(
-        "requirements", metavar="REQUIREMENT", nargs="+", help="a collection, such as ansible.posix or 'cisco.ios>=11'"
+        "requirements",
+        metavar="REQUIREMENT",
+        nargs="+",
+        help="a collection, such as ansible.posix or 'cisco.ios>=11', or a directory holding one, such "
+        + "as ../ns.col",
+    )
+    _ = add.add_argument(
+        "--editable",
+        action="store_true",
+        help="add the directories given as editable, so the collection is linked to them rather than copied",
     )
     add_edit_args(add, verb="add")
     add_global_args(add, suppress=True)
@@ -70,5 +81,6 @@ def run(args: argparse.Namespace) -> int:
         locked=args.locked,
         upgrade=upgrade_from_args(args),
         reinstall=reinstall_from_args(args),
+        editable=args.editable,
     )
     return 0 if ok else EXIT_STALE

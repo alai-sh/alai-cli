@@ -338,7 +338,8 @@ that the lock doesn't name is removed, and `~/dev/ansible_collections` often
 holds many checkouts side by side, with `.git` and uncommitted work. So a
 collection project syncs into a tree alai builds and owns, as above, with
 the checkout linked in, wherever the checkout is. A sibling checkout of a
-dependency can be a local path source, linked into that tree too.
+dependency is an editable path source, linked into that tree too (done
+2026-10-22, [lockfile.md](lockfile.md#other-sources)).
 
 ## Debugging
 
@@ -418,6 +419,11 @@ to the editor's port. Not tried with an editor attached.
     `galaxy.yml`, honours `build_ignore` and the manifest directives, and
     produces the same artifact. `galaxy.yml` stays the source of truth, and
     a collection built with alai can still be built without it.
+
+  Either way it shares `_build` with installing a directory source, which
+  today copies what `ansible-galaxy collection build` builds, as a
+  starting point rather than a requirement
+  ([install.md](install.md#copying-a-directory-as-its-artifact-would-be)).
   - **A replacement, with the collection defined in `alai.toml`** (namespace,
     name, version, dependencies, build options), as `pyproject.toml`
     replaced `setup.py`. `galaxy.yml` becomes optional, or something alai
@@ -452,8 +458,6 @@ to the editor's port. Not tried with an editor attached.
 - **Cleaning trees** whose checkout has moved or gone, with the rest of
   `alai cache clean`; nothing records which checkout a tree belongs to
   except the hash.
-- **A sibling checkout of a dependency** as an editable source, with path
-  sources ([lockfile.md](lockfile.md#planned-other-sources)).
 - **Docs naming the ansible-core release** with the
   [upstream fixes](#upstream-fixes), once there is one.
 - **Debugging end to end**: a controller-side breakpoint in the checkout

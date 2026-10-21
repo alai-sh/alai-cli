@@ -136,6 +136,33 @@ How alai chooses one version of every collection a project needs, in
   passed back with the result rather than printed, so the command decides
   how to show them.
 
+## Sources other than an index
+
+Implemented for directories (2026-10-22). A collection read from a directory,
+the project's own or a path source, has exactly one candidate, at the
+version its `galaxy.yml` says (`_LOCAL` and `_local_version` in
+`_resolve.py`), and never looks at an index, whatever the indexes have. A
+path source's `galaxy.yml` dependencies are its dependencies, as an index
+version's `deps` are; the project's own has none here, as its are the
+project's requirements. A path source's `requires_ansible`, from its
+`meta/runtime.yml`, is checked as an index version's is (2026-10-22): one
+needing a newer ansible-core than the project's lower bound is left out,
+which fails unless what needs it can backtrack (`ns.col 1.0.0, from ../col,
+is left out (needing a newer ansible-core than the project's >=2.17), which
+the project needs`); one whose range ends inside the project's is a
+warning; `ignore_requires_ansible` skips both. The first version checked
+nothing, as for the project's own collection, but that one *is* the
+project's range, and a path source is just another collection. As for
+every collection, its `requires_ansible` only filters its own candidates;
+it doesn't narrow the range for anything else. A requirement its version
+doesn't meet backtracks, or fails with `ns.col 1.0.0, from ../col, doesn't
+meet:` and the requirements, as for the project's own collection. `-v` gives `ns.col now comes from ../col` when the
+source changed, and `ns.col's galaxy.yml now says 1.1.0` when the version
+did.
+
+A git source will be the same, read from the checkout of its commit; a
+tarball will be one candidate with its `cksum`.
+
 ## Not done yet
 
 - **A `prerelease` setting** with uv's other modes, for the whole
@@ -143,8 +170,9 @@ How alai chooses one version of every collection a project needs, in
 - **A way to set `ansible_version`** (a flag, `ALAI_ANSIBLE_VERSION`, an
   `alai.toml` key, or the installed ansible-core); see
   [environments.md](environments.md).
-- **Other sources** (git, path, URL) as candidates; see
-  [lockfile.md](lockfile.md#planned-other-sources).
+- **Git and tarball sources** as candidates, as a directory is now: see
+  [Sources other than an index](#sources-other-than-an-index) and
+  [lockfile.md](lockfile.md#other-sources).
 - **Excluding newer versions** (asked for 2026-10-21): `--exclude-newer
   DATE` on the commands that resolve, and an `exclude_newer` setting, so a
   resolution only considers versions published before `DATE`, for

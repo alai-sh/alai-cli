@@ -36,11 +36,10 @@ def run(args: argparse.Namespace) -> int:
     import sys
 
     from .._environ import ansible_environment, default_format, render, warn_unlisted
-    from .._install import linked, plan
     from .._lock import lock_path, read_lock, stale
     from .._output import count_collections, shown_path, warn
     from .._project import load_project
-    from .._sync import DEFAULT_GROUPS
+    from .._sync import DEFAULT_GROUPS, not_installed
 
     settings = settings_from_args(args)
     _, manifest = load_project(settings, "alai env points Ansible at the collections it lists")
@@ -53,10 +52,7 @@ def run(args: argparse.Namespace) -> int:
     else:
         # What alai run would install with no group options.
         wanted = lock.select([g for g in DEFAULT_GROUPS if g in manifest.groups])
-        todo = plan(settings.collections_dir, {c.name: c.version for c in wanted}, exact=False)
-        missing = len(todo.install)
-        if lock.root is not None and not linked(settings.collections_dir, lock.root.name, settings.project.root):
-            missing += 1
+        missing = not_installed(settings, wanted, lock.root)
         if missing:
             warn(f"{count_collections(missing)} from {shown_path(path)} not installed; run alai sync")
         own = [lock.root.name] if lock.root is not None else []

@@ -652,6 +652,13 @@ def _index_tables(value: object, source: _Source) -> _c.Iterator[Index]:
             raise ConfigError(f"{where}: 'default' must be a boolean")
         if name in seen:
             raise ConfigError(f"{where}: index '{name}' is defined more than once")
+        if name == DEFAULT_INDEX_NAME and not default:
+            # The name always means the default index: one taking it without replacing the default would drop the
+            # built-in index without saying so.
+            raise ConfigError(
+                f"{where}: '{DEFAULT_INDEX_NAME}' is the default index's name; set default = true to replace the "
+                + "default index, or choose another name"
+            )
         seen.add(name)
 
         yield Index(_index_name(name, where), _index_url(url, where), default, source.description)
@@ -692,6 +699,11 @@ def _index_arg(value: str, source: _Source) -> Index:
     name, sep, url = value.partition("=")
     if not sep:
         raise ConfigError(f"{source.description}: expected NAME=URL, got '{value}'")
+    if name == DEFAULT_INDEX_NAME:
+        raise ConfigError(
+            f"{source.description} '{value}': '{DEFAULT_INDEX_NAME}' is the default index's name; replace the "
+            + "default index with --default-index or ALAI_DEFAULT_INDEX, or choose another name"
+        )
     return _arg_index(name, url, value, source, default=False)
 
 

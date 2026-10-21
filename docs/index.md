@@ -156,6 +156,8 @@ project is a matter of linking files, not downloading them.
 - [Managing collections](managing-collections.md): adding, removing,
   locking and installing a project's collections, and the recommended
   workflows for teams and CI.
+- [Collection sources](collection-sources.md): taking a collection from a
+  particular index or from a directory on disk, and when to use which.
 - [Running Ansible](running-ansible.md): running `ansible-playbook` and
   the other Ansible commands with the project's collections, and setting
   up a shell, CI or an editor to do the same.

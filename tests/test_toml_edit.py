@@ -8,7 +8,7 @@ import sys
 
 import pytest
 
-from alai._toml_edit import TomlEditError, create, insert, remove, replace, values
+from alai._toml_edit import TomlEditError, create, insert, remove, remove_key, replace, set_table, values
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -112,6 +112,66 @@ class TestCreate:
         edited = create("[project]\n", ("project", "groups", "my.group", "collections"), ["b.b"])
 
         assert '[project.groups."my.group"]' in edited
+
+
+S = ("project", "sources", "ns.col")
+
+
+class TestSetTable:
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            # A new table at the end, after a blank line.
+            (
+                "[project]\ncollections = []\n",
+                '[project]\ncollections = []\n\n[project.sources]\n"ns.col" = { path = "p" }\n',
+            ),
+            ("", '[project.sources]\n"ns.col" = { path = "p" }\n'),
+            # After the table's last key, before what follows.
+            (
+                '[project.sources]\n"a.b" = { index = "x" }  # pin\n\n[tool.x]\n',
+                '[project.sources]\n"a.b" = { index = "x" }  # pin\n"ns.col" = { path = "p" }\n\n[tool.x]\n',
+            ),
+            # In place, keeping a comment after it.
+            (
+                '[project.sources]\n"ns.col" = { index = "x" }  # why\n',
+                '[project.sources]\n"ns.col" = { path = "p" }  # why\n',
+            ),
+            (
+                "[project]\r\ncollections = []\r\n",
+                '[project]\r\ncollections = []\r\n\r\n[project.sources]\r\n"ns.col" = { path = "p" }\r\n',
+            ),
+        ],
+    )
+    def test_set(self, text: str, expected: str) -> None:
+        assert set_table(text, S, {"path": "p"}) == expected
+
+    def test_boolean(self) -> None:
+        assert set_table("", S, {"path": "p", "editable": True}).endswith('{ path = "p", editable = true }\n')
+
+    def test_dotted_table_refused(self) -> None:
+        with pytest.raises(TomlEditError, match="would leave the file unreadable"):
+            _ = set_table('[project]\nsources."a.b" = { index = "x" }\n', S, {"path": "p"})
+
+
+class TestRemoveKey:
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            (
+                '[project.sources]\n"ns.col" = { path = "p" }\n"a.b" = { index = "x" }\n',
+                '[project.sources]\n"a.b" = { index = "x" }\n',
+            ),
+            ('[project.sources]\n"ns.col" = { path = "p" }  # why\r\n', "[project.sources]\n"),
+            ('[project.sources]\n"ns.col" = { path = "p" }', "[project.sources]\n"),
+        ],
+    )
+    def test_removed(self, text: str, expected: str) -> None:
+        assert remove_key(text, S) == expected
+
+    def test_inline_refused(self) -> None:
+        with pytest.raises(TomlEditError, match="isn't written as a key of its own"):
+            _ = remove_key('[project]\nsources = { "ns.col" = { path = "p" } }\n', S)
 
 
 class TestWhereTheArrayIs:

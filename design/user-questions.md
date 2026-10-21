@@ -122,6 +122,46 @@ ones it publishes, and how do they do it today?
 
 See [collection-development.md](collection-development.md#decisions).
 
+## Sources for collections the project doesn't list
+
+**Today:** a `[project.sources]` entry applies to any collection in the
+resolution, whatever asked for it, for directories as for index pins
+(2026-10-22), so a dependency deep in the tree can be pointed at a checkout
+of it.
+
+**The alternative:** uv's rule, where `[tool.uv.sources]` only applies to
+the project's direct dependencies, and the collection has to be listed in
+`project.collections` (or a group) for its source to count.
+
+**Ask:** do people point a dependency they don't list at a checkout, or
+pin one to an index, and would listing it be a burden?
+
+See [lockfile.md](lockfile.md#other-sources).
+
+## Editing a copied directory
+
+**Today:** a collection copied from a directory is only copied again when
+its version, or the contents of `galaxy.yml` or `meta/runtime.yml`, change,
+or with `--reinstall-collection`, as `uv sync` decides for a path
+dependency (2026-10-22); editing a plugin needs one of those, or an
+editable source. There's no setting like uv's `cache-keys` to add files.
+
+**The alternatives:**
+
+- Copy it again on every `sync` (and `alai run`), as `collection install
+  <dir>` does.
+- Compare every selected file's hash on each sync: exact, but reads the
+  whole collection every time.
+- A `cache_keys` setting, as uv's `tool.uv.cache-keys`, in the source
+  collection's own `alai.toml`, naming more files to watch.
+
+**Ask:** when people use a plain, not editable, directory source, do they
+expect edits to show up, and is the copy on every run worth it? Is there
+anything besides `galaxy.yml` and `meta/runtime.yml` whose change should
+copy a collection again?
+
+See [install.md](install.md#when-a-copy-is-made-again).
+
 ## requirements.yml
 
 **Today:** `-r requirements.yml` is shelved. The mapping onto `alai.toml`

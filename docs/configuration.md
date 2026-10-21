@@ -121,7 +121,9 @@ built highest level first:
    error.
 2. The default index goes last: the highest-precedence index marked
    `default = true`, or else the built-in `alai` index at
-   `https://index.alai.sh/`. `--default-index` and `ALAI_DEFAULT_INDEX` add
+   `https://index.alai.sh/`. The name `alai` is kept for the default index:
+   an `[[index]]` named `alai` must set `default = true`, and `--index` and
+   `ALAI_INDEX` can't use it. `--default-index` and `ALAI_DEFAULT_INDEX` add
    an index marked `default = true` at their level. Other indexes marked
    `default = true` are dropped, since only one index can replace the default.
 

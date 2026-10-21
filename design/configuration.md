@@ -252,13 +252,26 @@ Decisions:
   they copy to and from `requirements.yml` and `galaxy.yml`; a collection
   repo's `galaxy.yml` dependencies can't carry a prefix anyway; and git,
   path and URL sources need a table, so every kind of source is in one
-  place. Only `{ index = "<name>" }` exists so far; other kinds are an
-  error until supported. An entry applies to any collection in the
+  place. `{ index = "<name>" }` and `{ path = "<dir>" }` exist so far;
+  other kinds are an error until supported. An entry applies to any collection in the
   resolution, not only those listed, so pinning a transitive dependency
   works; without one, a collection comes from the first index that has it
   ([resolver.md](resolver.md)). So sources are resolution-wide, one per
   name, like overrides, and the lock records them as a top-level
   `[sources]`.
+- **`alai` always names the default index** (decided with the user,
+  2026-10-22). The built-in default index is `alai`, and a bare URL given to
+  `--default-index` or `ALAI_DEFAULT_INDEX` keeps that name, so a
+  `[project.sources]` entry naming `alai` follows a mirror of it. Until
+  then, an `[[index]]` named `alai` without `default = true` was allowed and,
+  by the same-name rule, silently dropped the built-in index, leaving no
+  default; someone who called a private index `alai` lost `index.alai.sh`
+  without being told. Now it's an error saying to set `default = true` or
+  choose another name, and `--index alai=URL` (or `ALAI_INDEX`) is one
+  saying to use `--default-index`. With `default = true` it replaces the
+  default as any default index does. Documenting the old rule instead was
+  considered: one more rule is better than losing the default index
+  silently.
 - **Groups are named like indexes** (`[a-z0-9][a-z0-9_-]*`), so a group is
   spelled one way in files and on the command line.
 
@@ -276,10 +289,10 @@ Planned alongside it:
 - **Collection projects** keep their dependencies in `galaxy.yml`, which
   alai reads instead of `project.collections`. Their `alai.toml` holds groups
   and settings. See [collection-development.md](collection-development.md).
-- **More kinds in `[project.sources]`**: git, URL and local path sources a
-  requirement string can't express, as `[tool.uv.sources]` has. Only
-  `{ index = "<name>" }` exists so far; the lock side is in
-  [lockfile.md](lockfile.md#planned-other-sources).
+- **More kinds in `[project.sources]`**: git and tarball sources a
+  requirement string can't express, as `[tool.uv.sources]` has.
+  `{ index = "<name>" }` and `{ path = "<dir>" }` (with `editable`) exist so
+  far; the lock side is in [lockfile.md](lockfile.md#other-sources).
 - **`alai export --format requirements.yml`** writes the lock as a
   `collections/requirements.yml` for AWX/Controller, ansible-builder and
   ansible-navigator, which can't run alai.

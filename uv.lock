@@ -14,6 +14,7 @@ version = "0.0.1"
 source = { editable = "." }
 dependencies = [
     { name = "argcomplete" },
+    { name = "distlib" },
     { name = "pyyaml" },
     { name = "resolvelib" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
@@ -43,6 +44,7 @@ docs = [
 [package.metadata]
 requires-dist = [
     { name = "argcomplete", specifier = ">=3.5.2" },
+    { name = "distlib", specifier = ">=0.4.4" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "resolvelib", specifier = ">=1.2" },
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=1.1.0" },
