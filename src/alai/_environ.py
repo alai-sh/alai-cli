@@ -13,7 +13,7 @@ import shlex
 
 from ._config import Settings
 from ._install import installed, namespace_links
-from ._manifest import Manifest
+from ._manifest import Manifest, PathSource
 from ._output import shown_path, warn
 
 _MODULE_DEBUGGERS = ("_ANSIBLE_ANSIBALLZ_DEBUGPY_CONFIG", "_ANSIBLE_ANSIBALLZ_PYDEVD_CONFIG")
@@ -27,29 +27,49 @@ def ansible_environment(
     user's configured paths, ``~/.ansible/collections`` or the ``ansible`` package's ``site-packages``.
 
     In a collection project, ansible-test is pointed at the project's own collection through its link in the tree,
-    which gives it the ``ansible_collections/<namespace>/<name>`` path it needs wherever the checkout is, and debuggers
-    are told to resolve that link, so they show the checkout's files. Breakpoints hit either way, as pydevd matches them on real
-    paths, except in modules: see ``_map_module_sources``. ``current`` is the environment the command runs in,
-    ``os.environ`` unless given.
+    which gives it the ``ansible_collections/<namespace>/<name>`` path it needs wherever the checkout is. With that or
+    any editable path source, debuggers are told to resolve the links, so they show the checkouts' files. Breakpoints
+    hit either way, as pydevd matches them on real paths, except in modules: see ``_map_module_sources``. ``current``
+    is the environment the command runs in, ``os.environ`` unless given.
     """
     environ = {
         "ANSIBLE_COLLECTIONS_PATH": settings.collections_dir,
         "ANSIBLE_COLLECTIONS_SCAN_SYS_PATH": "False",
     }
+    links = editable_links(settings, manifest)
     if manifest.root is not None:
-        namespace, short = manifest.root.name.split(".")
-        link = os.path.join(settings.collections_dir, "ansible_collections", namespace, short)
-        environ["ANSIBLE_TEST_CONTENT_ROOT"] = link
+        environ["ANSIBLE_TEST_CONTENT_ROOT"] = links[0][1]
+    if links:
         environ["PYDEVD_RESOLVE_SYMLINKS"] = "1"
         current = os.environ if current is None else current
         for name in _MODULE_DEBUGGERS:
-            if (value := current.get(name)) is not None and (mapped := _map_module_sources(value, link, settings)):
+            if (value := current.get(name)) is not None and (mapped := _map_module_sources(value, links)):
                 environ[name] = mapped
     return environ
 
 
-def _map_module_sources(value: str, link: str, settings: Settings) -> str | None:
-    """A module debugger's configuration with the checkout mapped to the collection's link, or None to leave it.
+def editable_links(settings: Settings, manifest: Manifest) -> list[tuple[str, str]]:
+    """Each checkout linked into the collections directory, with its link: the project's own first, then the
+    editable path sources by name."""
+    from ._project import source_dir
+
+    checkouts: list[tuple[str, str]] = []
+    if manifest.root is not None:
+        checkouts.append((manifest.root.name, settings.project.root))
+    checkouts += [
+        (name, source_dir(settings, source.path))
+        for name, source in sorted(manifest.sources.items())
+        if isinstance(source, PathSource) and source.editable
+    ]
+    out: list[tuple[str, str]] = []
+    for name, checkout in checkouts:
+        namespace, short = name.split(".")
+        out.append((checkout, os.path.join(settings.collections_dir, "ansible_collections", namespace, short)))
+    return out
+
+
+def _map_module_sources(value: str, links: _c.Sequence[tuple[str, str]]) -> str | None:
+    """A module debugger's configuration with each checkout mapped to its collection's link, or None to leave it.
 
     Ansible records a module's source by the path it loaded it from, the link in the tree, and the debugger
     matches the editor's breakpoints, set in the checkout, against that by prefix, so they never hit. The
@@ -67,11 +87,12 @@ def _map_module_sources(value: str, link: str, settings: Settings) -> str | None
     mapping = config.setdefault("source_mapping", {})  # pyright: ignore[reportUnknownVariableType]
     if not isinstance(mapping, dict):
         return None
-    checkout = settings.project.root + os.sep
-    if checkout in mapping:
-        return None
-    mapping[checkout] = link + os.sep
-    return json.dumps(config)
+    changed = False
+    for checkout, link in links:
+        if checkout + os.sep not in mapping:
+            mapping[checkout + os.sep] = link + os.sep
+            changed = True
+    return json.dumps(config) if changed else None
 
 
 def warn_unlisted(settings: Settings, wanted: _c.Iterable[str], hint: str) -> None:

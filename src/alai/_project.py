@@ -7,12 +7,13 @@ from __future__ import annotations
 
 import argparse
 import collections.abc as _c
+import os
 import typing as _t
 
 from ._common import ConfigError, Record
 from ._config import RawManifest, Settings, raw_manifest, read_toml
-from ._lock import Lock, LockedRoot, changes, input_changes
-from ._manifest import Manifest, collection_name, parse_manifest
+from ._lock import Lock, LockedRoot, changes, input_changes, local_changes
+from ._manifest import Manifest, PathSource, SourceCollection, collection_name, parse_manifest
 from ._output import detail, home_path, lock_change, status, warn
 from ._progress import Live, Task
 
@@ -90,11 +91,13 @@ def with_root(settings: Settings, raw: RawManifest) -> tuple[RawManifest, Manife
     mustn't repeat. See ``design/collection-development.md``."""
     galaxy_file = settings.project.collection_file
     if galaxy_file is None:
-        return raw, parse_manifest(raw)
+        manifest = parse_manifest(raw)
+        read_local(settings, manifest)
+        return raw, manifest
 
-    from ._galaxy import read_root_collection
+    from ._galaxy import read_source_collection
 
-    root = read_root_collection(galaxy_file)
+    root = read_source_collection(galaxy_file)
     for key, value, instead in (
         ("collections", raw.collections, "galaxy.yml's dependencies"),
         ("requires_ansible", raw.requires_ansible, "meta/runtime.yml's requires_ansible"),
@@ -115,7 +118,62 @@ def with_root(settings: Settings, raw: RawManifest) -> tuple[RawManifest, Manife
     )
     manifest = parse_manifest(raw)
     manifest.root = root
+    read_local(settings, manifest)
     return raw, manifest
+
+
+def source_dir(settings: Settings, path: str) -> str:
+    """Where a path source is: its path, relative to the project root unless absolute, with ``~`` expanded."""
+    return os.path.normpath(os.path.join(settings.project.root, os.path.expanduser(path)))
+
+
+def read_local(settings: Settings, manifest: Manifest) -> None:
+    """Fill ``manifest.local`` from each path source's ``galaxy.yml``, or ``MANIFEST.json``, and ``meta/runtime.yml``,
+    read now, as uv reads a
+    path dependency's ``pyproject.toml`` on every lock and sync. The collection there must be the one its
+    ``[project.sources]`` entry names, and the directory mustn't overlap the collections directory, where a link to it,
+    or an exact sync, would replace or remove it."""
+    for name, source in sorted(manifest.sources.items()):
+        if not isinstance(source, PathSource):
+            continue
+        if manifest.root is not None and name == manifest.root.name:
+            raise ConfigError(
+                f"[project.sources] takes {name} from {source}, but it's the project's own collection, which is "
+                + "always the checkout"
+            )
+        manifest.local[name] = read_path_source(settings, name, source)
+
+
+def read_path_source(settings: Settings, name: str | None, source: PathSource) -> SourceCollection:
+    """The collection in a path source's directory, from its ``galaxy.yml``, or a built collection's
+    ``MANIFEST.json``, checked to be ``name`` when given, and not to overlap the collections directory."""
+    from ._galaxy import read_collection_dir
+
+    where = source_dir(settings, source.path)
+    if not os.path.isdir(where):
+        raise ConfigError(f"{home_path(where)} doesn't exist or isn't a directory" + _for(name))
+    if not any(os.path.isfile(os.path.join(where, f)) for f in ("galaxy.yml", "MANIFEST.json")):
+        raise ConfigError(
+            f"{home_path(where)} has no galaxy.yml or MANIFEST.json, so it isn't a collection{_for(name)}"
+        )
+    collection = read_collection_dir(where)
+    if name is not None and collection.name != name:
+        raise ConfigError(
+            f"[project.sources] takes {name} from {source}, but its {collection.metadata} is for {collection.name}"
+        )
+    tree = os.path.realpath(settings.collections_dir)
+    real = os.path.realpath(where)
+    for inner, outer, what in ((real, tree, "is inside"), (tree, real, "holds")):
+        if os.path.commonpath((inner, outer)) == outer:
+            raise ConfigError(
+                f"{collection.name}'s source {home_path(where)} {what} the collections directory "
+                + f"{home_path(settings.collections_dir)}; a source is installed from outside it"
+            )
+    return collection
+
+
+def _for(name: str | None) -> str:
+    return f" (from [project.sources] for {name})" if name is not None else ""
 
 
 def resolve_project(
@@ -193,8 +251,8 @@ def report_changes(
 ) -> None:
     """Say how ``lock`` differs from ``existing``: a line per collection added, updated or removed, each with its
     reason under it with ``-v``, as ``alai lock`` reports them. With ``inputs``, for a check that's failing, also what
-    in ``alai.toml`` differs from what ``existing`` was locked from, which is the only sign of a change that leaves
-    every version as it was."""
+    in ``alai.toml``, and in each directory source's ``galaxy.yml`` and ``meta/runtime.yml``, differs from what
+    ``existing`` was locked from, which is the only sign of a change that leaves every version as it was."""
     for name, line in changes(existing, lock):
         lock_change(line)
         if (reason := resolution.reasons.get(name)) is not None:
@@ -202,4 +260,8 @@ def report_changes(
     if inputs and existing is not None and (found := input_changes(existing, manifest)):
         status("alai.toml has changed since alai.lock was made:")
         for line in found:
+            status(f"  {line}")
+    for directory, lines in local_changes(existing, manifest) if inputs and existing is not None else []:
+        status(f"{directory} has changed since alai.lock was made:")
+        for line in lines:
             status(f"  {line}")

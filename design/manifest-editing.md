@@ -70,6 +70,31 @@ Tested against `uv add` and `uv remove` (uv 0.13) on 2026-10-20, with a
   - uv also has `UV_LOCKED=1`; alai has no environment variable for
     `--locked` on any command yet.
 
+- **A directory adds the collection it holds** (2026-10-22), as `uv add
+  ../lib` does. Tried with uv 0.13.0 on 2026-10-22:
+  - `uv add ../lib` wrote `"lib"`, with no version bound, to
+    `dependencies` and `lib = { path = "../lib" }` to `[tool.uv.sources]`;
+    `--editable` added `editable = true`. Here the name goes in
+    `project.collections` (or the group's) alone, and the entry in
+    `[project.sources]`, at the end of that table, or in a new
+    `[project.sources]` at the end of the file.
+  - From a subdirectory, `uv add ../../lib3` wrote `path = "../lib3"`,
+    relative to the project root; an absolute path stayed absolute. alai
+    does both.
+  - Adding the same directory again replaces the entry: `uv add ../lib3`
+    after `--editable` dropped `editable = true`. uv 0.13.0 has no `-e` on
+    `uv add`, only `--editable`, so alai has only `--editable` there.
+  - What's a directory: one with a `/`, `.`, `..`, or a leading `~` (`uv
+    pip install lib2` looked for the package `lib2`, `lib2/` installed the
+    directory); with `--editable`, every argument is one, as `uv pip
+    install -e lib2` installed the directory `lib2`. A collection name never
+    has a `/`, so `community.general` is always the name, as ansible-galaxy
+    reads it even beside a directory of that name.
+  - `uv remove lib3` removed its source too. alai removes a `{ path = ...
+    }` entry once nothing in `project.collections` or any group lists the
+    collection; an `{ index = ... }` entry stays, as it also applies to what
+    other collections depend on and `alai add` never writes one.
+
 ## The editor
 
 - **Our own, surgical, and checked.** A small scanner reads enough TOML to
@@ -82,6 +107,14 @@ Tested against `uv add` and `uv remove` (uv 0.13) on 2026-10-20, with a
   is written: a mistake can stop an edit, never write a wrong file.
   Random sequences of edits over several layouts, CRLF included, are in the
   tests.
+- **`[project.sources]` entries** (2026-10-22): `set_table` sets a key to
+  an inline table, in place, or as a new line after its table's last key,
+  or under a new header at the end of the file; `remove_key` removes a key
+  written on a line of its own, with that line and any comment on it, and
+  leaves an emptied table's header, as uv leaves `[tool.uv.sources]`. Both
+  are checked the same way. A table written with dotted keys under
+  `[project]` (`sources."a.b" = ...`) can't gain a header, so the check
+  refuses that.
 - **What it refuses**: an array inside an inline table (`project = {
   collections = [...] }`), whose keys it doesn't record, and anything the
   check rejects, such as a new `[project.groups.test]` header for a table

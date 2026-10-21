@@ -143,6 +143,32 @@ written.
     and `alai remove` say so and change nothing, and the collections need
     adding or removing by hand.
 
+## Collections from a directory
+
+`alai add` also takes a directory holding a collection, such as a checkout
+of one you're working on, with a `/` in it so it isn't read as a collection
+name. It adds the collection by name and takes it from that directory in
+[`[project.sources]`](alai-toml.md#projectsources); `--editable` links it
+rather than copying it:
+
+```console
+$ alai add ../corp.dev
+Resolved 2 collections in 621ms
+Prepared 1 collection in 602ms
+Installed 2 collections in 3ms
+ + ansible.posix==2.2.2
+ + corp.dev==0.3.0 (from ~/corp.dev)
+```
+
+`alai add` of the same directory with or without `--editable` switches
+between the two. `alai remove corp.dev` removes its `[project.sources]`
+entry too, once no group lists it; an `{ index = ... }` entry stays, as it
+can apply to what other collections depend on.
+
+How a directory is installed, when it's copied again, and when to use an
+index, a directory or an editable one is in
+[Collection sources](collection-sources.md).
+
 ## Locking
 
 `alai lock` resolves what the project's `alai.toml` asks for, its groups
@@ -184,7 +210,7 @@ To move to newer versions anyway:
 | `-U`, `--upgrade` | Choose the newest version of every collection that fits |
 | `-P NAME`, `--upgrade-collection NAME` | Choose the newest version of collection `NAME` that fits; can be repeated |
 | `--upgrade-group NAME` | The same for every collection group `NAME` lists, but not what they depend on; can be repeated. A collection the group shares with the project, or another group, is upgraded for all of them, since it's locked once |
-| `--check` | Resolve as usual but write nothing, and exit 1 if `alai.lock` is missing or would change: `alai.toml` asks for something different, or the indexes no longer give the locked versions. A newer release alone doesn't count, since locked versions are kept while they fit. On failure it lists the collections that would change and what in `alai.toml` differs from what was locked. With `--offline`, it resolves from the cache |
+| `--check` | Resolve as usual but write nothing, and exit 1 if `alai.lock` is missing or would change: `alai.toml` asks for something different, or the indexes no longer give the locked versions. A newer release alone doesn't count, since locked versions are kept while they fit. On failure it lists the collections that would change and what in `alai.toml`, or in a [directory's](collection-sources.md#a-directory) `galaxy.yml` or `MANIFEST.json` and `meta/runtime.yml`, differs from what was locked. With `--offline`, it resolves from the cache |
 
 `alai lock` also takes the index, `--system-certs` and
 [`--offline`](alai-toml.md#offline) settings.
@@ -221,9 +247,9 @@ and a bar while installing (see
 [`--no-progress`](configuration.md#options-that-arent-settings)). Running it
 again with nothing to change connects to nothing, and says `Checked`.
 
-A collection is matched by the version in its `MANIFEST.json`, so one
-already at its locked version is left as it is, files edited in place
-included; to put back a collection you've edited, run
+A collection is matched by the version in its `MANIFEST.json`, and where it
+came from, so one already at its locked version is left as it is, files
+edited in place included; to put back a collection you've edited, run
 `alai sync --reinstall-collection NAME`. Anything else under a locked collection's name, including
 a directory without a `MANIFEST.json`, is replaced. Collections are
 downloaded once, checked against `alai.lock`, and kept in the cache;

@@ -123,8 +123,10 @@ To debug modules, use
 modules connect back to the debugger.
 
 In a [collection project](projects.md#collection-projects), Ansible loads
-the collection through a link in its collections directory. Breakpoints
-set in your checkout still hit.
+the collection through a link in its collections directory, as it does a
+collection from an
+[editable directory](collection-sources.md#an-editable-directory).
+Breakpoints set in your checkout still hit.
 
 The call stack shows the file's path in your checkout when you use
 `alai run` or `alai env`. Due to current limitations, when using

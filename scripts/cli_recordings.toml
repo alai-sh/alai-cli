@@ -134,6 +134,55 @@ commands = [
 ]
 
 [[recording]]
+name = "source-index"
+title = "Installing a collection, and what it needs, from the index"
+files = { "alai.toml" = """
+[project]
+collections = ["cisco.ios"]
+""" }
+commands = ["cat alai.toml", "alai sync"]
+
+[[recording]]
+name = "source-directory"
+title = "Adding a collection from a directory"
+# A collection's source beside the project, needing a collection from the index.
+files."alai.toml" = "[project]\n"
+files."../corp.dev/galaxy.yml" = """
+namespace: corp
+name: dev
+version: 0.3.0
+readme: README.md
+authors: [Example]
+dependencies:
+  ansible.posix: ">=2.0.0"
+build_ignore: [notes.txt]
+"""
+files."../corp.dev/README.md" = "# corp.dev\n"
+files."../corp.dev/notes.txt" = "Not part of the collection.\n"
+files."../corp.dev/plugins/modules/hello.py" = "# A module.\n"
+commands = ["alai add ../corp.dev", "cat alai.toml", "tree collections/ansible_collections/corp"]
+
+[[recording]]
+name = "source-editable"
+title = "Adding a collection from a directory, editable"
+files."alai.toml" = "[project]\n"
+files."../corp.dev/galaxy.yml" = """
+namespace: corp
+name: dev
+version: 0.3.0
+readme: README.md
+authors: [Example]
+"""
+files."../corp.dev/README.md" = "# corp.dev\n"
+files."../corp.dev/plugins/modules/hello.py" = "# A module.\n"
+commands = [
+    "alai add --editable ../corp.dev",
+    "echo '# Edited.' >> ../corp.dev/plugins/modules/hello.py",
+    "cat collections/ansible_collections/corp/dev/plugins/modules/hello.py",
+    "alai sync",
+]
+
+[[recording]]
 name = "run"
 title = "Running an Ansible module from a collection just added"
 # ansible-core comes from the docs environment. The ansible.cfg only turns off

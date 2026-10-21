@@ -16,7 +16,7 @@ import secrets
 
 from ._common import Error, Record, as_table
 from ._config import RawManifest, read_toml
-from ._manifest import Manifest, Requirement, collection_name, parse_manifest
+from ._manifest import IndexPin, Manifest, Requirement, Source, collection_name, parse_manifest
 from ._semver import Version
 
 LOCK_FILE_NAME = "alai.lock"
@@ -45,31 +45,89 @@ class IndexSource(Record):
     def __init__(self, url: str) -> None:
         self.url = url
 
+    def table(self) -> dict[str, str]:
+        return {"index": self.url}
+
+    def __str__(self) -> str:
+        return self.url
+
+
+class DirectorySource(Record):
+    """A collection copied from a directory holding its ``galaxy.yml``, as uv locks a path dependency: ``{ directory =
+    "../col" }``. A later git source is built the same way from a checkout, and an archive (``{ path = ... }``, ``{ url
+    = ... }``) installed as an index's artifact is."""
+
+    __slots__ = ("path",)
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        """As ``[project.sources]`` writes it: relative to the project root, or absolute."""
+
+    def table(self) -> dict[str, str]:
+        return {"directory": self.path}
+
+    def __str__(self) -> str:
+        return self.path
+
+
+class EditableSource(Record):
+    """A collection linked to a directory holding its ``galaxy.yml``, so edits there are seen: ``{ editable = "../col"
+    }``, as uv locks an editable path dependency."""
+
+    __slots__ = ("path",)
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+
+    def table(self) -> dict[str, str]:
+        return {"editable": self.path}
+
+    def __str__(self) -> str:
+        return f"{self.path} (editable)"
+
+
+LockedSource = IndexSource | DirectorySource | EditableSource
+
+
+def local_source(path: str, *, editable: bool) -> DirectorySource | EditableSource:
+    return EditableSource(path) if editable else DirectorySource(path)
+
 
 class LockedCollection(Record):
-    __slots__ = ("cksum", "dependencies", "name", "requires_ansible", "size", "source", "version")
+    __slots__ = ("cksum", "dependencies", "name", "requirements", "requires_ansible", "size", "source", "version")
 
     def __init__(
         self,
         name: str,
         version: Version,
         *,
-        source: IndexSource,
-        cksum: str,
-        size: int,
+        source: LockedSource,
+        cksum: str | None = None,
+        size: int | None = None,
         requires_ansible: str | None = None,
+        requirements: tuple[str, ...] | None = None,
         dependencies: tuple[str, ...] = (),
     ) -> None:
         self.name = name
         self.version = version
         self.source = source
         self.cksum = cksum
-        """The artifact's sha256."""
+        """The artifact's sha256; None for a directory, which is meant to change."""
         self.size = size
         self.requires_ansible = requires_ansible
-        """The version's own ``requires_ansible``, as the index gave it, or None if it has none."""
+        """The version's own ``requires_ansible``, as the index or its ``meta/runtime.yml`` gave it, or None if it has
+        none."""
+        self.requirements = requirements
+        """For a directory, its ``galaxy.yml`` dependencies when it was locked, in ``alai.toml``'s syntax, so a change
+        to them makes the lock stale, as uv keeps a local package's ``requires-dist``. None for an index's, whose
+        metadata can't change."""
         self.dependencies = dependencies
         """The names of the locked collections it depends on, sorted."""
+
+    def is_local(self) -> bool:
+        """Whether it comes from a directory, with metadata read from its ``galaxy.yml`` or ``MANIFEST.json`` every time,
+        rather than an artifact's."""
+        return isinstance(self.source, (DirectorySource, EditableSource))
 
 
 class LockedRoot(Record):
@@ -162,9 +220,37 @@ def stale(lock: Lock | None, manifest: Manifest, index_urls: _c.Collection[str])
     ):
         return "galaxy.yml or meta/runtime.yml has changed since it was locked"
     for collection in lock.collections:
-        if collection.source.url not in index_urls:
+        if isinstance(collection.source, IndexSource) and collection.source.url not in index_urls:
             return f"{collection.name} comes from {collection.source.url}, which isn't a configured index"
+        if collection.is_local() and (why := local_changed(collection, manifest)) is not None:
+            return why
     return None
+
+
+def local_changed(collection: LockedCollection, manifest: Manifest) -> str | None:
+    """Why a collection locked from a directory no longer matches its ``galaxy.yml`` and ``meta/runtime.yml``, as
+    ``manifest.local`` read them, or None if it does. Requirements compare as parsed, as the project's do."""
+    now = manifest.local.get(collection.name)
+    if now is None:
+        # Not taken from a directory any more: is_current reports that, as the sources changed.
+        return None
+    if (collection.version, collection.requires_ansible) != (now.version, now.requires_ansible) or _parsed(
+        collection.requirements or ()
+    ) != _parsed(now.dependencies):
+        return f"{collection.name}'s {now.metadata} or meta/runtime.yml has changed since it was locked"
+    return None
+
+
+def _parsed(requirements: _c.Iterable[str]) -> frozenset[tuple[object, ...]]:
+    out: set[tuple[object, ...]] = set()
+    for text in requirements:
+        try:
+            r = Requirement.parse(text)
+        except ValueError:
+            out.add((text,))
+            continue
+        out.add((r.name, r.req.clauses))
+    return frozenset(out)
 
 
 def changes(before: Lock | None, after: Lock) -> list[tuple[str, str]]:
@@ -187,8 +273,8 @@ def changes(before: Lock | None, after: Lock) -> list[tuple[str, str]]:
         elif was is not None and now is not None:
             if was.version != now.version:
                 lines.append((name, f"Updated {name} v{was.version} -> v{now.version}"))
-            elif was.source.url != now.source.url:
-                lines.append((name, f"Updated {name} v{now.version}, now from {now.source.url}"))
+            elif was.source != now.source:
+                lines.append((name, f"Updated {name} v{now.version}, now from {now.source}"))
     if before.root is not None and after.root is not None and before.root.version != after.root.version:
         name = after.root.name
         lines.append((name, f"Updated {name} v{before.root.version} -> v{after.root.version}"))
@@ -203,15 +289,7 @@ def input_changes(lock: Lock, manifest: Manifest) -> list[str]:
     lines: list[str] = []
 
     def compare(key: str, old: _c.Mapping[str, tuple[object, str]], new: _c.Mapping[str, tuple[object, str]]) -> None:
-        # Each entry is (what's compared, how it's shown), by collection name.
-        for name in sorted(old.keys() | new.keys()):
-            was, now = old.get(name), new.get(name)
-            if was is None and now is not None:
-                lines.append(f"{key}: added {now[1]}")
-            elif now is None and was is not None:
-                lines.append(f"{key}: removed {was[1]}")
-            elif was is not None and now is not None and was[0] != now[0]:
-                lines.append(f"{key}: changed {was[1]} to {now[1]}")
+        _compare(lines, key, old, new)
 
     def requirements(items: _c.Iterable[Requirement]) -> dict[str, tuple[object, str]]:
         return {r.name: (r.req.clauses, str(r)) for r in items}
@@ -247,10 +325,68 @@ def input_changes(lock: Lock, manifest: Manifest) -> list[str]:
     )
     compare(
         "project.sources",
-        {n: (p.index, f"{n} from '{p.index}'") for n, p in before.sources.items()},
-        {n: (p.index, f"{n} from '{p.index}'") for n, p in manifest.sources.items()},
+        {n: (p, f"{n} from {_described(p)}") for n, p in before.sources.items()},
+        {n: (p, f"{n} from {_described(p)}") for n, p in manifest.sources.items()},
     )
     return lines
+
+
+def local_changes(lock: Lock, manifest: Manifest) -> list[tuple[str, list[str]]]:
+    """For each collection ``lock`` took from a directory that's still one, what its ``galaxy.yml`` (or a built
+    collection's ``MANIFEST.json``) and ``meta/runtime.yml``, as ``manifest.local`` read them now, say differently from when it was locked: the directory
+    as the lock writes it, and one line per difference named by the file and key, as ``input_changes`` names those of
+    ``alai.toml``. Requirements compare as parsed."""
+    out: list[tuple[str, list[str]]] = []
+    for collection in lock.collections:
+        now = manifest.local.get(collection.name)
+        if now is None or not isinstance(collection.source, (DirectorySource, EditableSource)):
+            continue
+        lines: list[str] = []
+        if collection.version != now.version:
+            lines.append(f"{now.metadata} version: changed {collection.version} to {now.version}")
+
+        def by_name(items: _c.Iterable[str]) -> dict[str, tuple[object, str]]:
+            found: dict[str, tuple[object, str]] = {}
+            for text in items:
+                try:
+                    r = Requirement.parse(text)
+                except ValueError:
+                    found[text] = (text, text)
+                    continue
+                found[r.name] = (r.req.clauses, text)
+            return found
+
+        _compare(
+            lines, f"{now.metadata} dependencies", by_name(collection.requirements or ()), by_name(now.dependencies)
+        )
+        _compare(
+            lines,
+            "meta/runtime.yml requires_ansible",
+            {"": (collection.requires_ansible, collection.requires_ansible)} if collection.requires_ansible else {},
+            {"": (now.requires_ansible, now.requires_ansible)} if now.requires_ansible else {},
+        )
+        if lines:
+            out.append((collection.source.path, lines))
+    return out
+
+
+def _compare(
+    lines: list[str], key: str, old: _c.Mapping[str, tuple[object, str]], new: _c.Mapping[str, tuple[object, str]]
+) -> None:
+    """Add a line to ``lines`` for each entry added to, removed from or changed between ``old`` and ``new``, each
+    ``(what's compared, how it's shown)`` by name."""
+    for name in sorted(old.keys() | new.keys()):
+        was, now = old.get(name), new.get(name)
+        if was is None and now is not None:
+            lines.append(f"{key}: added {now[1]}")
+        elif now is None and was is not None:
+            lines.append(f"{key}: removed {was[1]}")
+        elif was is not None and now is not None and was[0] != now[0]:
+            lines.append(f"{key}: changed {was[1]} to {now[1]}")
+
+
+def _described(source: Source) -> str:
+    return f"'{source.index}'" if isinstance(source, IndexPin) else str(source)
 
 
 def lock_path(project_root: str) -> str:
@@ -331,11 +467,15 @@ def render_lock(lock: Lock) -> str:
         out.append("\n[[collection]]\n")
         out.append(f"name = {_string(c.name)}\n")
         out.append(f"version = {_string(c.version.text)}\n")
-        out.append(f"source = {{ index = {_string(c.source.url)} }}\n")
-        out.append(f"cksum = {_string(c.cksum)}\n")
-        out.append(f"size = {c.size}\n")
+        out.append(f"source = {_inline(c.source.table())}\n")
+        if c.cksum is not None:
+            out.append(f"cksum = {_string(c.cksum)}\n")
+        if c.size is not None:
+            out.append(f"size = {c.size}\n")
         if c.requires_ansible is not None:
             out.append(f"requires_ansible = {_string(c.requires_ansible)}\n")
+        if c.requirements is not None:
+            out.append(f"requirements = {_array(c.requirements)}\n")
         out.append(f"dependencies = {_array(sorted(c.dependencies))}\n")
     if root is not None:
         out.append(_render_root(root))
@@ -415,8 +555,8 @@ def _parse_inputs(table: _c.Mapping[str, object], path: str) -> RawManifest:
         raise LockError(f"{path}: 'sources' must be a table")
     for key, value in source_tables.items():
         source = as_table(value)
-        if source is None or not all(isinstance(v, str) for v in source.values()):
-            raise LockError(f'{path}: sources."{key}" must be a table of strings')
+        if source is None or not all(isinstance(v, (str, bool)) for v in source.values()):
+            raise LockError(f'{path}: sources."{key}" must be a table of strings and booleans')
         sources[key] = source
 
     return RawManifest(
@@ -460,14 +600,26 @@ def _parse_collection(entry: object, where: str) -> LockedCollection | LockedRoo
         raise LockError(f"{where}: 'dependencies' must be an array of collection names")
     names = tuple(sorted(str(d) for d in _t_list(dependencies)))
 
-    if set(source_table) == {"editable"}:
-        if source_table["editable"] != ".":
-            raise LockError(f"{where}: an editable source other than '.' needs a newer alai")
+    if set(source_table) == {"editable"} and source_table["editable"] == ".":
         return LockedRoot(name, version, requires_ansible=requires_ansible, dependencies=names)
-    url = source_table.get("index")
-    if not isinstance(url, str) or set(source_table) != {"index"}:
+    kind = next(iter(source_table)) if len(source_table) == 1 else None
+    value = source_table.get(kind) if kind is not None else None
+    if not isinstance(value, str) or not value or kind not in ("index", "directory", "editable"):
         kinds = ", ".join(sorted(source_table)) or "none"
         raise LockError(f"{where}: unknown source ({kinds}); it may need a newer alai")
+
+    if kind != "index":
+        requirements = table.get("requirements", [])
+        if not isinstance(requirements, list) or not all(isinstance(r, str) for r in _t_list(requirements)):
+            raise LockError(f"{where}: 'requirements' must be an array of strings")
+        return LockedCollection(
+            name,
+            version,
+            source=local_source(value, editable=kind == "editable"),
+            requires_ansible=requires_ansible,
+            requirements=tuple(str(r) for r in _t_list(requirements)),
+            dependencies=names,
+        )
 
     cksum = _string_field(table, "cksum", where)
     if not _SHA256_RE.fullmatch(cksum):
@@ -479,7 +631,7 @@ def _parse_collection(entry: object, where: str) -> LockedCollection | LockedRoo
     return LockedCollection(
         name,
         version,
-        source=IndexSource(url),
+        source=IndexSource(value),
         cksum=cksum,
         size=size,
         requires_ansible=requires_ansible,
@@ -512,8 +664,17 @@ def _key(name: str) -> str:
 
 
 def _inline(table: _c.Mapping[str, object]) -> str:
-    """A TOML inline table of string values, keys sorted: ``{ index = "internal" }``."""
-    return "{ " + ", ".join(f"{_key(k)} = {_string(str(v))}" for k, v in sorted(table.items())) + " }"
+    """A TOML inline table of string and boolean values, keys in a fixed order, the source's kind first: ``{ index =
+    "internal" }``, ``{ path = "../col", editable = true }``."""
+    order = ["index", "path", "directory", "editable"]
+    keys = sorted(table, key=lambda k: (order.index(k) if k in order else len(order), k))
+    return "{ " + ", ".join(f"{_key(k)} = {_value(table[k])}" for k in keys) + " }"
+
+
+def _value(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return _string(str(value))
 
 
 def _array(items: _c.Iterable[str]) -> str:

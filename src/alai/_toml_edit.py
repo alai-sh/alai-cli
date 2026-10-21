@@ -158,15 +158,75 @@ def create(text: str, path: tuple[str, ...], items: _c.Sequence[str]) -> str:
     return _checked(text, edited, path, lambda _: list(items))
 
 
+def set_table(text: str, path: tuple[str, ...], value: _c.Mapping[str, str | bool]) -> str:
+    """Set the key at ``path`` to the inline table ``value``, such as ``{ path = "../col", editable = true }``: in
+    place if it's there, else as a new line at the end of its table, made at the end of the document if it has no
+    header yet."""
+    newline = _newline(text)
+    inline = "{ " + ", ".join(f"{_key(k)} = {_scalar(v)}" for k, v in value.items()) + " }"
+    scan = _Scan(text)
+    scan.document()
+    found = scan.values.get(path)
+    if found is not None:
+        edited = _splice(text, found[0], found[1], inline)
+    else:
+        table, key = path[:-1], path[-1]
+        line = f"{_key(key)} = {inline}"
+        if table in scan.headers:
+            at = scan.table_ends[table]
+            edited = _splice(text, at, at, f"{line}{newline}")
+        else:
+            prefix = "" if not text or text.endswith("\n") else newline
+            gap = newline if text.strip() else ""
+            edited = f"{text}{prefix}{gap}[{_dotted(table)}]{newline}{line}{newline}"
+
+    def change(node: dict[str, object]) -> None:
+        node[path[-1]] = dict(value)
+
+    return _checked_with(text, edited, path, change)
+
+
+def remove_key(text: str, path: tuple[str, ...]) -> str:
+    """Remove the key at ``path``, written on a line of its own, and that line with it. A table left empty keeps its
+    header, as uv leaves ``[tool.uv.sources]``."""
+    scan = _Scan(text)
+    scan.document()
+    found = scan.values.get(path)
+    if found is None:
+        raise TomlEditError(f"{_dotted(path)} isn't written as a key of its own, such as inside an inline table")
+    start = text.rfind("\n", 0, found[0]) + 1
+    # Only a comment can follow a value on its line, and it goes with it.
+    end = _line_end(text, found[1])
+    end = end + 2 if text.startswith("\r\n", end) else end + 1 if end < len(text) else end
+    edited = _splice(text, start, end, "")
+
+    def change(node: dict[str, object]) -> None:
+        _ = node.pop(path[-1], None)
+
+    return _checked_with(text, edited, path, change)
+
+
 def _checked(before: str, after: str, path: tuple[str, ...], change: _c.Callable[[list[str]], list[str]]) -> str:
     """``after`` if it's ``before`` with only the array at ``path`` changed as ``change`` says, else an error."""
+
+    def apply(node: dict[str, object]) -> None:
+        current = node.get(path[-1])
+        node[path[-1]] = change([str(v) for v in _t_list(current)] if isinstance(current, list) else [])
+
+    return _checked_with(before, after, path, apply)
+
+
+def _checked_with(
+    before: str, after: str, path: tuple[str, ...], change: _c.Callable[[dict[str, object]], None]
+) -> str:
+    """``after`` if it's ``before`` with only the key at ``path`` changed, as ``change`` changes the table holding it,
+    else an error."""
     old = tomllib.loads(before)
     expected = copy.deepcopy(old)
     node = expected
     for key in path[:-1]:
         node = _t_dict(node.setdefault(key, {}))
-    current = node.get(path[-1])
-    node[path[-1]] = change([str(v) for v in _t_list(current)] if isinstance(current, list) else [])
+    change(node)
     try:
         got = tomllib.loads(after)
     except tomllib.TOMLDecodeError as e:
@@ -424,6 +484,12 @@ def _newline(text: str) -> str:
 def _quote(value: str) -> str:
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
+
+
+def _scalar(value: str | bool) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return _quote(value)
 
 
 def _key(key: str) -> str:

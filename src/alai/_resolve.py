@@ -19,16 +19,16 @@ import resolvelib.resolvers
 from . import _semver
 from ._common import Error, Record
 from ._index import CollectionVersion, IndexClient, IndexFile
-from ._lock import IndexSource, Lock, LockedCollection
-from ._manifest import Manifest
+from ._lock import IndexSource, Lock, LockedCollection, local_source
+from ._manifest import Manifest, PathSource, Requirement, SourceCollection
 from ._pep440 import SpecifierSet, Version
 from ._semver import VersionReq
 
 _MAX_ROUNDS = 5000
 """How many rounds resolvelib may take, each pinning one collection or backtracking from one."""
-_PROJECT = ""
-"""The index name of the project's own collection, when its root is one: no configured index can be called this, so
-it's never fetched, and its one version is the checkout's."""
+_LOCAL = ""
+"""The index name of a collection read from a directory: the project's own, when its root is one, or a path source. No
+configured index can be called this, so it's never fetched, and its one version is what its galaxy.yml says."""
 
 
 class ResolutionError(Error):
@@ -141,21 +141,37 @@ def resolve(
         ) from None
 
     chosen: dict[str, _Candidate] = dict(result.mapping)
-    collections = tuple(
-        LockedCollection(
-            c.name,
-            c.version.version,
-            source=IndexSource(by_name[c.index].config().root),
-            cksum=c.version.cksum,
-            size=c.version.size,
-            requires_ansible=c.version.requires_ansible.text if c.version.requires_ansible is not None else None,
-            dependencies=tuple(sorted({name for name, _ in c.version.deps})),
-        )
-        for c in sorted(chosen.values(), key=lambda c: c.name)
-        if c.index != _PROJECT
-    )
+    collections: list[LockedCollection] = []
+    for c in sorted(chosen.values(), key=lambda c: c.name):
+        dependencies = tuple(sorted({name for name, _ in c.version.deps}))
+        if c.index != _LOCAL:
+            requires_ansible = c.version.requires_ansible
+            collections.append(
+                LockedCollection(
+                    c.name,
+                    c.version.version,
+                    source=IndexSource(by_name[c.index].config().root),
+                    cksum=c.version.cksum,
+                    size=c.version.size,
+                    requires_ansible=requires_ansible.text if requires_ansible is not None else None,
+                    dependencies=dependencies,
+                )
+            )
+        elif (local := manifest.local.get(c.name)) is not None and isinstance(
+            source := manifest.sources[c.name], PathSource
+        ):
+            collections.append(
+                LockedCollection(
+                    c.name,
+                    local.version,
+                    source=local_source(source.path, editable=source.editable),
+                    requires_ansible=local.requires_ansible,
+                    requirements=local.dependencies,
+                    dependencies=dependencies,
+                )
+            )
     reasons = provider.reasons(chosen, result.criteria, locked, upgrade)
-    return Resolution(collections, tuple(provider.warnings(chosen)), reasons)
+    return Resolution(tuple(collections), tuple(provider.warnings(chosen)), reasons)
 
 
 def admits_lower_bound(collection: SpecifierSet, project: SpecifierSet) -> bool:
@@ -213,23 +229,12 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
         origin: str = "the project",
     ) -> None:
         self._manifest = manifest
-        root = manifest.root
-        self._root = (
-            None
-            if root is None
-            else CollectionVersion(
-                root.name,
-                root.version,
-                deps=(),
-                cksum="",
-                size=0,
-                requires_ansible=None,
-                yanked=False,
-                origin="",
-                published="",
-            )
-        )
-        """The project's own collection as its one candidate, when the root is one."""
+        self._local = {name: _local_version(c) for name, c in manifest.local.items()}
+        """Each collection read from a directory as its one candidate: the path sources, and the project's own, when
+        the root is one. The project's own has no dependencies here, as its galaxy.yml's are the project's
+        requirements."""
+        if manifest.root is not None:
+            self._local[manifest.root.name] = _local_version(manifest.root, root=True)
         self._origin = origin
         self._report = report
         self._installed = installed or {}
@@ -243,7 +248,7 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
         self._unusable: dict[str, dict[str, str]] = {}
         """Per collection, versions that met every requirement but were skipped for unreadable metadata."""
         for name, pin in manifest.sources.items():
-            if pin.index not in indexes:
+            if not isinstance(pin, PathSource) and pin.index not in indexes:
                 raise ResolutionError(
                     f"[project.sources] takes {name} from index '{pin.index}', which isn't configured"
                     + _did_you_mean(pin.index, indexes)
@@ -307,15 +312,23 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
             self._report(identifier, len(self._files))
         # Every requirement on a name agrees on its index: it's worked out from the name alone.
         index = reqs[0].index
-        if index == _PROJECT and (root := self._root) is not None:
-            # The checkout is the only version there is, at what its galaxy.yml says, whatever the indexes have.
-            return [_Candidate(identifier, root, index)] if all(r.req.contains(root.version) for r in reqs) else []
+        if index == _LOCAL:
+            # The directory is the only version there is, at what its galaxy.yml says, whatever the indexes have.
+            local = self._local[identifier]
+            if not all(r.req.contains(local.version) for r in reqs):
+                return []
+            # Its requires_ansible is checked as an index version's is; the project's own has none here.
+            if (reason := self._left_out_because(identifier, local, allow_yanked=True)) is not None:
+                left_out = self._left_out.setdefault(identifier, {})
+                left_out[reason] = left_out.get(reason, 0) + 1
+                return []
+            return [_Candidate(identifier, local, index)]
         file = None if index is None else self._file(index, identifier)
         if index is None or file is None:
             return []
         excluded = {c.version.version for c in incompatibilities[identifier]}
         preferred = self._preferred.get(identifier)
-        if preferred is not None and preferred.source.url != self._indexes[index].config().root:
+        if preferred is not None and preferred.source != IndexSource(self._indexes[index].config().root):
             preferred = None
         # The locked version, else the installed one: either is kept while it still fits.
         keep = preferred.version if preferred is not None else self._installed.get(identifier)
@@ -348,7 +361,7 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
         return requirement.req.contains(candidate.version.version)
 
     def get_dependencies(self, candidate: _Candidate) -> list[_Requirement]:
-        # The project's own collection has no dependencies here: its galaxy.yml's are the project's requirements.
+        # The project's own collection has none here: its galaxy.yml's are the project's requirements.
         dependencies: list[_Requirement] = []
         for name, req in candidate.version.deps:
             text = _dependency_text(name, req)
@@ -373,7 +386,7 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
         project = self._manifest.requires_ansible
         for name in sorted(chosen):
             candidate = chosen[name]
-            if candidate.index == _PROJECT:
+            if self._manifest.root is not None and name == self._manifest.root.name:
                 continue
             if candidate.version.yanked:
                 out.append(f"{candidate} is yanked")
@@ -411,7 +424,7 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
         """
         out: dict[str, str] = {}
         for name, candidate in sorted(chosen.items()):
-            if candidate.index == _PROJECT:
+            if self._manifest.root is not None and name == self._manifest.root.name:
                 continue
             reqs = [info.requirement for info in criteria[name].information]
             was = locked.get(name) if locked is not None else None
@@ -419,8 +432,15 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
                 parents = ", ".join(sorted({r.parent for r in reqs}))
                 out[name] = f"{name} is needed by {parents}"
                 continue
+            if candidate.index == _LOCAL:
+                source = self._manifest.sources[name]
+                if not was.is_local() or str(was.source) != str(source):
+                    out[name] = f"{name} now comes from {source}"
+                elif was.version != candidate.version.version:
+                    out[name] = f"{name}'s galaxy.yml now says {candidate.version.version}"
+                continue
             root = self._indexes[candidate.index].config().root
-            if was.version == candidate.version.version and was.source.url == root:
+            if was.version == candidate.version.version and was.source == IndexSource(root):
                 continue
             reason = self._not_kept(name, was, candidate, reqs, chosen, criteria, upgrade)
             if reason is not None:
@@ -443,7 +463,7 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
         locked = f"{name} {was.version}"
         if upgrade is True or (upgrade is not False and name in upgrade):
             return f"upgrading {name} was asked for"
-        if was.source.url != self._indexes[candidate.index].config().root:
+        if was.source != IndexSource(self._indexes[candidate.index].config().root):
             return f"{name} now comes from index '{candidate.index}'"
         unmet = [r for r in reqs if not r.req.contains(was.version)]
         if unmet:
@@ -494,8 +514,18 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
         for name, reqs in sorted(by_name.items()):
             index = reqs[0].index
             parents = ", ".join(sorted({r.parent for r in reqs}))
-            if index == _PROJECT and self._root is not None:
-                lines.append(f"{name} {self._root.version}, the project's own collection, doesn't meet:")
+            if index == _LOCAL:
+                local = self._local[name]
+                root = self._manifest.root
+                own = root is not None and name == root.name
+                what = "the project's own collection" if own else f"from {self._manifest.sources[name]}"
+                if left_out := self._left_out.get(name):
+                    reason = next(iter(left_out))
+                    lines.append(
+                        f"{name} {local.version}, {what}, is left out ({reason}), which {', '.join(sorted({r.parent for r in reqs}))} needs"
+                    )
+                    continue
+                lines.append(f"{name} {local.version}, {what}, doesn't meet:")
                 lines.extend(f"  {r.text} (from {r.parent})" for r in reqs)
                 continue
             if index is None:
@@ -515,11 +545,10 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
     def _index_for(self, name: str) -> str | None:
         """Where a collection comes from, whatever asked for it: its ``[project.sources]`` entry, else the first
         index whose listing has it, as uv's default ``first-index`` strategy does. None if no index has it."""
-        root = self._manifest.root
-        if root is not None and name == root.name:
-            return _PROJECT
+        if name in self._local:
+            return _LOCAL
         pin = self._manifest.sources.get(name)
-        if pin is not None:
+        if pin is not None and not isinstance(pin, PathSource):
             return pin.index
         return next((index for index, client in self._indexes.items() if client.has(name)), None)
 
@@ -528,7 +557,7 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
         by_index: dict[str, set[str]] = {}
         for name in names:
             index = self._index_for(name)
-            if index is not None and index != _PROJECT and (index, name) not in self._files:
+            if index is not None and index != _LOCAL and (index, name) not in self._files:
                 by_index.setdefault(index, set()).add(name)
         for index, wanted in by_index.items():
             self._indexes[index].prefetch(sorted(wanted))
@@ -568,6 +597,27 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
         if project is not None and not admits_lower_bound(theirs, project):
             return f"needing a newer ansible-core than the project's {project}"
         return None
+
+
+def _local_version(collection: SourceCollection, *, root: bool = False) -> CollectionVersion:
+    """A collection in a directory as an index entry would describe it, with no artifact. The project's own has no
+    dependencies or ``requires_ansible`` here: its galaxy.yml's are the project's requirements, and its
+    ``meta/runtime.yml``'s the project's range."""
+    requirements = [] if root else [Requirement.parse(text) for text in collection.dependencies]
+    requires_ansible = (
+        None if root or collection.requires_ansible is None else SpecifierSet(collection.requires_ansible)
+    )
+    return CollectionVersion(
+        collection.name,
+        collection.version,
+        deps=tuple((r.name, r.req) for r in requirements),
+        cksum="",
+        size=0,
+        requires_ansible=requires_ansible,
+        yanked=False,
+        origin="",
+        published="",
+    )
 
 
 def _dependency_text(name: str, req: VersionReq) -> str:

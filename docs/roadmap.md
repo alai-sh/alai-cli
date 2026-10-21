@@ -9,16 +9,15 @@
 
 ## Planned
 
-- **Collections from other sources.** Installing a collection from a
-  directory on disk, linked in so edits take effect without reinstalling,
-  from a git repository, or from a tarball URL or file, named in
-  [`[project.sources]`](alai-toml.md#projectsources) and pinned in
-  `alai.lock` like any other.
+- **Collections from git and tarballs.** Installing a collection from a
+  git repository, or from a built collection's tarball by URL or file,
+  named in [`[project.sources]`](alai-toml.md#projectsources) and pinned
+  in `alai.lock` like any other, as
+  [a directory](collection-sources.md#a-directory) is
+  today.
 - **Building collections**: `alai build`, with the collection's
   metadata in `alai.toml` instead of `galaxy.yml`, so `alai add` and
   `alai remove` can edit a collection project's dependencies too.
-- **A sibling checkout of a dependency** linked into a collection
-  repository's tree as an editable source.
 - **Faster installs of large collections**, by moving extraction and
   linking into native code.
 - **Several ansible-core versions per project**: resolving for one

@@ -45,6 +45,18 @@ even those already at the version chosen, and
 same [syntax](alai-toml.md#requirements) as in `alai.toml`, such as
 `'cisco.ios>=11'`.
 
+A requirement with a `/` in it, such as `../corp.dev` or `./corp.dev`, is a
+directory holding a collection's `galaxy.yml`, or a built collection's
+`MANIFEST.json`, as `uv pip install ./lib` takes a directory. A source is
+built and copied in, and a built one copied as it is, again every time
+it's asked for, and what it depends on is resolved from the indexes.
+`-e DIR` (`--editable`) links it instead, so edits there take effect
+without installing again; it can be repeated. A name alone, such as
+`corp.dev`, is always a collection name, even when a directory of that name
+is beside you. See
+[Collection sources](collection-sources.md#a-directory)
+for what's copied.
+
 If the project has an `alai.toml`, it's read as for any command: it marks
 the project, and its settings, such as the indexes and `collections_dir`,
 apply. Its `[project]` collections and `alai.lock` are neither used nor

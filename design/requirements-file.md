@@ -8,7 +8,7 @@ as `uv pip install -r` and `uv add -r` take a `requirements.txt`.
 file's `source:` and `signatures:` should mean to alai needs input from
 people using Automation Hub and signed collections, and its git, path and
 URL entries need the sources that aren't built yet
-([lockfile.md](lockfile.md#planned-other-sources)). Decided so far:
+([lockfile.md](lockfile.md#other-sources); directories exist now). Decided so far:
 PyYAML is the parser (`safe_load`, the libyaml loader when present;
 6.0.3 imports in ~11 ms, only `-r` would load it, and ansible-core depends
 on it anyway), both commands take `-r`, and roles are warned about and

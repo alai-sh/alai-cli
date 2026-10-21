@@ -18,8 +18,8 @@ from alai import _config
 from alai._cli import EXIT_ERROR, main
 from alai._common import ConfigError
 from alai._config import Overrides, find_project, load_settings
-from alai._galaxy import read_root_collection
-from alai._lock import LockError, parse_lock, read_lock, render_lock
+from alai._galaxy import read_source_collection
+from alai._lock import EditableSource, LockError, parse_lock, read_lock, render_lock
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -147,7 +147,7 @@ class TestGalaxy:
         galaxy(tmp_path, {"a.a": ">=1.0.0", "b.b": "*", "c.c": "1.0.0", "d.d": ">=1.0,<2.0.0"})
         runtime(tmp_path, ">=2.15")
 
-        root = read_root_collection(str(tmp_path / "galaxy.yml"))
+        root = read_source_collection(str(tmp_path / "galaxy.yml"))
 
         assert (root.name, root.version.text, root.path) == ("ns.col", "1.0.0", str(tmp_path))
         # In alai.toml's syntax, from ansible-galaxy's: * dropped, a bare version made ==.
@@ -157,7 +157,7 @@ class TestGalaxy:
     def test_no_runtime_or_dependencies(self, tmp_path: Path) -> None:
         galaxy(tmp_path)
 
-        root = read_root_collection(str(tmp_path / "galaxy.yml"))
+        root = read_source_collection(str(tmp_path / "galaxy.yml"))
 
         assert (root.dependencies, root.requires_ansible) == ((), None)
 
@@ -180,14 +180,14 @@ class TestGalaxy:
         _ = (tmp_path / "galaxy.yml").write_text(text)
 
         with pytest.raises(ConfigError, match=error.replace("(", "\\(").replace("^", "\\^")):
-            _ = read_root_collection(str(tmp_path / "galaxy.yml"))
+            _ = read_source_collection(str(tmp_path / "galaxy.yml"))
 
     def test_invalid_requires_ansible(self, tmp_path: Path) -> None:
         galaxy(tmp_path)
         runtime(tmp_path, "2.15+")
 
         with pytest.raises(ConfigError, match=r"runtime\.yml: requires_ansible: .*expected PEP 440"):
-            _ = read_root_collection(str(tmp_path / "galaxy.yml"))
+            _ = read_source_collection(str(tmp_path / "galaxy.yml"))
 
     def test_requires_ansible_not_a_string(self, tmp_path: Path) -> None:
         galaxy(tmp_path)
@@ -195,20 +195,20 @@ class TestGalaxy:
         _ = (tmp_path / "meta/runtime.yml").write_text("requires_ansible: 2.15\n")
 
         with pytest.raises(ConfigError, match="'requires_ansible' must be a string"):
-            _ = read_root_collection(str(tmp_path / "galaxy.yml"))
+            _ = read_source_collection(str(tmp_path / "galaxy.yml"))
 
     def test_empty(self, tmp_path: Path) -> None:
         _ = (tmp_path / "galaxy.yml").write_text("")
 
         with pytest.raises(ConfigError, match="'namespace' and 'name' are required strings"):
-            _ = read_root_collection(str(tmp_path / "galaxy.yml"))
+            _ = read_source_collection(str(tmp_path / "galaxy.yml"))
 
     def test_unreadable(self, tmp_path: Path) -> None:
         galaxy(tmp_path)
         (tmp_path / "meta/runtime.yml").mkdir(parents=True)
 
         with pytest.raises(ConfigError, match=r"can't read .*runtime\.yml"):
-            _ = read_root_collection(str(tmp_path / "galaxy.yml"))
+            _ = read_source_collection(str(tmp_path / "galaxy.yml"))
 
 
 class TestSync:
@@ -533,14 +533,16 @@ class TestModuleDebugging:
 
 
 class TestLockFormat:
-    def test_other_editable_paths_refused(self) -> None:
+    def test_other_editable_paths_are_path_sources(self) -> None:
         table = {
             "version": 1,
             "collection": [{"name": "ns.col", "version": "1.0.0", "source": {"editable": "../col"}}],
         }
 
-        with pytest.raises(LockError, match=r"an editable source other than '\.' needs a newer alai"):
-            _ = parse_lock(table, "alai.lock")
+        lock = parse_lock(table, "alai.lock")
+
+        assert lock.root is None
+        assert lock.collections[0].source == EditableSource("../col")
 
     def test_only_one_root(self) -> None:
         root = {"version": "1.0.0", "source": {"editable": "."}}

@@ -91,8 +91,9 @@ dependencies = ["ansible.netcommon"]
 | `project` | The project as a root of the resolution: its `requires_ansible`, `requirements` (`alai.toml`'s `project.collections`) and `groups.<name>.requirements`, as written |
 | `collection` | One entry per locked collection, sorted by name |
 | `collection.name`, `.version` | What's installed |
-| `collection.source` | Where it comes from, as a table naming the kind. Only `{ index = "<index root URL>" }` today |
-| `collection.cksum`, `.size` | The artifact's sha256 and size, from the index |
+| `collection.source` | Where it comes from, as a table naming the kind: `{ index = "<index root URL>" }`, or a directory (see [Other sources](#other-sources)) |
+| `collection.cksum`, `.size` | The artifact's sha256 and size, from the index; not for a directory |
+| `collection.requirements` | A directory's `galaxy.yml` dependencies when it was locked, so a change to them makes the lock stale; only for a directory |
 | `collection.requires_ansible` | The version's own `requires_ansible`, as the index gives it; absent when it has none |
 | `collection.dependencies` | The names of the locked collections it depends on, sorted |
 
@@ -164,8 +165,9 @@ name = "ansible.netcommon"
   name, version or `requires_ansible` makes the lock stale, as a change to
   the requirements does.
 - **`version` stays `1`.** Nothing is released, so there's no older alai to
-  protect from misreading it. One that reads an `editable` source other than
-  `.` is refused as needing a newer alai, for workspaces.
+  protect from misreading it. An `editable` source other than `.` is a
+  [path source](#other-sources) (2026-10-22); workspaces, when they come,
+  will need another way to mark their members' roots.
 
 ## Decisions
 
@@ -236,7 +238,18 @@ name = "ansible.netcommon"
   `project.requires_ansible: changed >=2.17 to >=2.18`), compared as
   parsed (`_lock.input_changes`). That's the only explanation when the
   requirements changed but every version stayed, such as listing a
-  collection that was already locked as a dependency. `sync`, `add` and
+  collection that was already locked as a dependency. A directory source's
+  `galaxy.yml` (or a built collection's `MANIFEST.json`) and
+  `meta/runtime.yml` are inputs too (asked for
+  2026-10-22): under `../src has changed since alai.lock was made:`, as the
+  lock writes the path, one line per difference from its entry's snapshot,
+  named by file and key (`galaxy.yml version: changed 1.0.0 to 1.1.0`,
+  `galaxy.yml dependencies: added d.d`, `meta/runtime.yml
+  requires_ansible: changed >=2.15 to >=2.16`; `_lock.local_changes`). A
+  hash of the two files in the lock was considered instead of the
+  `requirements` snapshot and dropped: any edit, a description or a
+  comment, would make the lock stale where the resolution can't change,
+  and the check couldn't say what changed. `sync`, `add` and
   `remove` with `--locked` print both the same way before their error
   (asked for 2026-10-21; `_project.report_changes`). uv prints neither:
   "The lockfile at `uv.lock` needs to be updated" alone. A plain `alai
@@ -301,62 +314,104 @@ name = "ansible.netcommon"
   such as a new `source` kind; an unknown kind is an error asking for a
   newer alai.
 
-## Planned: other sources
+## Other sources
 
-Local directories (including editable installs) and git repositories, through
-the planned `[sources]` table in `alai.toml`. They change the lock in three
-ways, which is why `source` is a table naming its kind now. Editable
-directories are `{ editable = "<path>" }`, as uv 0.13 locks an editable path
-dependency and its own package (`{ editable = "." }`), and a plain directory
-`{ path = "<path>" }`:
+Directories are implemented (2026-10-22); git repositories and tarballs,
+by URL or file, are next (asked for 2026-10-22), and the shapes below are
+chosen so they slot in. Each is a `[project.sources]` entry in `alai.toml`
+and a `source` table naming its kind in the lock, with uv's names for each
+kind, since uv 0.13.0 draws the same lines:
+
+| `[project.sources]` | `source` in the lock | Pinned by | Status |
+|---|---|---|---|
+| `{ index = "<name>" }` | `{ index = "<url>" }` | `cksum`, `size` | Done |
+| `{ path = "<dir>" }` | `{ directory = "<dir>" }` | Nothing: `requirements` re-read | Done |
+| `{ path = "<dir>", editable = true }` | `{ editable = "<dir>" }` | Nothing: `requirements` re-read | Done |
+| `{ git = "<url>", rev = "<rev>" }` | `{ git = "<url>", rev = "<rev>", commit = "<sha>" }` | `commit`, plus `requirements` | Planned |
+| `{ url = "<tarball url>" }` | `{ url = "<tarball url>" }` | `cksum`, `size` | Planned |
+| `{ path = "<file>.tar.gz" }` | `{ path = "<file>.tar.gz" }` | `cksum`, `size` | Planned |
+
+Tried with uv 0.13.0 on 2026-10-22: `uv add ../lib` wrote `lib = { path =
+"../lib" }` to `[tool.uv.sources]` and locked `source = { directory =
+"../lib" }`; `uv add --editable ../lib2` wrote `editable = true` and locked
+`{ editable = "../lib2" }`. uv keeps `{ path = ... }` in the lock for an
+archive file, so a directory being `directory` leaves `path` for tarballs.
+The earlier plan here had `{ path = "<dir>" }` for a directory in the lock;
+uv's names replaced it. `editable = "."` stays the project's own collection
+([A collection project](#a-collection-project)).
 
 ```toml
-[[collection]]
-name = "corp.tools"
-version = "1.4.0"
-source = { git = "https://github.com/corp/tools.git", rev = "v1.4.0", commit = "3f9a1c07…" }
-dependencies = ["community.general"]
+# alai.toml
+[project]
+collections = ["corp.dev", "corp.lib"]
+
+[project.sources]
+"corp.dev" = { path = "../corp.dev" }
+"corp.lib" = { path = "../corp.lib", editable = true }
+```
+
+```toml
+# alai.lock
+[sources]
+"corp.dev" = { path = "../corp.dev" }
+"corp.lib" = { path = "../corp.lib", editable = true }
 
 [[collection]]
 name = "corp.dev"
-version = "0.1.0"
-source = { editable = "../corp.dev" }
+version = "0.3.0"                          # galaxy.yml
+source = { directory = "../corp.dev" }
+requires_ansible = ">=2.16"                # meta/runtime.yml
+requirements = ["ansible.utils>=2"]        # galaxy.yml's dependencies, in alai.toml's syntax
+dependencies = ["ansible.utils"]
+
+[[collection]]
+name = "corp.lib"
+version = "1.0.0"
+source = { editable = "../corp.lib" }
+requirements = []
 dependencies = []
 ```
 
-- **What pins the content depends on the source.** An index or tarball URL
-  has `cksum`; git has the commit (with the requested `rev`, so
-  `--upgrade` can move a branch); a local path has nothing, since it's
-  meant to change. `cksum` becomes optional per kind.
-- **Mutable sources keep a snapshot of their metadata.** The `version` and
-  `dependencies` of a git or path collection come from its `galaxy.yml` at
-  lock time; `lock --check` and `sync` re-read it and report the lock out of
-  date when they've changed, as uv does for local packages.
-- **Their dependencies are chosen like top-level requirements** (a pinned
-  index, else the first index that has them): the index spec's rule that
-  dependencies come from their parent's index can't apply to a collection
-  that has no index.
+- **What pins the content depends on the source.** An index or tarball has
+  `cksum` and `size`; git will have the commit (with the requested `rev`, so
+  `--upgrade` can move a branch); a directory has nothing, since it's meant
+  to change. `cksum` and `size` are written only when there is one.
+- **A directory's metadata is a snapshot**, re-read every time. Its
+  `version` and `requires_ansible` are on the entry, and its `galaxy.yml`
+  `dependencies` are its `requirements`, rewritten in `alai.toml`'s syntax as
+  the project's own collection's are, as uv keeps a local package's
+  `requires-dist` in `[package.metadata]`. `_lock.stale()` re-reads
+  `galaxy.yml`, or a built collection's `MANIFEST.json` ([install.md](install.md#a-built-directory)),
+  and `meta/runtime.yml` (`Manifest.local`, filled by
+  `_project.read_local`) and compares them, requirements as parsed, so
+  `sync` locks again, and `lock --check` and `--locked` fail, when they
+  change. uv 0.13.0 did the same: after bumping `lib`'s version, `uv sync`
+  locked again and replaced it, and `uv lock --check` failed. A git entry
+  will carry `requirements` too, read from the commit.
+- **A directory's dependencies are chosen like any other collection's**:
+  their own `[project.sources]` entry, else the first index that has them.
+- **A source applies to any collection in the resolution**, as an index
+  pin already does, not only to what the project lists. uv 0.13.0 applies
+  `[tool.uv.sources]` only to direct dependencies: with `dep` a path
+  dependency needing `lib`, a `lib = { path = "../lib" }` source was
+  ignored and `lib` looked for on the index. uv gives no design reason in
+  its docs; asked to change it (astral-sh/uv#9446, open since November
+  2024 and labelled `needs-decision`), a maintainer answered "If you're
+  going to define a source, you should just make it a direct dependency --
+  what's the issue with that?", and the workarounds offered are listing it
+  in a dependency group or an `override-dependencies` URL. alai keeps its
+  rule: one entry by name is simpler, it's what index pins already do, and
+  a dependency deep in the tree can be pointed at a checkout to try a fix
+  without listing it. Checked 2026-10-22; see
+  [user-questions.md](user-questions.md).
+- **The name must match**: the directory's `galaxy.yml` must be for the
+  collection its entry names, as uv refused `foo @ ./lib` ("Package
+  metadata name `lib` does not match given name `foo`"). The project's own
+  collection can't be given a source; it's always the checkout.
+- **Paths are as written**: relative to the project root, or absolute,
+  with `~` expanded, as uv writes an absolute path it's given as absolute.
+- **Only the project's own manifest can name these sources.** A
+  `galaxy.yml` lists dependencies by name and version only, so a
+  dependency can't pull in a git URL or a local path.
 
-Only the project's own manifest can name these sources. A `galaxy.yml` lists
-dependencies by name and version only, so a dependency can't pull in a git
-URL or a local path, as uv's `[tool.uv.sources]` isn't transitive either.
-
-Paths in the lock are relative to the project root. Installing:
-
-- **A git source is built, as ansible-galaxy builds one.** Its
-  `install_src` reads `galaxy.yml`, drops what `build_ignore` and the
-  `manifest` directives exclude, writes `MANIFEST.json` and `FILES.json`,
-  and copies the rest. ansible-galaxy only treats a directory as an
-  installed collection with a `MANIFEST.json` (`_is_installed_collection_dir`:
-  "A MANIFEST.json is expected if the collection has been built and
-  installed via ansible-galaxy"), and ansible-test reads the version from it.
-  Copying the checkout as it is would load in ansible-core, but look unlike
-  an installed collection to everything else and bring development files
-  along. The build is cached by commit.
-- **An editable path is linked as it is**, with no build: the point is to
-  edit the source. The link is a symlink in `ansible_collections` to the
-  checkout, and its target is what says it's installed, as uv's `.pth` and
-  `direct_url.json` do for an editable package; replacing or removing it
-  only unlinks it ([install.md](install.md)). That leans on the debugging
-  requirement in
-  [collection-development.md](collection-development.md).
+How each is installed is in [install.md](install.md#directory-and-editable-sources).

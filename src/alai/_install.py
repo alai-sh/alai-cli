@@ -30,6 +30,10 @@ from ._semver import Version
 
 _TEMP = ".alai-"
 """The prefix of alai's temporary directories beside a namespace's collections."""
+_RECORDS = ".alai"
+"""The directory in ``ansible_collections`` holding a record of where each collection installed from a source other
+than an index came from, as uv's ``direct_url.json``: hidden, so neither Ansible nor ``installed`` takes it for a
+namespace."""
 _FICLONE = 0x40049409
 """Linux's ``FICLONE`` ioctl, ``_IOW(0x94, 9, int)``, as x86 and ARM encode it, for Pythons before 3.12 that don't
 have ``fcntl.FICLONE``. Architectures that encode it differently (powerpc, mips, sparc) fall back from cloning there."""
@@ -42,13 +46,16 @@ class InstallError(Error):
 class Installed(Record):
     """A directory, or symlink, at ``ansible_collections/<namespace>/<name>``."""
 
-    __slots__ = ("name", "path", "version")
+    __slots__ = ("name", "path", "record", "version")
 
-    def __init__(self, name: str, version: Version | None, path: str) -> None:
+    def __init__(self, name: str, version: Version | None, path: str, record: dict[str, object] | None = None) -> None:
         self.name = name
         self.version = version
         """None when there's no ``MANIFEST.json`` or it has no readable version, which never matches a lock."""
         self.path = path
+        self.record = record
+        """Where it was installed from, when alai installed it from a source other than an index: see
+        ``write_record``. None for an index's, or one alai didn't install."""
 
     def __str__(self) -> str:
         return f"{self.name} {self.version if self.version is not None else '(unknown version)'}"
@@ -95,10 +102,11 @@ def installed(collections_dir: str) -> dict[str, Installed]:
         if os.path.islink(os.path.join(root, namespace)):
             continue
         for short in _subdirs(os.path.join(root, namespace)):
+            name = f"{namespace}.{short}"
             path = os.path.join(root, namespace, short)
-            found[f"{namespace}.{short}"] = Installed(
-                f"{namespace}.{short}", _manifest_version(os.path.join(path, "MANIFEST.json")), path
-            )
+            # A link's target says where it's from, so it has no record of its own.
+            record = None if os.path.islink(path) else _read_record(collections_dir, name)
+            found[name] = Installed(name, _manifest_version(os.path.join(path, "MANIFEST.json")), path, record)
     return found
 
 
@@ -116,12 +124,15 @@ def plan(
     keep_unversioned: bool = False,
     reinstall: bool | _c.Set[str] = False,
     keep: _c.Collection[str] = (),
+    records: _c.Mapping[str, dict[str, object]] | None = None,
 ) -> Plan:
-    """What makes ``collections_dir`` hold the ``locked`` versions: matched by version alone, as uv does, so a
-    collection edited in place is left as it is, and one with no readable version is replaced, unless
-    ``keep_unversioned`` says to count it as the version wanted. ``reinstall``, every locked collection or the names
-    given, replaces one at its locked version all the same. ``keep`` names collections managed some other way, such as
-    an editable link, which are never removed."""
+    """What makes ``collections_dir`` hold the ``locked`` versions: matched by version and where it came from, as uv
+    does, so a collection edited in place is left as it is, and one with no readable version is replaced, unless
+    ``keep_unversioned`` says to count it as the version wanted. ``records`` gives the record each collection
+    installed from a directory must have (see ``write_record``); every other collection must have none, as an index's
+    has none. ``reinstall``, every locked collection or the names given, replaces one at its locked version all the
+    same. ``keep`` names collections managed some other way, such as an editable link, which are never removed."""
+    records = records or {}
     present = installed(collections_dir)
     needed = {name.split(".")[0] for name in locked}
     unlink = [
@@ -133,7 +144,8 @@ def plan(
         have = present.get(name)
         again = reinstall is True or (reinstall is not False and name in reinstall)
         kept = have is not None and (
-            (have.version == version and not again) or (keep_unversioned and have.version is None)
+            (have.version == version and have.record == records.get(name) and not again)
+            or (keep_unversioned and have.version is None)
         )
         (unchanged if kept else install).append(name)
     remove = [c for name, c in sorted(present.items()) if name not in locked and name not in keep] if exact else []
@@ -142,10 +154,24 @@ def plan(
 
 
 def install(collections_dir: str, name: str, source: str, linker: Linker) -> None:
-    """Install the collection extracted at ``source`` as ``name``, replacing what's there.
+    """Install the collection extracted at ``source`` as ``name``, replacing what's there."""
+    place(collections_dir, name, lambda temp: linker.tree(source, temp), source)
+
+
+def place(
+    collections_dir: str,
+    name: str,
+    make: _c.Callable[[str], None],
+    source: str,
+    record: dict[str, object] | None = None,
+) -> None:
+    """Install the collection ``make`` creates, given the new directory to create, as ``name``, replacing what's
+    there, with ``record`` saying where it came from when that isn't an index. ``source`` is where it came from, for
+    messages.
 
     The new copy is made beside it and renamed into place, so the collection is never seen half made; whatever was
-    there is renamed aside first and removed after, and so are ansible-galaxy's ``.info`` records of it.
+    there is renamed aside first and removed after, and so are ansible-galaxy's ``.info`` records of it and alai's
+    own.
     """
     namespace, short = name.split(".")
     parent = os.path.join(namespaces_dir(collections_dir), namespace)
@@ -158,7 +184,7 @@ def install(collections_dir: str, name: str, source: str, linker: Linker) -> Non
         _remove_leftovers(parent, short)
         temp = os.path.join(parent, f"{_TEMP}new-{short}-{secrets.token_hex(4)}")
         try:
-            linker.tree(source, temp)
+            make(temp)
             old = None
             if os.path.lexists(target):
                 old = os.path.join(parent, f"{_TEMP}old-{short}-{secrets.token_hex(4)}")
@@ -170,9 +196,39 @@ def install(collections_dir: str, name: str, source: str, linker: Linker) -> Non
         if old is not None:
             _rmtree(old)
         _remove_galaxy_info(collections_dir, name)
+        write_record(collections_dir, name, record)
     except OSError as e:
         raise InstallError(f"can't install {name} to {target}: {_reason(e)}") from None
     trace(f"{name}: installed to {target} from {source}")
+
+
+def write_record(collections_dir: str, name: str, record: dict[str, object] | None) -> None:
+    """Record where ``name`` was installed from, or with None, remove any record of it.
+
+    A record is ``ansible_collections/.alai/<name>.json``, holding ``{"source": {"directory": "<path>"}}`` and the
+    hashes of the files that decide when it's copied again, as uv records a directory's ``pyproject.toml`` time in
+    ``uv_cache.json`` (see ``_sync.directory_record``); a git source will record its commit. ansible-galaxy writes none for a directory, and a file in
+    the collection would be one ``FILES.json`` doesn't list, so it's kept beside the collections.
+    """
+    path = os.path.join(namespaces_dir(collections_dir), _RECORDS, f"{name}.json")
+    if record is None:
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(path)
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    temp = f"{path}.{secrets.token_hex(4)}.tmp"
+    with open(temp, "x", encoding="utf-8") as f:
+        json.dump(record, f, sort_keys=True)
+    os.replace(temp, path)
+
+
+def _read_record(collections_dir: str, name: str) -> dict[str, object] | None:
+    try:
+        with open(os.path.join(namespaces_dir(collections_dir), _RECORDS, f"{name}.json"), "rb") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None  # pyright: ignore[reportUnknownVariableType]
 
 
 def linked(collections_dir: str, name: str, source: str) -> bool:
@@ -206,6 +262,7 @@ def link_editable(collections_dir: str, name: str, source: str) -> bool:
             _rmtree(target)
         os.rename(temp, target)
         _remove_galaxy_info(collections_dir, name)
+        write_record(collections_dir, name, None)
     except OSError as e:
         raise InstallError(f"can't link {name} at {target} to {source}: {_reason(e)}") from None
     trace(f"{name}: linked {target} to {source}")
@@ -231,6 +288,7 @@ def remove(collections_dir: str, collection: Installed) -> None:
     try:
         _rmtree(collection.path, missing_ok=False)
         _remove_galaxy_info(collections_dir, collection.name)
+        write_record(collections_dir, collection.name, None)
         parent = os.path.dirname(collection.path)
         if not os.path.islink(parent) and not os.listdir(parent):
             os.rmdir(parent)
@@ -288,6 +346,14 @@ class Linker:
                 else:
                     debug(message)
                 _remove_partial(dest)
+
+
+def current_umask() -> int:
+    """The process's umask. Reading it means setting it, which isn't thread-safe, so this is read before any thread
+    starts."""
+    mask = os.umask(0o022)
+    _ = os.umask(mask)
+    return mask
 
 
 def _clone(source: str, dest: str) -> None:

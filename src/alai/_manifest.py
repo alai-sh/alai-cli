@@ -63,10 +63,30 @@ class IndexPin(Record):
         self.index = index
 
 
-class RootCollection(Record):
-    """The collection a project's root holds: what ``galaxy.yml`` names it, and what it needs."""
+class PathSource(Record):
+    """A ``[project.sources]`` entry taking a collection from a directory holding its ``galaxy.yml``: copied into the
+    collections directory as ansible-galaxy installs one, or with ``editable``, linked to it so edits are seen."""
 
-    __slots__ = ("dependencies", "name", "path", "requires_ansible", "version")
+    __slots__ = ("editable", "path")
+
+    def __init__(self, path: str, *, editable: bool = False) -> None:
+        self.path = path
+        """As written: relative to the project root, or absolute."""
+        self.editable = editable
+
+    def __str__(self) -> str:
+        return f"{self.path} (editable)" if self.editable else self.path
+
+
+Source = IndexPin | PathSource
+"""Where ``[project.sources]`` takes a collection from."""
+
+
+class SourceCollection(Record):
+    """A collection in a directory, such as the project's root or a path source: what its metadata names it, and what
+    it needs. A source has a ``galaxy.yml``; a built or installed collection has a ``MANIFEST.json`` instead."""
+
+    __slots__ = ("dependencies", "metadata", "name", "path", "requires_ansible", "version")
 
     def __init__(
         self,
@@ -76,14 +96,18 @@ class RootCollection(Record):
         *,
         dependencies: tuple[str, ...] = (),
         requires_ansible: str | None = None,
+        metadata: str = "galaxy.yml",
     ) -> None:
         self.name = name
         """``namespace.name``."""
         self.version = version
         self.path = path
-        """The checkout: the directory holding ``galaxy.yml``."""
+        """The directory holding its metadata."""
+        self.metadata = metadata
+        """The file it was read from: ``galaxy.yml`` for a source, which is built to install it, or ``MANIFEST.json``
+        for a built collection, which is copied as it is."""
         self.dependencies = dependencies
-        """``galaxy.yml``'s ``dependencies`` as requirement strings in ``alai.toml``'s syntax, such as
+        """The metadata's ``dependencies`` as requirement strings in ``alai.toml``'s syntax, such as
         ``ansible.utils>=2.0.0``, in the order written."""
         self.requires_ansible = requires_ansible
         """``meta/runtime.yml``'s ``requires_ansible``, or None when it doesn't set one."""
@@ -96,6 +120,7 @@ class Manifest(Record):
         "collections",
         "groups",
         "ignore_requires_ansible",
+        "local",
         "overrides",
         "path",
         "requires_ansible",
@@ -107,13 +132,14 @@ class Manifest(Record):
         self,
         path: str,
         *,
-        root: RootCollection | None = None,
+        root: SourceCollection | None = None,
         collections: tuple[Requirement, ...] = (),
         requires_ansible: SpecifierSet | None = None,
         groups: dict[str, tuple[Requirement, ...]] | None = None,
         overrides: dict[str, VersionReq] | None = None,
         ignore_requires_ansible: tuple[str, ...] = (),
-        sources: dict[str, IndexPin] | None = None,
+        sources: dict[str, Source] | None = None,
+        local: dict[str, SourceCollection] | None = None,
     ) -> None:
         self.path = path
         """The ``alai.toml`` it was read from, or a collection project's ``galaxy.yml`` without one."""
@@ -132,6 +158,9 @@ class Manifest(Record):
         self.sources = sources or {}
         """Where a collection comes from, by collection name, for any collection in the resolution, not only those
         the project lists. One without an entry comes from its parent's index, or the first index that has it."""
+        self.local = local or {}
+        """The collections ``sources`` takes from a directory, by name, as their ``galaxy.yml`` describes them now. Read
+        from disk by ``_project``, not from ``alai.toml``, so empty in a manifest a lock copied."""
 
     def resolution_key(self) -> tuple[object, ...]:
         """What resolving this manifest depends on, comparable between two manifests.
@@ -149,8 +178,22 @@ class Manifest(Record):
             frozenset((name, requirements(items)) for name, items in self.groups.items()),
             frozenset((name, req.clauses) for name, req in self.overrides.items()),
             frozenset(self.ignore_requires_ansible),
-            frozenset((name, pin.index) for name, pin in self.sources.items()),
+            frozenset((name, type(source), *_source_key(source)) for name, source in self.sources.items()),
         )
+
+
+def _source_key(source: Source) -> tuple[object, ...]:
+    if isinstance(source, PathSource):
+        return (source.path, source.editable)
+    return (source.index,)
+
+
+def is_path(text: str) -> bool:
+    """Whether a requirement given on the command line is a directory rather than a collection: it has a ``/``, or is
+    ``.``, ``..`` or starts with ``~``, as uv tells ``./lib`` or ``lib/`` from the name ``lib``. A collection name
+    never does, so ``community.general`` is always the name, as ansible-galaxy reads it, even beside a directory of
+    that name."""
+    return "/" in text or text in (".", "..") or text.startswith("~")
 
 
 def collection_name(text: str) -> str:
@@ -212,20 +255,14 @@ def parse_manifest(raw: RawManifest) -> Manifest:
         except ValueError as e:
             raise ConfigError(f"{path}: {where}: {e}") from None
 
-    sources: dict[str, IndexPin] = {}
+    sources: dict[str, Source] = {}
     for key, table in raw.sources.items():
         where = f'project.sources."{key}"'
         try:
             name = collection_name(key)
         except ValueError as e:
             raise ConfigError(f"{path}: {where}: {e}") from None
-        index = table.get("index")
-        if set(table) != {"index"} or not isinstance(index, str):
-            kinds = ", ".join(sorted(table)) or "none"
-            raise ConfigError(f'{path}: {where}: only {{ index = "<name>" }} is supported so far, got {kinds}')
-        if not NAME_RE.fullmatch(index):
-            raise ConfigError(f"{path}: {where}: '{index}' isn't a valid index name")
-        sources[name] = IndexPin(index)
+        sources[name] = _source(table, f"{path}: {where}")
 
     return Manifest(
         path,
@@ -236,6 +273,35 @@ def parse_manifest(raw: RawManifest) -> Manifest:
         ignore_requires_ansible=_names(raw.ignore_requires_ansible, path, "project.overrides.ignore_requires_ansible"),
         sources=sources,
     )
+
+
+def _source(table: dict[str, object], where: str) -> Source:
+    """One ``[project.sources]`` entry: ``{ index = "<name>" }``, or ``{ path = "<dir>" }`` with an optional
+    ``editable = true``, as uv's ``[tool.uv.sources]`` writes a path."""
+    if "index" in table:
+        index = table["index"]
+        if set(table) != {"index"} or not isinstance(index, str):
+            raise ConfigError(f'{where}: an index source is {{ index = "<name>" }} alone, got {_kinds(table)}')
+        if not NAME_RE.fullmatch(index):
+            raise ConfigError(f"{where}: '{index}' isn't a valid index name")
+        return IndexPin(index)
+    if "path" in table:
+        directory, editable = table["path"], table.get("editable", False)
+        if set(table) - {"path", "editable"} or not isinstance(directory, str) or not directory:
+            raise ConfigError(
+                f'{where}: a path source is {{ path = "<dir>" }}, with editable = true or false, got {_kinds(table)}'
+            )
+        if not isinstance(editable, bool):
+            raise ConfigError(f"{where}: 'editable' must be true or false")
+        return PathSource(directory, editable=editable)
+    raise ConfigError(
+        f'{where}: expected {{ index = "<name>" }} or {{ path = "<dir>" }}, got {_kinds(table)}; git and archive '
+        + "sources aren't supported yet"
+    )
+
+
+def _kinds(table: dict[str, object]) -> str:
+    return ", ".join(sorted(table)) or "none"
 
 
 def _requirements(items: list[str], path: str, key: str) -> tuple[Requirement, ...]:

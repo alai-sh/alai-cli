@@ -25,6 +25,13 @@
   GitHub's `> [!WARNING]`, which PyPI doesn't render. Its output is static,
   from a run against `index.alai.sh`, not a recording; its speed figures are
   the landing page's.
+- **A page per concept that grows, starting with sources** (asked for
+  2026-10-22): `docs/collection-sources.md` describes each kind of
+  `[project.sources]` entry, why you'd use it, where it falls short, and a
+  recording of adding or installing from it, so git and tarball sources
+  each become a section there. `alai-toml.md` keeps the reference table,
+  and `managing-collections.md` only how `alai add` and `alai remove`
+  handle a directory.
 - **An acknowledgements page** (asked for 2026-10-21), last in the nav:
   the projects alai is modelled on (uv, ModuleFast, Cargo's registry index,
   PwshSpectreConsole for the recorded docs) and the ones it's built with.

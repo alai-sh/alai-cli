@@ -478,12 +478,24 @@ class TestIndexes:
 
         assert [(i.name, i.url) for i in settings.indexes] == [("alai", "https://cli-default/")]
 
-    def test_higher_non_default_shadows_lower_default(self, tmp_path: Path, environ: dict[str, str]) -> None:
+    def test_alai_must_be_the_default(self, tmp_path: Path, environ: dict[str, str]) -> None:
+        # The name always means the default index, so taking it without replacing the default is an error, rather
+        # than dropping the built-in index without saying so.
         write(tmp_path / "alai.toml", '[[index]]\nname = "alai"\nurl = "https://pinned/"\n')
+
+        with pytest.raises(ConfigError, match=r"'alai' is the default index's name; set default = true"):
+            load(tmp_path, environ)
+
+    def test_alai_as_the_default(self, tmp_path: Path, environ: dict[str, str]) -> None:
+        write(tmp_path / "alai.toml", '[[index]]\nname = "alai"\nurl = "https://mirror/"\ndefault = true\n')
 
         settings = load(tmp_path, environ)
 
-        assert [(i.name, i.url, i.default) for i in settings.indexes] == [("alai", "https://pinned/", False)]
+        assert [(i.name, i.url, i.default) for i in settings.indexes] == [("alai", "https://mirror/", True)]
+
+    def test_alai_index_arg_refused(self, tmp_path: Path, environ: dict[str, str]) -> None:
+        with pytest.raises(ConfigError, match=r"'alai' is the default index's name; replace the default index with"):
+            load(tmp_path, environ, Overrides(index=["alai=https://x/"]))
 
     @pytest.mark.parametrize("value", ["", "https://no-name/", "Bad=https://x/", "x=ftp://x/"])
     def test_invalid_index_arg(self, tmp_path: Path, environ: dict[str, str], value: str) -> None:

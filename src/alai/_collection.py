@@ -15,7 +15,7 @@ import time
 from ._common import ConfigError
 from ._config import Settings
 from ._install import installed, remove
-from ._manifest import Manifest, Requirement, collection_name
+from ._manifest import Manifest, PathSource, Requirement, SourceCollection, collection_name, is_path
 from ._output import DIM, change, debug, home_path, shown_path, status, styled, summary, warn
 from ._project import resolve_manifest
 from ._sync import install_locked
@@ -49,8 +49,11 @@ def install(
     upgrade: bool | set[str],
     reinstall: bool | set[str] = False,
     keep_unversioned: bool = False,
+    editable: _c.Sequence[str] = (),
 ) -> None:
     """Install ``requirements`` and what they need, preferring what's already installed, and remove nothing else.
+    A requirement that's a directory (see ``is_path``) installs the collection whose source it holds, copied, and one
+    in ``editable`` links it, as ``uv pip install ./lib`` and ``-e ./lib`` do.
 
     If every requirement is already met by what's installed, and nothing is to be upgraded or reinstalled, nothing is
     resolved or fetched, as ``uv pip install`` checks first. ``reinstall``, everything resolved or the names given,
@@ -58,16 +61,38 @@ def install(
     such as a source checkout with no ``MANIFEST.json``, counts as installed whatever version is asked for, as
     ansible-galaxy counts one: it's left as it is, and isn't resolved when it's asked for.
     """
+    from ._project import read_path_source
+
     started = time.monotonic()
     cdir = target(settings)
     _ = _using(cdir)
-    wanted = [_requirement(text) for text in requirements]
+    wanted: list[Requirement] = []
+    sources: dict[str, PathSource] = {}
+    local: dict[str, SourceCollection] = {}
+    for text, edit in [*((t, False) for t in requirements), *((t, True) for t in editable)]:
+        if edit or is_path(text):
+            source = PathSource(os.path.abspath(os.path.expanduser(text)), editable=edit)
+            collection = read_path_source(settings, None, source)
+            if collection.name in sources:
+                raise ConfigError(f"{collection.name} is given twice, from {sources[collection.name]} and {source}")
+            sources[collection.name] = source
+            local[collection.name] = collection
+            wanted.append(Requirement.parse(collection.name))
+        else:
+            wanted.append(_requirement(text))
+    if not wanted:
+        raise ConfigError("give a collection or a directory to install")
+    # A directory is copied again every time, as uv pip install builds one again; an editable one only needs linking.
+    copies = {name for name, source in sources.items() if not source.editable}
+    if copies and reinstall is not True:
+        reinstall = (reinstall or set()) | copies
     every = installed(cdir)
     present = {name: c.version for name, c in every.items() if c.version is not None}
     unversioned: set[str] = {name for name, c in every.items() if c.version is None} if keep_unversioned else set()
     if (
         not upgrade
         and not reinstall
+        and not sources
         and all(r.name in unversioned or (r.name in present and r.req.contains(present[r.name])) for r in wanted)
     ):
         summary("Checked", len({r.name for r in wanted}), time.monotonic() - started, dim=True)
@@ -76,7 +101,12 @@ def install(
         debug(f"{name}: keeping {every[name].path}, whose version can't be read, as --keep-unversioned asks")
     resolution = resolve_manifest(
         settings,
-        Manifest("", collections=tuple(r for r in wanted if r.name not in unversioned)),
+        Manifest(
+            "",
+            collections=tuple(r for r in wanted if r.name not in unversioned or r.name in sources),
+            sources=dict(sources),
+            local=local,
+        ),
         installed=present,
         upgrade=upgrade,
         origin="the command line",

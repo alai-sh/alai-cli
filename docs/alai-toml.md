@@ -57,6 +57,7 @@ ignore_requires_ansible = ["some.collection"]
 
 [project.sources]
 "corp.tools" = { index = "internal" }
+"corp.dev" = { path = "../corp.dev", editable = true }
 
 # Never read by alai, at any level: room for other tools' settings.
 [tool.my-ci]
@@ -189,7 +190,7 @@ searched in the order given, before the default index.
 
 | Key | Type | |
 |---|---|---|
-| `name` | string | Required. Lowercase letters, digits, `-` and `_`, starting with a letter or digit. Used to take a collection from this index in [`[project.sources]`](#projectsources) |
+| `name` | string | Required. Lowercase letters, digits, `-` and `_`, starting with a letter or digit. Used to take a collection from this index in [`[project.sources]`](#projectsources). `alai` is the default index's name, so an index named `alai` must also set `default = true` |
 | `url` | string | Required. An `http://`, `https://` or `file://` URL of the index root, the directory holding `config.json`, without a query or fragment. A trailing `/` is added if missing |
 | `default` | boolean | Optional, default `false`. Makes this index replace the built-in default index |
 
@@ -324,17 +325,22 @@ Collection names contain a dot, so they're quoted: `"ansible.netcommon" =
 
 ### `[project.sources]`
 
-Where particular collections come from, by collection name:
+Where particular collections come from, by collection name. When to use
+each kind is in [Collection sources](collection-sources.md).
 
 ```toml
 [project.sources]
 "corp.tools" = { index = "internal" }
 "ansible.netcommon" = { index = "internal" }
+"corp.dev" = { path = "../corp.dev" }
+"corp.lib" = { path = "../corp.lib", editable = true }
 ```
 
 | Value | |
 |---|---|
 | `{ index = "<name>" }` | Take the collection from the [`[[index]]`](#index) with that name, and only from there |
+| `{ path = "<dir>" }` | Take the collection from a directory holding its `galaxy.yml`, built and copied into the collections directory, or from a directory holding a built collection's `MANIFEST.json`, copied as it is. A relative path is relative to the project root |
+| `{ path = "<dir>", editable = true }` | The same, but linked to the directory rather than copied, so edits there take effect without installing again. `editable = false` is the same as leaving it out |
 
 An entry applies wherever the collection appears, whether the project lists
 it in `collections` or another collection depends on it, as
@@ -342,6 +348,14 @@ it in `collections` or another collection depends on it, as
 first index that has it (see [Configuration](configuration.md#indexes)). Naming the index yourself is
 also how to be sure a collection can't come from somewhere else that
 happens to have one by the same name.
+
+A directory's collection must be the one its entry names, and its only
+version is the one its `galaxy.yml`, or a built collection's
+`MANIFEST.json`, says; its dependencies come from
+indexes, or from entries of their own. How it's installed, and when it's
+copied again, is in
+[Collection sources](collection-sources.md#a-directory).
+`alai add ../corp.dev` writes the entry for you.
 
 Collection names contain a dot, so they're quoted, as in
 `[project.overrides]`.
