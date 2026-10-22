@@ -49,8 +49,9 @@ collection projects
 ([collection-development.md](collection-development.md)); on 2026-10-22,
 path sources, plain and editable, tarballs by path or URL, and git
 repositories ([lockfile.md](lockfile.md#other-sources),
-[install.md](install.md#git-sources)), with what's left of those in each
-note's "Not done yet".
+[install.md](install.md#git-sources)), and `alai collection list`
+([list.md](list.md)), with what's left of those in each note's "Not done
+yet".
 
 Shelved: `-r requirements.yml` ([requirements-file.md](requirements-file.md));
 what to ask users about it is in [user-questions.md](user-questions.md).
@@ -69,6 +70,7 @@ those items; change it with them.
 | [install.md](install.md) | Installing locked collections: downloading artifacts, the extracted-collection cache, extraction as ansible-galaxy does it, what counts as installed, link modes and exact syncing |
 | [index-client.md](index-client.md) | Fetching and caching the index: the HTTP library, cache layout, revalidation, proxies, errors, and what `index.alai.sh` does |
 | [performance.md](performance.md) | Where the time goes, measured on `sivel.acd`: extraction, cloning, and the planned Rust extension and how it's packaged |
+| [list.md](list.md) | `alai collection list`: what uv lists and where, comparing the directory with `alai.lock`, and the output |
 | [find.md](find.md) | `alai find`: searching the plugin index, ranking without download counts, probable copies, following routing as ansible-core does, and the output |
 | [output.md](output.md) | Verbosity, what goes to stdout and stderr, JSON, colour and progress |
 | [documentation.md](documentation.md) | What the published docs cover, the generator, the generated CLI reference and its terminal recordings, and how they're deployed |

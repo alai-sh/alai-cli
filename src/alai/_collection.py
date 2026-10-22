@@ -49,11 +49,11 @@ def target(settings: Settings) -> str:
     return settings.collections_dir
 
 
-def _using(cdir: str) -> str:
+def using(cdir: str, *, always: bool = False) -> str:
     """Say which collections directory is used, as ``uv pip`` names the environment it uses, unless it's the one a user
-    would assume: ``collections`` in the current directory. Returns it as it's shown."""
+    would assume, ``collections`` in the current directory, and not ``always``. Returns it as it's shown."""
     shown = home_path(shown_path(cdir))
-    if os.path.abspath(cdir) != os.path.abspath("collections"):
+    if always or os.path.abspath(cdir) != os.path.abspath("collections"):
         status(styled(f"Using collections directory at: {shown}", DIM))
     return shown
 
@@ -84,7 +84,7 @@ def install(
 
     started = time.monotonic()
     cdir = target(settings)
-    _ = _using(cdir)
+    _ = using(cdir)
     wanted: list[Requirement] = []
     sources: dict[str, Source] = {}
     local: dict[str, SourceCollection] = {}
@@ -162,7 +162,7 @@ def uninstall(settings: Settings, names: _c.Sequence[str]) -> None:
     One that isn't installed is skipped with a warning."""
     started = time.monotonic()
     cdir = target(settings)
-    shown = _using(cdir)
+    shown = using(cdir)
     present = installed(cdir)
     chosen: dict[str, None] = {}
     for given in names:

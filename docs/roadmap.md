@@ -32,7 +32,8 @@
   date or a duration ago, for reproducing an old lock or holding back
   releases until they've been out a while.
 - **JSON output** for the other commands that report data, such as
-  `config show`, for scripts, as `alai find` has.
+  `config show`, for scripts, as `alai find` and `alai collection list`
+  have.
 - **Plugin documentation**: a command to show a plugin's full
   documentation, options and examples, as `ansible-doc` does, without
   installing its collection first.

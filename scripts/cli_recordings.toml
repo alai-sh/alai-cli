@@ -347,6 +347,17 @@ setup = ["alai collection install -q --collections-dir ./collections cisco.ios"]
 commands = ["alai collection uninstall --collections-dir ./collections cisco.ios"]
 
 [[recording]]
+name = "collection-list"
+title = "Listing a project's collections against its lock"
+files = { "alai.toml" = "" }
+setup = [
+    "alai add -q cisco.ios",
+    "alai collection install -q community.docker 'ansible.posix==2.1.0'",
+    "alai collection uninstall -q ansible.utils",
+]
+commands = ["alai collection list"]
+
+[[recording]]
 name = "find"
 columns = 100
 title = "Finding plugins"
@@ -491,6 +502,14 @@ needed stay installed.
 
 [[reference."collection uninstall"]]
 recording = "collection-uninstall-outside"
+
+[[reference."collection list"]]
+recording = "collection-list"
+description = """
+`cisco.ios` and what it needs are locked. `community.docker` was installed by
+hand, `ansible.posix` was installed by hand at an older version, and
+`ansible.utils` was uninstalled, so `alai sync` would change all three.
+"""
 
 [[reference."config show"]]
 recording = "config-show"
