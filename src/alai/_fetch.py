@@ -42,7 +42,9 @@ _RETRY = urllib3.Retry(
     allowed_methods=frozenset(("GET",)),
     raise_on_status=False,
 )
-_TIMEOUT = urllib3.Timeout(connect=15, read=60)
+# read is how long to wait for the server's next bytes, uv's default UV_HTTP_TIMEOUT: with three retries, a host that
+# stalls keeps alai waiting at most about two minutes, not three as at 60 s.
+_TIMEOUT = urllib3.Timeout(connect=15, read=30)
 _CHUNK = 256 * 1024
 
 

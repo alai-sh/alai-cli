@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import collections.abc as _c
+import gzip
 import hashlib
+import io
+import json
 import os
 import stat
 import tarfile
@@ -14,7 +17,7 @@ import pytest
 from artifact_data import Link, build_artifact
 from index_server import IndexServer, serve
 
-from alai import _artifacts
+from alai import _artifacts, _native
 from alai._artifacts import Artifact, ArtifactCache, ArtifactError
 from alai._fetch import Fetcher
 from alai._semver import Version
@@ -149,9 +152,9 @@ class TestGet:
         item = artifact(tmp_path)
         extract = _artifacts.extract
 
-        def first(tarball: str, dest: str, name: str, version: Version, *, umask: int) -> None:
-            extract(tarball, cache.path(item.cksum), name, version, umask=umask)
-            extract(tarball, dest, name, version, umask=umask)
+        def first(tarball: str, dest: str, name: str, version: Version, *, limit: int) -> None:
+            extract(tarball, cache.path(item.cksum), name, version, limit=limit)
+            extract(tarball, dest, name, version, limit=limit)
 
         monkeypatch.setattr(_artifacts, "extract", first)
 
@@ -201,6 +204,149 @@ def file_member(name: str) -> tarfile.TarInfo:
 
 def listed_file(name: str, sha256: str | None = "0" * 64) -> dict[str, object]:
     return {"name": name, "ftype": "file", "chksum_type": "sha256", "chksum_sha256": sha256}
+
+
+def sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def appended(item: Artifact, members: dict[str, bytes]) -> Artifact:
+    """``item`` with ``members`` appended, as ``tar -r`` on the uncompressed tarball then gzip again does."""
+    path = Path(item.url.removeprefix("file://"))
+    buffer = io.BytesIO(gzip.decompress(path.read_bytes()))
+    with tarfile.open(fileobj=buffer, mode="a") as tar:
+        for name, data in members.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            info.mode = 0o644
+            tar.addfile(info, io.BytesIO(data))
+    data = gzip.compress(buffer.getvalue())
+    _ = path.write_bytes(data)
+    return Artifact(item.name, item.version, url=item.url, cksum=sha256(data), size=len(data))
+
+
+def manifest(name: str = "coll", version: str = "1.0.0") -> bytes:
+    return json.dumps({"collection_info": {"namespace": "ns", "name": name, "version": version}}).encode()
+
+
+class TestAppended:
+    """A member appended with ``tar -r`` replaces the earlier one of the same name, as some published collections
+    replace their MANIFEST.json: only the last is read and extracted."""
+
+    def test_manifest(self, tmp_path: Path, cache: ArtifactCache) -> None:
+        item = appended(
+            artifact(tmp_path, manifest=json.loads(manifest(version="0.9.0"))), {"MANIFEST.json": manifest()}
+        )
+
+        path = Path(cache.get(item))
+
+        assert (path / "MANIFEST.json").read_bytes() == manifest()
+
+    def test_files_json_and_a_file(self, tmp_path: Path, cache: ArtifactCache) -> None:
+        listed = [listed_file("README.md", sha256(b"new")), listed_file("added.txt", sha256(b"added"))]
+        files_json = json.dumps({"files": listed, "format": 1}).encode()
+        item = appended(artifact(tmp_path), {"README.md": b"new", "added.txt": b"added", "FILES.json": files_json})
+
+        path = Path(cache.get(item))
+
+        assert (path / "README.md").read_bytes() == b"new"
+        assert (path / "added.txt").read_bytes() == b"added"
+        assert (path / "FILES.json").read_bytes() == files_json
+
+    def test_files_json_lists_an_earlier_file(self, tmp_path: Path, cache: ArtifactCache) -> None:
+        # extra.txt is stored before the replacement that lists it, so it's only extracted by starting again.
+        files = {"README.md": b"x", "extra.txt": b"e"}
+        original = [listed_file("README.md", sha256(b"x"))]
+        listed = [*original, listed_file("extra.txt", sha256(b"e"))]
+        files_json = json.dumps({"files": listed, "format": 1}).encode()
+        item = appended(artifact(tmp_path, files=files, listed=original), {"FILES.json": files_json})
+
+        path = Path(cache.get(item))
+
+        assert (path / "extra.txt").read_bytes() == b"e"
+
+    def test_extract_collection_reads_the_last_manifest(self, tmp_path: Path) -> None:
+        item = appended(
+            artifact(tmp_path, manifest=json.loads(manifest("other", "0.9.0"))), {"MANIFEST.json": manifest()}
+        )
+        tarball = item.url.removeprefix("file://")
+
+        found = _native.extract_collection(tarball, str(tmp_path / "out"), 0)
+
+        assert found == ("ns", "coll", "1.0.0")
+        assert (tmp_path / "out" / "MANIFEST.json").read_bytes() == manifest()
+
+    def test_collection_of_a_tarball(self, tmp_path: Path, cache: ArtifactCache) -> None:
+        # The collection a tarball is for, when it isn't known beforehand, is read from the same MANIFEST.json.
+        item = appended(artifact(tmp_path, manifest=json.loads(manifest("other"))), {"MANIFEST.json": manifest()})
+
+        path = Path(cache.add(item.url.removeprefix("file://"), item.cksum))
+
+        assert (path / "MANIFEST.json").read_bytes() == manifest()
+
+
+class TestExtractMembers:
+    """How members are read where reading the tarball once, front to back, makes it matter: what a link points to can
+    come after it, and a later member of a name replaces an earlier one."""
+
+    def test_hardlink_is_a_copy(self, tmp_path: Path, cache: ArtifactCache) -> None:
+        link = tarfile.TarInfo("b.txt")
+        link.type = tarfile.LNKTYPE
+        link.linkname = "a.txt"
+        listed = [listed_file("a.txt", sha256(b"hello")), listed_file("b.txt", sha256(b"hello"))]
+
+        path = Path(cache.get(artifact(tmp_path, files={"a.txt": b"hello"}, extra=[link], listed=listed)))
+
+        assert (path / "b.txt").read_bytes() == b"hello"
+        assert not (path / "b.txt").is_symlink()
+        assert (path / "b.txt").stat().st_ino != (path / "a.txt").stat().st_ino
+
+    def test_symlink_before_its_target(self, tmp_path: Path, cache: ArtifactCache) -> None:
+        # Stored in name order, so the link comes first: its checksum is of a file not yet extracted.
+        path = Path(cache.get(artifact(tmp_path, files={"a": Link("z.txt"), "z.txt": b"z"})))
+
+        assert (path / "a").readlink() == Path("z.txt")
+        assert (path / "a").read_bytes() == b"z"
+
+    def test_symlink_checksum_checked(self, tmp_path: Path, cache: ArtifactCache) -> None:
+        listed = [listed_file("a", sha256(b"other")), listed_file("z.txt", sha256(b"z"))]
+
+        with pytest.raises(ArtifactError, match="a in the artifact doesn't match its checksum"):
+            _ = cache.get(artifact(tmp_path, files={"a": Link("z.txt"), "z.txt": b"z"}, listed=listed))
+
+    def test_symlink_to_a_directory_listed_as_a_file(self, tmp_path: Path, cache: ArtifactCache) -> None:
+        dirs = [{"name": "d", "ftype": "dir", "chksum_type": None, "chksum_sha256": None}]
+        listed = [*dirs, listed_file("d/x", sha256(b"x")), listed_file("l")]
+
+        with pytest.raises(ArtifactError, match="l in the artifact can't be read"):
+            _ = cache.get(artifact(tmp_path, files={"d/x": b"x", "l": Link("d")}, listed=listed))
+
+    def test_repeated_name_last_wins(self, tmp_path: Path, cache: ArtifactCache) -> None:
+        listed = [listed_file("README.md", sha256(b"x"))]
+
+        path = Path(cache.get(artifact(tmp_path, extra=[file_member("README.md")], listed=listed)))
+
+        assert (path / "README.md").read_bytes() == b"x"
+
+    def test_long_name(self, tmp_path: Path, cache: ArtifactCache) -> None:
+        # Longer than ustar's 100 bytes, so tarfile stores it in a pax header.
+        name = "plugins/" + "m" * 150 + ".py"
+
+        path = Path(cache.get(artifact(tmp_path, files={name: b"x"})))
+
+        assert (path / name).read_bytes() == b"x"
+
+    def test_not_gzipped(self, tmp_path: Path, cache: ArtifactCache) -> None:
+        gzipped = artifact(tmp_path)
+        plain = tmp_path / "plain.tar"
+        with tarfile.open(gzipped.url.removeprefix("file://")) as src, tarfile.open(plain, "w") as dst:
+            for member in src.getmembers():
+                dst.addfile(member, src.extractfile(member))
+        data = plain.read_bytes()
+        item = Artifact(gzipped.name, gzipped.version, url=plain.as_uri(), cksum=sha256(data), size=len(data))
+
+        with pytest.raises(ArtifactError, match=r"ns\.coll 1\.0\.0: can't extract the artifact"):
+            _ = cache.get(item)
 
 
 class TestExtractErrors:

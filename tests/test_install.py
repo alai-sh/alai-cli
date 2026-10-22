@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import errno
 import json
 import os
@@ -12,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from alai import _install
+from alai import _install, _native
 from alai._config import LinkMode
 from alai._install import (
     Installed,
@@ -201,10 +202,7 @@ class TestInstall:
     def test_failure_keeps_what_was_there(self, tmp_path: Path, cdir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _ = collection(installed_at(cdir), version="1.0.0")
 
-        def fail(source: str, dest: str) -> None:
-            raise OSError(errno.ENOSPC, "No space left on device")
-
-        monkeypatch.setitem(_install._LINKS, LinkMode.COPY, fail)
+        monkeypatch.setattr(_install, "_link_tree", FakeLinker({"copy": errno.ENOSPC}))
 
         with pytest.raises(InstallError, match=r"can't install ns\.coll to .*: No space left on device"):
             install(str(cdir), "ns.coll", cached(tmp_path, version="2.0.0"), Linker(LinkMode.COPY))
@@ -220,28 +218,35 @@ class TestInstall:
         assert leftovers(cdir) == []
 
 
+class FakeLinker:
+    """Stands in for ``_install._link_tree``, failing in the modes given, as a filesystem without them would, after
+    making part of the tree; otherwise the extension links it."""
+
+    def __init__(self, failing: dict[str, int]) -> None:
+        self.failing = failing
+        self.calls: list[str] = []
+
+    def __call__(self, source: str, dest: str, mode: str) -> None:
+        self.calls.append(mode)
+        if mode in self.failing:
+            Path(dest).mkdir()
+            _ = (Path(dest) / "partial").write_text("x")
+            code = self.failing[mode]
+            raise OSError(code, os.strerror(code), str(Path(source) / "MANIFEST.json"))
+        _native.link_tree(source, dest, mode)
+
+
 class TestLinker:
     def test_auto_falls_back(
         self, tmp_path: Path, cdir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        calls: list[str] = []
+        fake = FakeLinker({"clone": errno.EOPNOTSUPP, "hardlink": errno.EXDEV})
+        monkeypatch.setattr(_install, "_link_tree", fake)
 
-        def unsupported(name: str, code: int) -> _install._c.Callable[[str, str], None]:
-            def link(source: str, dest: str) -> None:
-                calls.append(name)
-                _ = Path(dest).write_text("partial")
-                raise OSError(code, os.strerror(code))
+        install(str(cdir), "ns.coll", cached(tmp_path), Linker(LinkMode.AUTO))
 
-            return link
-
-        monkeypatch.setitem(_install._LINKS, LinkMode.CLONE, unsupported("clone", errno.EOPNOTSUPP))
-        monkeypatch.setitem(_install._LINKS, LinkMode.HARDLINK, unsupported("hardlink", errno.EXDEV))
-        linker = Linker(LinkMode.AUTO)
-
-        install(str(cdir), "ns.coll", cached(tmp_path), linker)
-
-        # Each failed once, then copy was used for every file; the warning is given once.
-        assert calls == ["clone", "hardlink"]
+        # Each failed once, its partial tree removed, and copy made the whole one; the warning is given once.
+        assert fake.calls == ["clone", "hardlink", "copy"]
         assert describe(installed_at(cdir)) == describe(Path(cached(tmp_path / "again")))
         err = capsys.readouterr().err
         assert err.count("warning:") == 1
@@ -249,22 +254,59 @@ class TestLinker:
         assert f"can't hardlink files from the cache ({os.strerror(errno.EXDEV)}); using copy instead" in err
 
     def test_explicit_mode_doesnt_fall_back(self, tmp_path: Path, cdir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        def cross_device(source: str, dest: str) -> None:
-            raise OSError(errno.EXDEV, os.strerror(errno.EXDEV))
+        monkeypatch.setattr(_install, "_link_tree", FakeLinker({"hardlink": errno.EXDEV}))
 
-        monkeypatch.setitem(_install._LINKS, LinkMode.HARDLINK, cross_device)
-
-        with pytest.raises(InstallError, match=rf"can't hardlink .*: {re.escape(os.strerror(errno.EXDEV))}$"):
+        # The cached file it failed on is named.
+        message = rf"can't hardlink .*/MANIFEST\.json: {re.escape(os.strerror(errno.EXDEV))}$"
+        with pytest.raises(InstallError, match=message):
             install(str(cdir), "ns.coll", cached(tmp_path), Linker(LinkMode.HARDLINK))
+        assert leftovers(cdir) == []
+
+    def test_no_space_isnt_fallen_back_from(self, tmp_path: Path, cdir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = FakeLinker({"clone": errno.ENOSPC})
+        monkeypatch.setattr(_install, "_link_tree", fake)
+
+        with pytest.raises(InstallError, match="No space left on device"):
+            install(str(cdir), "ns.coll", cached(tmp_path), Linker(LinkMode.AUTO))
+        assert fake.calls == ["clone"]
+
+    def test_falls_back_once_across_threads(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Every thread finds clone unsupported, but auto moves on from it once, to hardlink, not past it.
+        fake = FakeLinker({"clone": errno.EOPNOTSUPP})
+        monkeypatch.setattr(_install, "_link_tree", fake)
+        linker = Linker(LinkMode.AUTO)
+        source = cached(tmp_path)
+
+        with concurrent.futures.ThreadPoolExecutor(8) as pool:
+            list(pool.map(lambda i: linker.tree(source, str(tmp_path / f"out{i}")), range(8)))
+
+        assert "copy" not in fake.calls
+        assert all((tmp_path / f"out{i}" / "MANIFEST.json").stat().st_nlink > 1 for i in range(8))
+
+    @pytest.mark.parametrize("mode", [LinkMode.HARDLINK, LinkMode.COPY])
+    def test_same_tree_as_the_cache(self, tmp_path: Path, mode: LinkMode) -> None:
+        source = cached(tmp_path)
+        (Path(source) / "bin").mkdir(mode=0o750)
+        _ = (Path(source) / "bin" / "run.sh").write_text("#!/bin/sh\n")
+        (Path(source) / "bin" / "run.sh").chmod(0o755)
+        (Path(source) / "tools").symlink_to("bin")
+        (Path(source) / "bin" / "link.txt").symlink_to("run.sh")
+
+        Linker(mode).tree(source, str(tmp_path / "out"))
+
+        # Directories and files keep their modes, and symlinks, the directory one included, stay links.
+        assert describe(tmp_path / "out") == describe(Path(source))
+        assert (tmp_path / "out" / "tools").is_symlink()
 
 
 def test_clone(tmp_path: Path, cdir: Path) -> None:
     # clonefile on macOS, which APFS always supports; FICLONE on Linux, which only some filesystems do (btrfs, XFS),
     # and not the ext4 of CI runners or a tmpfs /tmp, so it's skipped there.
     probe = tmp_path / "probe"
-    _ = probe.write_text("x")
+    probe.mkdir()
+    _ = (probe / "x").write_text("x")
     try:
-        _install._clone(str(probe), str(tmp_path / "probe-clone"))  # pyright: ignore[reportPrivateUsage]
+        _native.link_tree(str(probe), str(tmp_path / "probe-clone"), "clone")
     except OSError as e:
         pytest.skip(f"{tmp_path} can't clone files: {e.strerror or e}")
     source = cached(tmp_path)
@@ -383,19 +425,3 @@ class TestRemove:
         remove(str(cdir), installed(str(cdir))["ns.coll"])
 
         assert Path(source, "run.sh").is_file()
-
-
-def test_ficlone_without_python_constant(monkeypatch: pytest.MonkeyPatch) -> None:
-    import fcntl
-
-    monkeypatch.delattr(fcntl, "FICLONE", raising=False)
-
-    assert _install._ficlone() == 0x40049409
-
-
-def test_ficlone_from_python(monkeypatch: pytest.MonkeyPatch) -> None:
-    import fcntl
-
-    monkeypatch.setattr(fcntl, "FICLONE", 1234, raising=False)
-
-    assert _install._ficlone() == 1234

@@ -172,7 +172,68 @@ Tested against `uv add` and `uv remove` (uv 0.13) on 2026-10-20, with a
   `[tool.<name>]`, so that could happen to a file alai only meant to add a
   line to. It also drops a removed item's comment, is pre-1.0, and costs
   ~50 ms to import.
+
+  Looked at again on 2026-10-22 (tomlkit 0.15.2, against `_toml_edit` and
+  `tomllib`):
+  - **Untouched, it round-trips** comments, alignment, CRLF and mixed line
+    ends, tabs, no final newline, every string and number form, dates,
+    quoted and dotted keys, and tables out of order, byte for byte. The
+    one exception is still the array-of-tables sub-table above, which any
+    edit moves, even one elsewhere in the file.
+  - **It fails on some valid files**: a sub-table of a three-level array
+    of tables written after another table (`[[tool.x.item]]`, `[tool.y]`,
+    `[tool.x.item.sub]`) raises `Key "item" already exists`, where
+    `tomllib` reads it; two levels parse. That's the shape another tool's
+    settings under `[tool.<name>]` could take, and `alai add` would then
+    fail on a file it never meant to touch.
+  - **TOML 1.1**: it reads and round-trips multi-line inline tables, a
+    trailing comma in one, `\e` and `\xHH`, and times without seconds, as
+    Python 3.15's `tomllib` does and 3.11 to 3.14's don't. Otherwise it
+    accepts and refuses what `tomllib` does.
+  - **The edits alai makes**: adding and removing requirements matched
+    `_toml_edit` byte for byte in every layout tried, except that removing
+    an entry drops its trailing comment, which `_toml_edit` keeps on its
+    own line. A new source is written `{path = "../b", editable = true}`,
+    without the spaces inside the braces the rest of a file usually has. A
+    new `[project.sources]` goes after `[project]`, where `_toml_edit` puts
+    it at the end of the file, but with no blank line before the next
+    table. It handled sources written as dotted keys in `[project]`
+    (`sources."a.a" = ...`), adding and removing, which `_toml_edit`
+    refuses.
+  - **Speed**: an add on a small `alai.toml`, read to write, 0.16 ms
+    against `_toml_edit`'s 0.06 ms; on a 91 KB file, 58 ms against 24 ms.
+    Importing it was 14.5 ms here, against 5.4 ms for `_toml_edit` with
+    `tomllib`.
 - **`toml_edit` is the mature format-preserving editor** (cargo's and uv's),
   but it's Rust with no maintained Python binding; it could come with the
-  planned native extension if editing needs grow, for `[project.sources]`
-  say ([performance.md](performance.md#planned-a-native-extension)).
+  native extension if editing needs grow, for `[project.sources]` say
+  ([performance.md](performance.md#the-native-extension)).
+
+  Tried on 2026-10-22 (`toml_edit` 0.25.17, TOML 1.1, from a scratch Rust
+  program, on the tomlkit cases above), and uv 0.13.0 on the same layouts
+  with `uv add --frozen` and `uv remove --frozen`:
+  - **It parses every valid file tried**, the three-level array of tables
+    tomlkit fails on included, and moves nothing: the out-of-order
+    array-of-tables sub-table stays where it is. It accepts and refuses
+    what Python 3.15's `tomllib` does, TOML 1.1 included, except a
+    byte-order mark, which it accepts and drops.
+  - **Its output normalises the whole file**: CRLF and mixed line ends
+    become LF, a missing final newline is added, a byte-order mark is
+    dropped, and spaces in a dotted table header can change (`[a . c]`
+    became `[a. c]`). uv does the same with the first three (it kept
+    `[tool . x]`), so these are uv's behaviour too; `_toml_edit` keeps
+    CRLF and a missing final newline.
+  - **Its editing API leaves the layout to the caller.** Inserting into a
+    multi-line array puts the new item on the previous one's line
+    (`"a.a", "b.b>=1.0",  # first`), and removing the first item leaves
+    `[ "d.d"]`, or moves its comment onto the bracket's line. uv has its
+    own code on top: it keeps comments, writes one entry per line with a
+    trailing comma, and turns a one-line array into a multi-line one on any
+    add (with a one-space indent after removing from a one-line array).
+    Adopting it means writing that layer, as uv did.
+  - **Tables**: a new `[project.sources]` goes right after `[project]`,
+    with a blank line before the next table; sources written as dotted keys
+    are added to and removed from in place, which `_toml_edit` refuses.
+  - **Speed**: an add, read to write, 0.003 ms on a small `alai.toml` and
+    1.0 ms on a 91 KB file, against `_toml_edit`'s 0.06 ms and 24 ms and
+    tomlkit's 0.16 ms and 58 ms, with no import beyond the extension.

@@ -458,7 +458,7 @@ def _parse_line(obj: dict[str, object], name: str) -> CollectionVersion:
         if not isinstance(dep_name, str) or not isinstance(req, str):
             raise ValueError(f"{vers}: each of 'deps' must have a 'name' and a 'req' string")
         try:
-            deps.append((collection_name(dep_name), VersionReq.parse_index(req)))
+            deps.append((_collection_name(dep_name), _requirement(req)))
         except ValueError as e:
             problems.append(f"dependency {dep_name}: {e}")
 
@@ -468,7 +468,7 @@ def _parse_line(obj: dict[str, object], name: str) -> CollectionVersion:
         if not isinstance(text, str):
             raise ValueError(f"{vers}: 'requires_ansible' must be a string")
         try:
-            requires_ansible = SpecifierSet(text)
+            requires_ansible = _specifier_set(text)
         except ValueError as e:
             problems.append(f"requires_ansible '{text}': {e}")
 
@@ -486,6 +486,34 @@ def _parse_line(obj: dict[str, object], name: str) -> CollectionVersion:
         upstream_conflict=upstream_conflict,
         problem="; ".join(problems) or None,
     )
+
+
+# Parsed once per distinct text: an index repeats the same few requirements across thousands of lines (sivel.acd's 130
+# index files: 14,523 dependency requirements, 711 distinct; 5,273 requires_ansible, 96 distinct), and what's parsed is
+# never changed, so it's shared. A text that fails isn't kept, so it raises again each time.
+_REQUIREMENTS: dict[str, VersionReq] = {}
+_SPECIFIER_SETS: dict[str, SpecifierSet] = {}
+_NAMES: set[str] = set()
+
+
+def _requirement(text: str) -> VersionReq:
+    req = _REQUIREMENTS.get(text)
+    if req is None:
+        req = _REQUIREMENTS[text] = VersionReq.parse_index(text)
+    return req
+
+
+def _specifier_set(text: str) -> SpecifierSet:
+    spec = _SPECIFIER_SETS.get(text)
+    if spec is None:
+        spec = _SPECIFIER_SETS[text] = SpecifierSet(text)
+    return spec
+
+
+def _collection_name(text: str) -> str:
+    if text not in _NAMES:
+        _NAMES.add(collection_name(text))
+    return text
 
 
 def _field(obj: dict[str, object], key: str, kind: type[_T]) -> _T:

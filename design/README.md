@@ -31,7 +31,8 @@ rather than `<index>:ns.name`, say), the decision here holds.
 - **Linux and macOS only.** alai doesn't run on Windows, as Ansible's
   control node doesn't, so the code has no Windows paths. macOS has code of
   its own (`clonefile`), so CI tests it too, with the oldest and newest
-  Python.
+  Python. Other Unix systems, such as the BSDs, aren't tested, but nothing
+  stops a build from the sdist; they have no clone, so `auto` hardlinks.
 
 ## Roadmap
 
@@ -43,15 +44,26 @@ Next (2026-10-22):
    collection whose metadata lives in `alai.toml` is how they'll work in a
    collection project. The open questions are in
    [collection-development.md](collection-development.md#open-questions).
+2. **Wheels for the native extension**, before the first release: the
+   workflow builds and tests manylinux2014 and musllinux wheels for x86_64
+   and aarch64, and macOS arm64 ones, and publishes them with the sdist in
+   one step ([performance.md](performance.md#shipping)); what's left is
+   seeing it run on GitHub, which couldn't be tried locally. With the first
+   release, add a short section on verifying a download to the install
+   docs: the `gh attestation verify` command from performance.md, and that
+   it works on a file from PyPI too, as attestations are keyed by the
+   file's SHA-256. Not before, as `docs/` describes only what works.
 
 Done on 2026-10-21: `alai run` and `alai env` ([run.md](run.md)), and
 collection projects
 ([collection-development.md](collection-development.md)); on 2026-10-22,
 path sources, plain and editable, tarballs by path or URL, and git
 repositories ([lockfile.md](lockfile.md#other-sources),
-[install.md](install.md#git-sources)), and `alai collection list`
-([list.md](list.md)), with what's left of those in each note's "Not done
-yet".
+[install.md](install.md#git-sources)), `alai collection list`
+([list.md](list.md)), and extracting and installing with a native
+extension, in Rust and required
+([performance.md](performance.md#the-native-extension)), with what's left
+of those in each note's "Not done yet".
 
 Shelved: `-r requirements.yml` ([requirements-file.md](requirements-file.md));
 what to ask users about it is in [user-questions.md](user-questions.md).
@@ -69,7 +81,7 @@ those items; change it with them.
 | [requirements-file.md](requirements-file.md) | Reading ansible-galaxy's `requirements.yml` for `-r`: its format, what uv does with sources in `requirements.txt`, the mapping proposed, and open questions. Shelved |
 | [install.md](install.md) | Installing locked collections: downloading artifacts, the extracted-collection cache, extraction as ansible-galaxy does it, what counts as installed, link modes and exact syncing |
 | [index-client.md](index-client.md) | Fetching and caching the index: the HTTP library, cache layout, revalidation, proxies, errors, and what `index.alai.sh` does |
-| [performance.md](performance.md) | Where the time goes, measured on `sivel.acd`: extraction, cloning, and the planned Rust extension and how it's packaged |
+| [performance.md](performance.md) | Where the time goes, measured on `sivel.acd`: extraction, cloning, the Rust extension and how alai ships with it |
 | [list.md](list.md) | `alai collection list`: what uv lists and where, comparing the directory with `alai.lock`, and the output |
 | [find.md](find.md) | `alai find`: searching the plugin index, ranking without download counts, probable copies, following routing as ansible-core does, and the output |
 | [output.md](output.md) | Verbosity, what goes to stdout and stderr, JSON, colour and progress |

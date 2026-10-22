@@ -62,11 +62,17 @@ and finds or downloads a Python 3.10 or later for it. To update to the
 latest source, run the same command with `--reinstall`; `uv tool upgrade`
 doesn't look for new commits. `uv tool uninstall alai` removes it.
 
+Part of alai is written in Rust, so installing from source compiles it:
+that needs Rust 1.88 or later, with `cargo` on your `PATH`
+([rustup](https://rustup.rs/) installs it), and takes a minute or so.
+alai runs on Linux and macOS.
+
 !!! note "Until alai is on PyPI"
 
     Installing from GitHub is temporary. Once alai is published on PyPI,
     `uv tool install alai` will install it, and `uv tool upgrade alai`
-    will update it.
+    will update it, from a ready-built wheel on most Linux and macOS
+    systems, so without Rust.
 
 ## A quick look
 

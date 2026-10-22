@@ -1,0 +1,21 @@
+# The Cargo workspace for alai's Rust, as cryptography lays it out: the crate is in src/rust, beside the Python package
+# in src/alai, and maturin builds it into that package (see pyproject.toml). From here cargo and rust-analyzer find it
+# without --manifest-path.
+[workspace]
+members = ["src/rust"]
+resolver = "3"
+
+[workspace.package]
+# alai's version, for the Python package as well as the crate: pyproject.toml takes it from here (dynamic = ["version"]),
+# through maturin. A pre-release is written as SemVer (0.1.0-alpha.1), which maturin turns into PEP 440 (0.1.0a1).
+version = "0.0.1"
+edition = "2024"
+# The highest of the dependencies': sha2 0.11.1 needs 1.88, pyo3 0.30 1.85. sha2 0.10 would allow 1.83, as cryptography
+# uses with pyo3 0.29, but has the AArch64 round-constant loads 0.11.1 fixed, unfixed there (RustCrypto/hashes#920).
+rust-version = "1.88"
+license = "MIT"
+
+# Only the workspace root's profiles apply.
+[profile.release]
+lto = true
+codegen-units = 1

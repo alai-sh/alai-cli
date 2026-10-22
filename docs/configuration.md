@@ -163,8 +163,8 @@ wrapper's or alias's own flags takes effect.
 
 ## Options that aren't settings
 
-These control where settings come from, or alai's output, so they have no
-`alai.toml` key:
+These control where settings come from, alai's output or a safety limit,
+so they have no `alai.toml` key:
 
 | Flag | Environment variable | |
 |---|---|---|
@@ -175,3 +175,4 @@ These control where settings come from, or alai's output, so they have no
 | `-q`, `--quiet` | none | Show only errors. Can't be combined with `-v` |
 | `--color <when>` | `NO_COLOR`, `FORCE_COLOR` | Colour the output: `auto` (the default) only when it goes to a terminal, `always` or `never`. With `auto`, a non-empty `NO_COLOR` turns colour off and a non-empty `FORCE_COLOR` turns it on; `NO_COLOR` wins if both are set |
 | `--no-progress` | `ALAI_NO_PROGRESS` | Don't draw progress while resolving, downloading or installing. Progress is only drawn when the output goes to a terminal that isn't `TERM=dumb`, and never with `-q` |
+| none | `ALAI_MAX_UNPACKED_SIZE` | The most a collection tarball may unpack to, in bytes, before alai refuses it: 536870912 (512 MiB) by default, about 20 times the largest published collection, so a small hostile tarball can't fill the disk; what a hard link copies and a symlink's checksum reads counts too. `0` is no limit. Only for a genuine collection that's larger |

@@ -12,23 +12,19 @@ from __future__ import annotations
 
 import collections.abc as _c
 import concurrent.futures
-import hashlib
-import json
 import os
-import posixpath
 import re
 import shutil
-import stat
-import tarfile
 import tempfile
 import threading
 import typing as _t
 
-from ._common import Error, Record
+from ._common import ConfigError, Error, Record, worker_threads
 from ._output import trace
 from ._semver import Version
 
 if _t.TYPE_CHECKING:
+    from . import _native
     from ._fetch import Fetcher
 
 LAYOUT = "collections-v1"
@@ -36,13 +32,15 @@ LAYOUT = "collections-v1"
 _CKSUM = re.compile(r"[0-9a-f]{64}")
 GZIP_MAGIC = b"\x1f\x8b"
 """The bytes every gzip file starts with (RFC 1952). A tarball source must be gzipped, as every collection build is, so
-one that isn't is refused before it's read or downloaded whole; tarfile could read other formats, if that's ever
-wanted."""
+one that isn't is refused before it's read or downloaded whole."""
 MAX_ARCHIVE_SIZE = 1 << 30
 """The most a tarball named by URL may download, with no size known beforehand: 1 GiB, far beyond any published
 collection, so a wrong or hostile response can't fill the disk."""
-_FILE_TYPES = frozenset((tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.LNKTYPE, tarfile.SYMTYPE))
-_DIR_TYPES = frozenset((tarfile.DIRTYPE, tarfile.SYMTYPE))
+MAX_UNPACKED_SIZE = 1 << 29
+"""The most a tarball may unpack to, extracted or not, unless ``ALAI_MAX_UNPACKED_SIZE`` says otherwise: 512 MiB, about
+20 times the largest of sivel.acd's 97 collections, so a small tarball can't fill the disk, or take hours to read. What
+a hard link copies, and a symlink's checksum reads, counts too, as each costs the tarball only a header."""
+MAX_UNPACKED_SIZE_ENV = "ALAI_MAX_UNPACKED_SIZE"
 
 
 class ArtifactError(Error):
@@ -82,11 +80,9 @@ class ArtifactCache:
     def __init__(self, cache_dir: str, fetcher: Fetcher | None = None) -> None:
         self.root = os.path.join(cache_dir, LAYOUT)
         self._fetcher = fetcher
-        # Read once, here, before any thread starts: reading the umask means setting it, which isn't thread-safe.
-        self._umask = _umask()
-        # One extraction at a time: it's CPU-bound Python, so under the GIL more at once is slower, not faster
-        # (13.3 s for 97 collections on 16 threads, 7.0 s on one). Downloads still run in parallel meanwhile.
-        self._extracting = threading.Lock()
+        self._limit = max_unpacked_size(os.environ)
+        # How many extract at once, for get and add as get_all's pool limits its own: see worker_threads.
+        self._extracting = threading.Semaphore(worker_threads())
 
     def path(self, cksum: str) -> str:
         """Where the collection with this artifact SHA-256 is, or would be, extracted."""
@@ -118,6 +114,16 @@ class ArtifactCache:
                 report(artifact, None)
 
     def _fetch(self, artifact: Artifact, target: str, report: Report) -> str:
+        work, tarball = self._download(artifact, report)
+        return self._unpack_download(artifact, work, tarball, target, report)
+
+    def _download(self, artifact: Artifact, report: Report) -> tuple[str, str]:
+        """Download ``artifact`` into a new work directory in the cache, checked against the lock: the directory and
+        the tarball in it, for ``_unpack_download``, which removes the directory."""
+        from ._fetch import FetchError
+
+        if self._fetcher is None:
+            raise ArtifactError(f"{artifact} isn't in the cache, and there's no fetcher to download it")
         try:
             os.makedirs(self.root, exist_ok=True)
             work = tempfile.mkdtemp(dir=self.root, prefix=".tmp-")
@@ -125,10 +131,6 @@ class ArtifactCache:
             raise ArtifactError(f"can't write to the cache at {self.root}: {e.strerror or e}") from None
         try:
             tarball = os.path.join(work, "artifact.tar.gz")
-            from ._fetch import FetchError
-
-            if self._fetcher is None:
-                raise ArtifactError(f"{artifact} isn't in the cache, and there's no fetcher to download it")
             report(artifact, "downloading")
             try:
                 digest, size = self._fetcher.download(artifact.url, tarball, max_size=artifact.size)
@@ -139,11 +141,19 @@ class ArtifactCache:
                     f"{artifact} from {artifact.url} doesn't match the lock: it has SHA-256 {digest} and "
                     + f"{size} bytes, where the lock has {artifact.cksum} and {artifact.size} bytes"
                 )
+        except BaseException:
+            shutil.rmtree(work, ignore_errors=True)
+            raise
+        report(artifact, "waiting")
+        return work, tarball
+
+    def _unpack_download(self, artifact: Artifact, work: str, tarball: str, target: str, report: Report) -> str:
+        """Extract ``artifact``'s downloaded ``tarball`` and rename it into place as ``target``, removing ``work``."""
+        try:
             extracted = os.path.join(work, "collection")
-            report(artifact, "waiting")
             with self._extracting:
                 report(artifact, "extracting")
-                extract(tarball, extracted, artifact.name, artifact.version, umask=self._umask)
+                extract(tarball, extracted, artifact.name, artifact.version, limit=self._limit)
             try:
                 os.rename(extracted, target)
             except OSError:
@@ -208,11 +218,10 @@ class ArtifactCache:
 
     def _unpack(self, tarball: str, work: str, target: str, shown: str) -> str:
         """Extract ``tarball``, said to be ``shown`` in messages, to ``target`` through ``work``."""
-        name, version = artifact_collection(tarball, shown)
         extracted = os.path.join(work, "collection")
         try:
             with self._extracting:
-                extract(tarball, extracted, name, version, umask=self._umask)
+                name, version = extract_any(tarball, extracted, shown, limit=self._limit)
             try:
                 os.rename(extracted, target)
             except OSError:
@@ -233,224 +242,126 @@ class ArtifactCache:
         from ._fetch import MAX_CONNECTIONS
 
         wanted = sorted(artifacts, key=lambda a: a.name)
-        with concurrent.futures.ThreadPoolExecutor(MAX_CONNECTIONS, thread_name_prefix="alai-artifact") as pool:
-            futures = {a.name: pool.submit(self.get, a, report) for a in wanted}
-        return {name: future.result() for name, future in futures.items()}
+        tell = report or _ignore
+
+        def fetch(artifact: Artifact) -> str | concurrent.futures.Future[str]:
+            target = self.path(artifact.cksum)
+            if os.path.isdir(target):
+                trace(f"{artifact}: cached at {target}")
+                tell(artifact, None)
+                return target
+            try:
+                work, tarball = self._download(artifact, tell)
+            except BaseException:
+                tell(artifact, None)
+                raise
+            return extractors.submit(unpack, artifact, work, tarball, target)
+
+        def unpack(artifact: Artifact, work: str, tarball: str, target: str) -> str:
+            try:
+                return self._unpack_download(artifact, work, tarball, target, tell)
+            finally:
+                tell(artifact, None)
+
+        # Downloads never wait on extraction: each hands its tarball to the extraction pool and takes the next. The
+        # download pool is shut down first, so every tarball is handed over before the extraction pool waits.
+        with (
+            concurrent.futures.ThreadPoolExecutor(worker_threads(), thread_name_prefix="alai-extract") as extractors,
+            concurrent.futures.ThreadPoolExecutor(MAX_CONNECTIONS, thread_name_prefix="alai-download") as pool,
+        ):
+            downloads = {a.name: pool.submit(fetch, a) for a in wanted}
+        # Every artifact has been attempted by now, so the first failure by name is the one raised.
+        paths: dict[str, str] = {}
+        for name, download in downloads.items():
+            result = download.result()
+            paths[name] = result if isinstance(result, str) else result.result()
+        return paths
 
 
-def artifact_collection(tarball: str, shown: str) -> tuple[str, Version]:
-    """The collection and version a tarball's ``MANIFEST.json`` names, for one whose collection isn't known yet, as
-    ansible-galaxy reads a tarball's (``_get_meta_from_tar``). ``shown`` is where it came from, for messages."""
+def extract(tarball: str, dest: str, name: str, version: Version, *, limit: int = MAX_UNPACKED_SIZE) -> None:
+    """Extract a collection artifact into the new directory ``dest``, as ``ansible-galaxy collection install`` does.
+
+    Only ``MANIFEST.json``, ``FILES.json`` and the entries ``FILES.json`` lists are extracted, each file checked
+    against its SHA-256 there, and ``MANIFEST.json`` must name this collection and version. Every path and symlink must
+    stay inside the collection, checked on disk as well as by name, since one symlink can lead another out. Files are
+    ``0644``, or ``0755`` if the tarball marks them executable, and directories ``0755``, both masked by the process
+    umask: not the tarball's own modes. More than ``limit`` bytes unpacked from the tarball is refused, counting what a
+    hard link copies and a symlink's checksum reads; 0 is no limit. The work is the extension's
+    (``_native.extract_collection``); the design is in ``design/performance.md``.
+    """
+    namespace, short = name.split(".")
+    _ = _extract(tarball, dest, limit, f"{name} {version}", (namespace, short, version.text))
+
+
+def extract_any(tarball: str, dest: str, shown: str, *, limit: int = MAX_UNPACKED_SIZE) -> tuple[str, Version]:
+    """Extract a collection tarball whose collection isn't known yet, as ``extract`` does, into the new directory
+    ``dest``: it's the one its ``MANIFEST.json`` names, returned, as ansible-galaxy reads a tarball's
+    (``_get_meta_from_tar``). ``shown`` is where it came from, for messages. The name and version are checked once it's
+    extracted, into a directory the caller discards on an error."""
     from ._manifest import collection_name
 
-    try:
-        with tarfile.open(tarball, "r:*") as tar:
-            member = tar.next()
-            # A build writes MANIFEST.json first, so this rarely reads further than the first member.
-            while member is not None and member.name != "MANIFEST.json":
-                member = tar.next()
-            if member is None:
-                raise ArtifactError(f"{shown} has no MANIFEST.json, so it isn't a built collection")
-            manifest = _read_json(tar, {"MANIFEST.json": member}, "MANIFEST.json", shown)
-    except (tarfile.TarError, EOFError, OSError) as e:
-        message = e.strerror if isinstance(e, OSError) and e.strerror else str(e)
-        raise ArtifactError(f"{shown} isn't a collection tarball: {message}") from None
-    info = manifest.get("collection_info")
-    info = _t.cast("dict[str, object]", info) if isinstance(info, dict) else {}
-    namespace, short, text = info.get("namespace"), info.get("name"), info.get("version")
-    if not isinstance(namespace, str) or not isinstance(short, str) or not isinstance(text, str):
-        raise ArtifactError(f"{shown}: MANIFEST.json's collection_info has no namespace, name and version")
+    namespace, short, text = _extract(tarball, dest, limit, shown, None)
     try:
         return collection_name(f"{namespace}.{short}"), Version(text)
     except ValueError as e:
         raise ArtifactError(f"{shown}: MANIFEST.json: {e}") from None
 
 
-def extract(tarball: str, dest: str, name: str, version: Version, *, umask: int) -> None:
-    """Extract a collection artifact into the new directory ``dest``, as ``ansible-galaxy collection install`` does.
+def _extract(
+    tarball: str, dest: str, limit: int, where: str, expected: tuple[str, str, str] | None
+) -> tuple[str, str, str]:
+    """``_native.extract_collection``, its errors as ``ArtifactError``s, ``where`` naming the collection in them."""
+    # Imported here, so commands that never extract don't load it.
+    from . import _native
 
-    Only ``MANIFEST.json``, ``FILES.json`` and the entries ``FILES.json`` lists are extracted, each file checked
-    against its SHA-256 there, and ``MANIFEST.json`` must name this collection and version. Every path and symlink must
-    stay inside the collection, checked on disk as well as by name, since one symlink can lead another out. Files are
-    ``0644``, or ``0755`` if the tarball marks them executable, and directories ``0755``, both masked by ``umask``: not
-    the tarball's own modes.
-    """
-    where = f"{name} {version}"
-    os.mkdir(dest, 0o755 & ~umask)
-    out = _Target(dest, umask, where)
     try:
-        with tarfile.open(tarball, "r:*") as tar:
-            # Looked up by name once: tarfile's getmember searches every member, each time it's called. The last of a
-            # repeated name wins, as getmember's does.
-            members = {m.name: m for m in tar.getmembers()}
-            _check_manifest(_read_json(tar, members, "MANIFEST.json", where), name, version, where)
-            entries = _files_json(_read_json(tar, members, "FILES.json", where), where)
-            wanted: list[tuple[tarfile.TarInfo, str, str, str | None]] = [
-                (_member(members, special, where), special, "file", None) for special in ("MANIFEST.json", "FILES.json")
-            ]
-            for entry_name, ftype, sha256 in entries:
-                if entry_name == ".":
-                    continue
-                _check_path(entry_name, where)
-                wanted.append((_member(members, entry_name, where), entry_name, ftype, sha256))
-            # In the order they're stored, so reading the compressed stream only ever moves forward: going back means
-            # decompressing again from the start.
-            for member, entry_name, ftype, sha256 in sorted(wanted, key=lambda w: w[0].offset):
-                if ftype == "dir":
-                    _extract_dir(member, entry_name, out)
-                else:
-                    _extract_file(tar, member, entry_name, out, sha256)
-        # A link made later can change where an earlier one leads, so each is checked again once all exist.
-        for entry_name, path in out.links:
-            _ = out.check_inside(path, entry_name)
-    except (tarfile.TarError, EOFError, OSError) as e:
-        # A truncated or corrupt gzip stream raises EOFError or OSError (BadGzipFile) rather than a TarError.
-        message = e.strerror if isinstance(e, OSError) and e.strerror else str(e)
-        raise ArtifactError(f"{where}: can't extract the artifact: {message}") from None
+        return _native.extract_collection(tarball, dest, limit, expected)
+    except _native.ExtractError as e:
+        kind, entry, _ = e.args
+        if expected is None and kind == "missing" and entry == "MANIFEST.json":
+            raise ArtifactError(f"{where} has no MANIFEST.json, so it isn't a built collection") from None
+        raise ArtifactError(f"{where}: {_message(e)}") from None
+    except OSError as e:
+        raise ArtifactError(f"{where}: can't extract the artifact: {e.strerror or e}") from None
 
 
-class _Target:
-    """Where an artifact is being extracted, and the symlinks made in it so far."""
-
-    def __init__(self, dest: str, umask: int, where: str) -> None:
-        self.dest = dest
-        self.real = os.path.realpath(dest)
-        self.umask = umask
-        self.where = where
-        self.links: list[tuple[str, str]] = []
-        self._plain: set[str] = set()
-        """Parent directories already checked whose path has no symlink in it, so can't later lead anywhere else."""
-
-    def path(self, entry: str) -> str:
-        """Where ``entry`` goes, its parent directories made and checked to resolve inside the collection on disk."""
-        path = os.path.join(self.dest, *entry.split("/"))
-        parent = os.path.dirname(path)
-        if parent not in self._plain:
-            os.makedirs(parent, 0o755 & ~self.umask, exist_ok=True)
-            if self.check_inside(parent, entry) == os.path.abspath(parent):
-                self._plain.add(parent)
-        return path
-
-    def check_inside(self, path: str, entry: str) -> str:
-        """Fail unless ``path`` resolves inside the collection on disk; return where it resolves to."""
-        real = os.path.realpath(path)
-        if real != self.real and not real.startswith(self.real + os.sep):
-            raise ArtifactError(
-                f"{self.where}: {entry} in the artifact leads outside the collection, through a symlink"
-            )
-        return real
-
-    def symlink(self, target: str, path: str, entry: str) -> None:
-        os.symlink(target, path)
-        self.links.append((entry, path))
+_MESSAGES = {
+    "corrupt": "can't extract the artifact: {detail}",
+    "missing": "the artifact doesn't contain {entry}, which FILES.json lists",
+    "not_file": "{entry} in the artifact isn't a file, as FILES.json says",
+    "not_dir": "{entry} in the artifact isn't a directory, as FILES.json says",
+    "path": "the artifact has a path outside the collection: {entry}",
+    "link": "{entry} in the artifact links outside the collection, to {detail}",
+    "escape": "{entry} in the artifact leads outside the collection, through a symlink",
+    "unreadable": "{entry} in the artifact can't be read",
+    "checksum": "{entry} in the artifact doesn't match its checksum in FILES.json",
+    "json": "{entry} in the artifact isn't valid JSON: {detail}",
+    "not_object": "{entry} in the artifact isn't a JSON object",
+    "manifest": "the artifact's MANIFEST.json is for {detail}",
+    "manifest_fields": "MANIFEST.json's collection_info has no namespace, name and version",
+    "files_list": "the artifact's FILES.json has no 'files' list",
+    "files_entry": "the artifact's FILES.json has an unreadable entry: {detail}",
+    "files_checksum": "the artifact's FILES.json has no checksum for {entry}",
+    "files_special": "the artifact's FILES.json lists {entry}, which a build never does",
+    "files_twice": "the artifact's FILES.json lists {entry} more than once, differently",
+    "too_large": (
+        "can't extract the artifact: it unpacks to more than {detail} bytes; set "
+        + MAX_UNPACKED_SIZE_ENV
+        + " to a larger number of bytes, or 0 for no limit, if it's genuine"
+    ),
+}
 
 
-def _umask() -> int:
-    mask = os.umask(0o022)
-    _ = os.umask(mask)
-    return mask
+def _message(e: _native.ExtractError) -> str:
+    kind, entry, detail = e.args
+    return _MESSAGES[kind].format(entry=entry, detail=detail)
 
 
-def _member(members: dict[str, tarfile.TarInfo], entry: str, where: str) -> tarfile.TarInfo:
-    try:
-        return members[entry]
-    except KeyError:
-        raise ArtifactError(f"{where}: the artifact doesn't contain {entry}, which FILES.json lists") from None
-
-
-def _read_json(tar: tarfile.TarFile, members: dict[str, tarfile.TarInfo], entry: str, where: str) -> dict[str, object]:
-    member = _member(members, entry, where)
-    stream = tar.extractfile(member) if member.isfile() else None
-    if stream is None:
-        raise ArtifactError(f"{where}: {entry} in the artifact isn't a file")
-    with stream:
-        try:
-            data = json.loads(stream.read())
-        except ValueError as e:
-            raise ArtifactError(f"{where}: {entry} in the artifact isn't valid JSON: {e}") from None
-    if not isinstance(data, dict):
-        raise ArtifactError(f"{where}: {entry} in the artifact isn't a JSON object")
-    return _t.cast("dict[str, object]", data)
-
-
-def _check_manifest(manifest: dict[str, object], name: str, version: Version, where: str) -> None:
-    info = manifest.get("collection_info")
-    info = _t.cast("dict[str, object]", info) if isinstance(info, dict) else {}
-    namespace, short = name.split(".")
-    found = (info.get("namespace"), info.get("name"), info.get("version"))
-    try:
-        same = found[:2] == (namespace, short) and isinstance(found[2], str) and Version(found[2]) == version
-    except ValueError:
-        same = False
-    if not same:
-        shown = ".".join(str(f) for f in found[:2]) + f" {found[2]}"
-        raise ArtifactError(f"{where}: the artifact's MANIFEST.json is for {shown}")
-
-
-def _files_json(files: dict[str, object], where: str) -> list[tuple[str, str, str | None]]:
-    """``(name, ftype, sha256)`` for each entry of a ``FILES.json``."""
-    entries = files.get("files")
-    if not isinstance(entries, list):
-        raise ArtifactError(f"{where}: the artifact's FILES.json has no 'files' list")
-    out: list[tuple[str, str, str | None]] = []
-    for entry in _t.cast("list[object]", entries):
-        fields = _t.cast("dict[str, object]", entry) if isinstance(entry, dict) else {}
-        entry_name, ftype, sha256 = fields.get("name"), fields.get("ftype"), fields.get("chksum_sha256")
-        if not isinstance(entry_name, str) or ftype not in ("file", "dir"):
-            raise ArtifactError(f"{where}: the artifact's FILES.json has an unreadable entry: {entry!r}")
-        if ftype == "file" and not isinstance(sha256, str):
-            raise ArtifactError(f"{where}: the artifact's FILES.json has no checksum for {entry_name}")
-        out.append((entry_name, _t.cast("str", ftype), sha256 if isinstance(sha256, str) else None))
-    return out
-
-
-def _check_path(entry: str, where: str) -> None:
-    """Refuse a path that isn't plainly inside the collection: absolute, or with an empty, ``.`` or ``..`` part."""
-    if entry.startswith("/") or "\\" in entry or any(part in ("", ".", "..") for part in entry.split("/")):
-        raise ArtifactError(f"{where}: the artifact has a path outside the collection: {entry}")
-
-
-def _check_link(member: tarfile.TarInfo, entry: str, where: str) -> None:
-    target = posixpath.normpath(posixpath.join(posixpath.dirname(entry), member.linkname))
-    if member.linkname.startswith("/") or target == ".." or target.startswith("../"):
-        raise ArtifactError(f"{where}: {entry} in the artifact links outside the collection, to {member.linkname}")
-
-
-def _extract_dir(member: tarfile.TarInfo, entry: str, out: _Target) -> None:
-    where = out.where
-    if member.type not in _DIR_TYPES:
-        raise ArtifactError(f"{where}: {entry} in the artifact isn't a directory, as FILES.json says")
-    path = out.path(entry)
-    if member.issym():
-        _check_link(member, entry, where)
-        out.symlink(member.linkname, path, entry)
-    elif not os.path.isdir(path):
-        os.mkdir(path, 0o755 & ~out.umask)
-
-
-def _extract_file(tar: tarfile.TarFile, member: tarfile.TarInfo, entry: str, out: _Target, sha256: str | None) -> None:
-    where = out.where
-    if member.type not in _FILE_TYPES:
-        raise ArtifactError(f"{where}: {entry} in the artifact isn't a file, as FILES.json says")
-    if member.issym():
-        _check_link(member, entry, where)
-    path = out.path(entry)
-    # A symlink's checksum in FILES.json is of the file it points to, as ansible-galaxy checks it.
-    stream = tar.extractfile(member)
-    if stream is None:
-        raise ArtifactError(f"{where}: {entry} in the artifact can't be read")
-    digest = hashlib.sha256()
-    with stream:
-        if member.issym():
-            while chunk := stream.read(1024 * 1024):
-                digest.update(chunk)
-            out.symlink(member.linkname, path, entry)
-        else:
-            with open(path, "xb") as written:
-                while chunk := stream.read(1024 * 1024):
-                    digest.update(chunk)
-                    _ = written.write(chunk)
-            mode = 0o755 if stat.S_IMODE(member.mode) & stat.S_IXUSR else 0o644
-            os.chmod(path, mode & ~out.umask)
-    if sha256 is not None and digest.hexdigest() != sha256:
-        raise ArtifactError(f"{where}: {entry} in the artifact doesn't match its checksum in FILES.json")
+def max_unpacked_size(environ: _c.Mapping[str, str]) -> int:
+    """The most a tarball may unpack to, in bytes, from ``ALAI_MAX_UNPACKED_SIZE`` (0 for no limit) or the default."""
+    value = environ.get(MAX_UNPACKED_SIZE_ENV) or ""
+    if not value:
+        return MAX_UNPACKED_SIZE
+    if not value.isdigit():
+        raise ConfigError(f"{MAX_UNPACKED_SIZE_ENV}: expected a number of bytes, or 0 for no limit, got '{value}'")
+    return int(value)

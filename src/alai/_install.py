@@ -14,14 +14,12 @@ from __future__ import annotations
 import collections.abc as _c
 import contextlib
 import errno
-import fcntl
 import glob
 import json
 import os
 import secrets
 import shutil
-import stat
-import sys
+import threading
 
 from ._common import Error, Record
 from ._config import LinkMode
@@ -34,9 +32,6 @@ _RECORDS = ".alai"
 """The directory in ``ansible_collections`` holding a record of where each collection installed from a source other
 than an index came from, as uv's ``direct_url.json``: hidden, so neither Ansible nor ``installed`` takes it for a
 namespace."""
-_FICLONE = 0x40049409
-"""Linux's ``FICLONE`` ioctl, ``_IOW(0x94, 9, int)``, as x86 and ARM encode it, for Pythons before 3.12 that don't
-have ``fcntl.FICLONE``. Architectures that encode it differently (powerpc, mips, sparc) fall back from cloning there."""
 
 
 class InstallError(Error):
@@ -180,10 +175,7 @@ def place(
     parent = os.path.join(namespaces_dir(collections_dir), namespace)
     target = os.path.join(parent, short)
     try:
-        if os.path.islink(parent):
-            # Never written through: the namespace becomes a real directory here, and what it pointed at is left.
-            unlink_namespace(parent)
-        os.makedirs(parent, exist_ok=True)
+        _ = namespace_dir(collections_dir, namespace)
         _remove_leftovers(parent, short)
         temp = os.path.join(parent, f"{_TEMP}new-{short}-{secrets.token_hex(4)}")
         try:
@@ -203,6 +195,17 @@ def place(
     except OSError as e:
         raise InstallError(f"can't install {name} to {target}: {_reason(e)}") from None
     trace(f"{name}: installed to {target} from {source}")
+
+
+def namespace_dir(collections_dir: str, namespace: str) -> str:
+    """The namespace's directory, made if it isn't there. A namespace that's a symlink is never written through: it
+    becomes a real directory here, and what it pointed at is left. Called for each namespace before installing on
+    several threads, so no two threads replace the same link."""
+    parent = os.path.join(namespaces_dir(collections_dir), namespace)
+    if os.path.islink(parent):
+        unlink_namespace(parent)
+    os.makedirs(parent, exist_ok=True)
+    return parent
 
 
 def write_record(collections_dir: str, name: str, record: dict[str, object] | None) -> None:
@@ -307,50 +310,58 @@ class Linker:
 
     ``auto`` tries a clone, then a hardlink, then a copy, and keeps to the first that works for the rest of the run,
     as uv does; falling back to a copy warns once, since it's slower and uses more disk. Any other mode fails rather
-    than fall back.
+    than fall back. The tree is made by the extension (``_native.link_tree``), with the GIL released, so collections
+    install on several threads at once.
     """
 
     def __init__(self, mode: LinkMode) -> None:
         self.mode = mode
         self._auto = [LinkMode.CLONE, LinkMode.HARDLINK, LinkMode.COPY] if mode is LinkMode.AUTO else [mode]
+        # Collections are installed on several threads, which share what auto has fallen back to.
+        self._lock = threading.Lock()
 
     def tree(self, source: str, dest: str) -> None:
         """Recreate the directory ``source`` as ``dest``: directories and symlinks as they are, files linked."""
-        os.mkdir(dest, stat.S_IMODE(os.stat(source).st_mode))
-        for directory, dirs, files in os.walk(source):
-            relative = os.path.relpath(directory, source)
-            target_dir = dest if relative == "." else os.path.join(dest, relative)
-            for name in dirs + files:
-                src = os.path.join(directory, name)
-                dst = os.path.join(target_dir, name)
-                if os.path.islink(src):
-                    os.symlink(os.readlink(src), dst)
-                elif name in dirs:
-                    os.mkdir(dst, stat.S_IMODE(os.stat(src).st_mode))
-                else:
-                    self.file(src, dst)
-            # os.walk doesn't descend into symlinked directories, which were recreated as links above.
-            dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(directory, d))]
+        while not self._tree(source, dest):
+            pass
 
-    def file(self, source: str, dest: str) -> None:
-        while True:
-            mode = self._auto[0]
-            try:
-                _LINKS[mode](source, dest)
+    def _tree(self, source: str, dest: str) -> bool:
+        """Link the tree in the current mode: True if it's done, False if that mode failed and another is to try, with
+        the partial ``dest`` removed."""
+        mode = self._auto[0]
+        try:
+            _link_tree(source, dest, mode.value)
+        except OSError as e:
+            self._fall_back(mode, e, e.filename or source)
+            _rmtree(dest)
+            return False
+        return True
+
+    def _fall_back(self, mode: LinkMode, error: OSError, source: str) -> None:
+        """Move on from ``mode``, which failed for ``source``, to the next way to link, or raise if there isn't one
+        or the failure isn't one the next could avoid."""
+        with self._lock:
+            if self._auto[0] is not mode:
+                # Another thread has already moved on from it.
                 return
-            except OSError as e:
-                if len(self._auto) == 1 or e.errno in (errno.ENOENT, errno.ENOSPC, errno.EDQUOT):
-                    if self.mode is LinkMode.AUTO:
-                        raise
-                    raise OSError(e.errno, f"can't {mode.value} {source}: {_reason(e)}") from None
-                _ = self._auto.pop(0)
-                fallback = self._auto[0]
-                message = f"can't {mode.value} files from the cache ({_reason(e)}); using {fallback.value} instead"
-                if fallback is LinkMode.COPY:
-                    warn(f'{message}, which is slower and uses more disk; set link_mode = "copy" to silence this')
-                else:
-                    debug(message)
-                _remove_partial(dest)
+            if len(self._auto) == 1 or error.errno in (errno.ENOENT, errno.ENOSPC, errno.EDQUOT):
+                if self.mode is LinkMode.AUTO:
+                    raise error
+                raise OSError(error.errno, f"can't {mode.value} {source}: {_reason(error)}") from None
+            _ = self._auto.pop(0)
+            fallback = self._auto[0]
+        message = f"can't {mode.value} files from the cache ({_reason(error)}); using {fallback.value} instead"
+        if fallback is LinkMode.COPY:
+            warn(f'{message}, which is slower and uses more disk; set link_mode = "copy" to silence this')
+        else:
+            debug(message)
+
+
+def _link_tree(source: str, dest: str, mode: str) -> None:
+    """``_native.link_tree``, imported here, so commands that never install don't load it."""
+    from . import _native
+
+    _native.link_tree(source, dest, mode)
 
 
 def current_umask() -> int:
@@ -359,49 +370,6 @@ def current_umask() -> int:
     mask = os.umask(0o022)
     _ = os.umask(mask)
     return mask
-
-
-def _clone(source: str, dest: str) -> None:
-    if sys.platform == "darwin":
-        import ctypes
-
-        libc = ctypes.CDLL(None, use_errno=True)
-        if libc.clonefile(os.fsencode(source), os.fsencode(dest), 0) != 0:
-            code = ctypes.get_errno()
-            raise OSError(code, os.strerror(code))
-    elif sys.platform == "linux":
-        with open(source, "rb") as src, open(dest, "xb") as dst:
-            _ = fcntl.ioctl(dst.fileno(), _ficlone(), src.fileno())
-        shutil.copymode(source, dest)
-    else:
-        raise OSError(errno.EOPNOTSUPP, "cloning isn't supported on this platform")
-
-
-def _ficlone() -> int:
-    """The ``FICLONE`` request: Python's own from 3.12, which is right for every architecture, else x86 and ARM's."""
-    request: int = getattr(fcntl, "FICLONE", _FICLONE)
-    return request
-
-
-def _hardlink(source: str, dest: str) -> None:
-    os.link(source, dest)
-
-
-def _copy(source: str, dest: str) -> None:
-    _ = shutil.copyfile(source, dest)
-    shutil.copymode(source, dest)
-
-
-def _symlink(source: str, dest: str) -> None:
-    os.symlink(os.path.abspath(source), dest)
-
-
-_LINKS: dict[LinkMode, _c.Callable[[str, str], None]] = {
-    LinkMode.CLONE: _clone,
-    LinkMode.HARDLINK: _hardlink,
-    LinkMode.COPY: _copy,
-    LinkMode.SYMLINK: _symlink,
-}
 
 
 def _manifest_version(path: str) -> Version | None:
@@ -442,11 +410,6 @@ def _remove_galaxy_info(collections_dir: str, name: str) -> None:
     pattern = os.path.join(glob.escape(namespaces_dir(collections_dir)), f"{glob.escape(name)}-*.info")
     for path in glob.glob(pattern):
         _rmtree(path)
-
-
-def _remove_partial(path: str) -> None:
-    with contextlib.suppress(FileNotFoundError):
-        os.remove(path)
 
 
 def _rmtree(path: str, *, missing_ok: bool = True) -> None:

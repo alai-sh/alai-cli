@@ -1,0 +1,7 @@
+# The Rust that builds and checks alai, pinned so the same commit builds the same wheels: rustup reads this, and so does
+# maturin's GitHub action inside its build containers. The oldest Rust alai builds with is Cargo.toml's rust-version,
+# which CI checks separately. Move it forward by hand, to a current stable release.
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

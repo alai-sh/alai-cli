@@ -7,6 +7,7 @@ and ``_manifest``."""
 from __future__ import annotations
 
 import collections.abc as _c
+import os
 import re
 
 NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
@@ -15,6 +16,19 @@ NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
 
 class Error(Exception):
     """A failure to report to the user as ``error: <message>``, without a traceback."""
+
+
+MAX_THREADS = 4
+"""The most extracting, and the most installing, at once, or one per CPU if there are fewer: both write to the disk,
+and more writers only contend there. On a 16-thread machine with btrfs, sivel.acd cold took 6.09 s with 16 of each,
+5.15 s with 4 and 5.05 s with 2, and 4 was the best warm and for the largest collections; on a 6-CPU VM with XFS, 2 and
+3 beat 6. Only on tmpfs did more win (1.45 s with 16 against 1.65 s with 4). The details are in
+design/performance.md."""
+
+
+def worker_threads() -> int:
+    """How many artifacts extract, and how many collections install, at once: see ``MAX_THREADS``."""
+    return min(os.cpu_count() or 1, MAX_THREADS)
 
 
 class ConfigError(Error):
