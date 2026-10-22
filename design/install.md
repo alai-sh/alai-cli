@@ -23,7 +23,13 @@ with its logic in `src/alai/_sync.py`. The user documentation is
   wheels rather than the archives. The extracted directory is renamed into
   place, so it exists only when complete; if another alai renamed the same
   artifact in first, theirs is used. `-v1` changes if what's extracted, or
-  how, ever does, rather than reusing a layout older alai wrote.
+  how, ever does, rather than reusing a layout older alai wrote. Nothing
+  is fsynced before the rename (decided with the user, 2026-10-23): on a
+  power loss the cache can keep a renamed-in entry whose files are
+  truncated, trusted from then on, as uv's cache can; an fsync of every
+  extracted file would cost more than extraction on a real disk, and the
+  remedy is deleting the entry, or the cache, by hand until a cache
+  command exists.
 - **Extraction is ansible-galaxy's** (`install_artifact` in ansible-core),
   so an installed collection is the same either way. Checked on 2026-10-20
   against `ansible-galaxy collection install` of the same tarballs for
@@ -36,9 +42,49 @@ with its logic in `src/alai/_sync.py`. The user documentation is
     tarball is left out.
   - `MANIFEST.json` must name the locked namespace, name and version, so a
     wrong artifact behind the right checksum (an index error) is caught.
+  - The last member of a repeated name is the only one read and
+    extracted, as ansible-galaxy's `getmember` finds it: some published
+    collections replace a file, `MANIFEST.json` included, by appending it
+    with `tar -r`, which leaves the original in place before it. A
+    replaced `FILES.json` decides what's extracted, so a member it lists
+    that the first didn't is extracted, and one it drops isn't. A member
+    of a name written earlier isn't replaced in place, as a file written
+    through an earlier symlink of the replaced name would stay where that
+    led: only the last member of each name is ever extracted.
+  - `FILES.json` listing a name twice is the same entry if both agree, and
+    refused if they don't, as one of them can't match. Listing
+    `MANIFEST.json` or `FILES.json` is refused: a build never does
+    (ansible-core 2.22.0rc1's `_build_files_manifest_distlib` excludes both,
+    as does its directory walk), and neither could be listed with a checksum
+    that matches, as `FILES.json` would hold its own, or `MANIFEST.json`'s,
+    which holds `FILES.json`'s. `install_artifact` would extract one again
+    and fail on the checksum. A name that isn't UTF-8, which JSON can spell
+    as a lone surrogate, makes `FILES.json` invalid JSON to `serde_json`,
+    which parses it, so it's refused as that.
+  - A member tar readers don't agree on makes the whole tarball corrupt
+    (decided with the user, 2026-10-23), listed or not, so alai sees the
+    members ansible-galaxy would. Two kinds, tested with Python 3.15's
+    `tarfile`, GNU tar and the `tar` crate on 2026-10-23: a name ending in
+    `/` that isn't a directory (`tarfile` reads an old-style V7 regular
+    file, type `'\0'`, named `d/` as the directory `d`, but not one of type
+    `'0'`, nor one after a GNU long name, and it drops the `/` from a pax
+    name of any type), and a directory, link or device whose header
+    declares content (`tarfile` and GNU tar read what follows as the next
+    member, while the `tar` crate skips it, so a member could be shown to
+    one and hidden from the other). So is a pax global header that sets
+    anything but `comment`, whose keys `tarfile` applies to every later
+    member and the `tar` crate ignores; one of only `comment`, as
+    `git archive` writes, is allowed ([performance.md](performance.md#the-native-extension)).
+    A build never makes any of them, as ansible-galaxy writes directories
+    as type `'5'` with no content, and no global header. Refused
+    rather than matched to `tarfile`, whose reading changes between Python
+    versions; relax it if a published collection turns out to need it.
+  - Only gzip: a collection build is always gzipped, and URL and local
+    tarball sources are refused unless they start with gzip's magic bytes.
   - Files are `0644`, or `0755` when the tarball marks them executable for
     the owner; directories are `0755`. ansible-galaxy sets those modes
-    exactly; here they're masked by the umask, as the cache note in
+    exactly; here they're masked by the process umask, as the kernel
+    applies it to each `open` and `mkdir` and as the cache note in
     [index-client.md](index-client.md) asks, so a `077` umask keeps the
     cache private. Cached files are hardlinked into `collections/` later,
     so these are the installed modes too; the cache's own index files stay
@@ -49,10 +95,22 @@ with its logic in `src/alai/_sync.py`. The user documentation is
   directory, is absolute or climbs out. That isn't enough on its own: links
   chain, so `a -> .` and `s -> a/..` each pass by name while `s` is the
   collection's parent on disk. So the parent of every entry is resolved
-  with `realpath` before writing, as ansible-galaxy's `_is_child_path`
-  does, and every link is resolved again once all exist, since a later link
-  can change where an earlier one leads. Device files, FIFOs and anything
-  but files, directories, hardlinks and symlinks are refused.
+  with `realpath` before writing, and every link is resolved again once all
+  exist, since a later link can change where an earlier one leads. Device
+  files, FIFOs and anything but files, directories, hardlinks and symlinks
+  are refused.
+  - Where alai and ansible-galaxy differ on links, tested on 2026-10-23
+    with ansible-galaxy 2.21.5: a symlink or hardlink to a member
+    `FILES.json` doesn't list is refused, where ansible-galaxy hashes or
+    copies that member from the tarball (installing the symlink dangling,
+    as its target isn't extracted); a symlink through another, such as
+    `f -> d/t` with `d -> sub`, is read on disk and allowed, where
+    ansible-galaxy looks for a member named `d/t` and fails; an absolute
+    target is refused even inside the collection, which ansible-galaxy
+    allows; and a hardlink to a member stored after it is copied (below).
+    A build never makes any of these: it stores a symlink as a direct
+    relative path to its real target, and a hardlink only to a file stored
+    before it.
 - **The cache is trusted after extraction**, as uv trusts its own. Tested
   with uv 0.13 and a scratch `UV_CACHE_DIR` on 2026-10-20: after editing a
   cached package's file, `uv sync`, `uv sync --reinstall` and
@@ -60,18 +118,66 @@ with its logic in `src/alai/_sync.py`. The user documentation is
   clearing the cache helps. The docs already say alai trusts its cache and
   that a `cache_dir` outside the home directory is the user's to restrict
   (see [index-client.md](index-client.md)).
-- **Downloads run in parallel, extraction one at a time**: up to the
-  fetcher's 16 connections download at once, but extracting is CPU-bound
-  Python, so under the GIL more at once is slower. Every artifact is
-  attempted; when several fail, the first by name is reported. The
-  measurements are in [performance.md](performance.md#extraction).
-- **Extraction looks members up once and reads forward**: a dict of
-  members built once, rather than `tarfile`'s `getmember`, which searches
-  every member on each call; members taken in the order they're stored, so
-  the gzip stream only moves forward; and a parent directory with no
-  symlink in its path checked once (one that has a link is checked every
-  time, as a later link could redirect it). See
+- **Downloads run in parallel, extraction up to four at once**: up to the
+  fetcher's 16 connections download at once, on a pool of their own that
+  hands each tarball to the extraction pool, so a download never waits for
+  an extraction. Up to four extract at once (`_common.MAX_THREADS`, or one
+  per CPU if fewer), as the extension
+  ([performance.md](performance.md#the-native-extension)) releases the GIL
+  and more only contend for the disk. Every artifact is attempted; when
+  several fail, the first by name is reported. The measurements are in
   [performance.md](performance.md#extraction).
+- **Extraction reads the tarball twice**, front to back: once for its
+  headers and its `MANIFEST.json` and `FILES.json`, checked before anything
+  is written, then to write the last member of each listed name; how is in
+  [performance.md](performance.md#the-native-extension). A symlink's
+  checksum, and a hardlink's content, are read from disk once every member
+  is written and every link checked again, as what it points to can come
+  later; a hardlink is a copy of a listed file, never of an unlisted one or
+  of anything outside. That's laxer than `tarfile` in one way, left so
+  (decided with the user, 2026-10-23): a hardlink to a member stored after
+  it is copied, where `tarfile`, and so ansible-galaxy, fails with
+  "linkname not found", as tar means a hard link to an earlier member. It
+  can't reach anything a listed file can't, and the copy is checked
+  against its checksum; refusing it is a small change to `write` if
+  matching ansible-galaxy matters. A parent directory with no
+  symlink in its path is checked once (one that has a link is checked
+  every time, as a later link could redirect it), with one `lstat` when
+  its own parent is known to have none, and compared with where it would
+  be under the resolved destination, as the cache's own path may go
+  through a link (`~/.cache` on another disk, or macOS's `/var`), which
+  until 2026-10-23 meant no parent was ever taken as plain.
+- **A tarball may unpack to 512 MiB** (`MAX_UNPACKED_SIZE`), counting
+  every byte decompressed, extracted or not (decided with the user,
+  2026-10-22), and every byte a hard link's copy or a symlink's checksum
+  reads back from disk (2026-10-23). A listed file can be any size, as its
+  checksum is the artifact's own to give, so without a cap a tarball of a
+  few megabytes, well under the 1 GiB download cap, could unpack to enough
+  to fill the disk, and unlisted padding could take hours to read through.
+  A link costs the tarball a 512-byte header, so without counting what it
+  copies or reads, a tarball under the cap could write the same large file
+  thousands of times over, or read it for hours: measured before the
+  change, an 8.7 KB tarball of one 4 MiB file and 200 hard links to it
+  wrote 804 MiB under an 8 MiB limit. ansible-galaxy has no cap, and
+  copies a hard link and reads a symlink's target the same way. 512 MiB is about 20 times the largest of
+  sivel.acd's 97 collections (cisco.dnac 6.31.3, 25 MB), and a power of
+  two like the download cap; the user suggested 500 MB. It costs nothing
+  measurable (97 collections: 1.78 s on one thread, 0.44 s on six).
+  `ALAI_MAX_UNPACKED_SIZE`, in bytes, raises it, or `0` lifts it, as an
+  escape hatch if a genuine collection ever passes it; read when the
+  cache is made, so a bad value fails before anything downloads. An
+  environment variable only, with no `alai.toml` key for now. uv 0.13.0
+  has no such limit; its nearest escape hatch is
+  `UV_INSECURE_NO_ZIP_VALIDATION`.
+- **What a hostile artifact can't do is tested** in
+  `tests/test_extract_safety.py`, with a file
+  beside and above the collection that must stay untouched: appended
+  members in every order, unlisted members and symlinks, paths and links
+  leading out by name or through chains on disk, circular and dangling
+  links, hardlinks, special files, and setuid, setgid and sticky modes,
+  which are dropped. `tarfile` itself crashed on a dangling link
+  (`KeyError`) or a circular one (`RecursionError`) listed as a file,
+  which reading from disk replaced.
 
 - **What's installed is read from each collection's `MANIFEST.json`**, as
   uv reads each package's installed metadata, with no record of alai's
@@ -163,13 +269,14 @@ with its logic in `src/alai/_sync.py`. The user documentation is
   that the same number was btrfs's `BTRFS_IOC_CLONE`) and a filesystem with
   reflinks (btrfs, XFS with `reflink=1`, the `mkfs.xfs` default since
   xfsprogs 5.1, bcachefs, OCFS2, NFS 4.2 where the server clones), and
-  nothing from the C library: `fcntl.ioctl` passes the number through. The
-  number is `_IOW(0x94, 9, int)`: Python 3.12's `fcntl.FICLONE` is used
-  when it exists, else `0x40049409`, as x86 and ARM encode it. alpha, mips,
-  parisc, powerpc and sparc encode `_IOW` differently (`0x80049409`), so on
-  Python 3.10 and 3.11 there the clone fails and `auto` hardlinks; that's
-  best effort, fixed by a newer Python or another `link_mode`, rather than a
-  table of architectures. Anything else fails with
+  nothing from the C library but the `ioctl` call. The number is
+  `_IOW(0x94, 9, int)`, which architectures encode differently
+  (`0x40049409` on most, `0x80049409` on PowerPC, MIPS and SPARC, whose
+  direction field is wider), so it's the `libc` crate's `FICLONE`, encoded
+  for the target, rather than a constant (until 2026-10-23 it was
+  `0x40049409`, so a clone there would have failed and `auto` hardlinked).
+  Alpha and PA-RISC, the other two, have no Rust standard library for
+  Linux. Anything else fails with
   `EOPNOTSUPP`, `ENOTTY`, `EINVAL` or `EXDEV`, and `auto` moves on to
   hardlinks. Directories and symlinks are recreated, not
   linked. Measured on XFS for ansible.posix, ansible.windows and
@@ -601,8 +708,7 @@ and `{ url = "<url>" }` ([lockfile.md](lockfile.md#tarballs)), and
   like any download.
 - **URLs are downloaded in parallel while locking**, up to the fetcher's
   16 connections, as `sync` downloads artifacts, through one
-  `ArtifactCache` made before the threads start, since reading the umask
-  isn't thread-safe and its lock keeps extraction to one at a time. The
+  `ArtifactCache`, which limits how many extract at once. The
   results are taken in order by name, so when several fail, the first by
   name is reported (`read_archives`).
 - **A URL with no size known** stops at 1 GiB (`MAX_ARCHIVE_SIZE`), for the
@@ -903,8 +1009,9 @@ own:
   requirements file, as `uv pip install -r requirements.txt` takes pip's:
   shelved, see [requirements-file.md](requirements-file.md).
 
-- **Speed**: replacing `tarfile` with a native extension, and making
-  clones cheaper; see [performance.md](performance.md).
+- **Speed**: what's left after the native extension, such as installing
+  each collection as soon as it's extracted, and a parsed index cache, is
+  in [performance.md](performance.md).
 - **Verifying against `FILES.json` later.** Every published collection
   carries a SHA-256 for each file. An `alai cache verify` command, or
   `--verify` on `sync`, could check cached or installed collections against

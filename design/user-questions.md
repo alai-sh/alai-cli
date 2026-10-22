@@ -5,6 +5,40 @@ questions only users can answer. Each says what alai does today, the
 alternative, and what to ask; the reasoning is in the note linked. When one
 is settled, record it as a decision there and remove it here.
 
+## Rust to install from source
+
+**Today:** part of alai is Rust, built into the package, with no
+pure-Python fallback (2026-10-22). Installing from a wheel needs nothing
+more; installing from source, as from GitHub now, or from PyPI on a
+platform with no wheel, needs Rust 1.88 or later. Wheels are built for
+Linux x86_64 and aarch64 (glibc 2.17 and later, and musl) and macOS arm64;
+anything else builds from source: 32-bit x86 and ARM, ppc64le, s390x,
+riscv64, Intel macOS, the BSDs, illumos and AIX. The reasoning is in
+[performance.md](performance.md#shipping).
+
+**The alternatives:** a pure-Python fallback, slower and a second
+implementation of every rule; or a lower minimum Rust, through older
+releases of the crates, so distributions' own Rust builds it (Debian 12
+has 1.63, Ubuntu 24.04 1.75 by default): 1.83 was possible, with an
+unfixed bug in `sha2` 0.10's AArch64 code, and lower only with `pyo3`
+releases that have security advisories.
+
+**Ask:** is anyone running alai where there's no wheel and no recent Rust,
+and would a distribution's own Rust building it matter to them?
+
+## How much a collection may unpack to
+
+**Today:** a collection tarball that unpacks to more than 512 MiB is
+refused, unless `ALAI_MAX_UNPACKED_SIZE` raises the limit or `0` lifts it
+(2026-10-22). The reasoning is in [install.md](install.md).
+
+**The alternatives:** a higher or lower default; an `alai.toml` key as well,
+for a project that needs a large collection; no limit, as ansible-galaxy
+has none.
+
+**Ask:** has anyone got a collection near that size, and would they rather
+set the limit per project than per environment?
+
 ## Collections whose version can't be read
 
 **Today:** a collection with no `MANIFEST.json`, such as a source checkout

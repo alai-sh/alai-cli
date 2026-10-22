@@ -1,10 +1,12 @@
 [build-system]
-requires = ["uv_build>=0.13,<0.14"]
-build-backend = "uv_build"
+# alai has native code, in src/rust/, built into the package as alai._native; the floor is the release tested.
+requires = ["maturin>=1.15,<2"]
+build-backend = "maturin"
 
 [project]
 name = "alai"
-version = "0.0.1"
+# From the workspace's Cargo.toml, through maturin, so the Python package and the crate share one version.
+dynamic = ["version"]
 description = "A fast package and environment manager for Ansible collections."
 readme = "README.md"
 license = "MIT"
@@ -72,7 +74,24 @@ docs = [
 # Rebuild/reinstall the project when source files change (or are deleted),
 # not just when pyproject.toml changes. Without this, tox envs keep stale
 # copies of removed modules in site-packages which show up in coverage.
-cache-keys = [{ file = "pyproject.toml" }, { file = "src/**/*.py" }]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "src/**/*.py" },
+    { file = "src/**/*.pyi" },
+    { file = "Cargo.toml" },
+    { file = "Cargo.lock" },
+    { file = "src/rust/Cargo.toml" },
+    { file = "src/rust/src/**/*.rs" },
+]
+
+[tool.maturin]
+# The Rust crate is in src/rust/, built as the extension module alai._native inside the Python package in src/alai/,
+# as cryptography lays it out; only that package goes into the wheel, not the Rust.
+manifest-path = "src/rust/Cargo.toml"
+module-name = "alai._native"
+python-source = "src"
+python-packages = ["alai"]
+features = ["pyo3/extension-module"]
 
 [tool.basedpyright]
 include = ["src"]
@@ -81,6 +100,9 @@ exclude = ["tests"]
 reportAny = false
 # typing.override is 3.12+, and the 3.10 floor would need typing_extensions for it.
 reportImplicitOverride = false
+# alai._native is built from src/rust/, typed by its stub; the built module is only in src/alai/ once uv sync has
+# built it there, not in CI, where tox installs alai into its own environment.
+reportMissingModuleSource = false
 reportPrivateUsage = false
 reportUnannotatedClassAttribute = false
 reportUnknownArgumentType = false
@@ -181,6 +203,8 @@ legacy_tox_ini = """
 env_list =
     sanity
     py3{10,11,12,13,14,15}-tests
+    # Free-threaded, for the wheels built for them: cp314t, and cp315-abi3.abi3t, which 3.15t loads.
+    py3{14,15}t-tests
 min_version = 4.0
 
 [testenv]
@@ -196,12 +220,16 @@ set_env =
     tests: PROJECT_ROOT={toxinidir}
 
 commands_pre =
-    tests: python -c 'import pathlib; pathlib.Path("{env_site_packages_dir}/cov.pth").write_text("import coverage; coverage.process_startup()")'
+    # The interpreter's own site-packages, not tox's {env_site_packages_dir}, which leaves out a free-threaded build's
+    # "t" (lib/python3.14t/site-packages).
+    tests: python -c 'import pathlib, sysconfig; pathlib.Path(sysconfig.get_path("purelib"), "cov.pth").write_text("import coverage; coverage.process_startup()")'
 
 commands =
     sanity: python -m ruff check .
     sanity: python -m ruff format . --check
     sanity: python -m basedpyright --warnings
+    sanity: cargo fmt --check
+    sanity: cargo clippy --release --quiet -- --deny warnings
     tests: python -m coverage run -m pytest -v {posargs:-n auto}
 
 commands_post =
@@ -212,6 +240,8 @@ commands_post =
 [testenv:sanity]
 # As sanity has no pyXY factor in the name, we tell it what intepreter to use
 base_python = py315
+# The native extension's checks; building it, as every environment does, needs cargo too.
+allowlist_externals = cargo
 
 [testenv:docs]
 # Checks the CLI reference matches alai's parser and records its terminal recordings, builds the published docs

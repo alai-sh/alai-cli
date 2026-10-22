@@ -73,6 +73,75 @@ def build_artifact(
     return _sha256(data), len(data)
 
 
+Member = tuple[tarfile.TarInfo, "bytes | None"]
+"""One member of a tarball, in the order it's stored: its header and, for a regular file, its content."""
+
+
+def tar_file(name: str, data: bytes, mode: int = 0o644) -> Member:
+    info = tarfile.TarInfo(name)
+    info.size = len(data)
+    info.mode = mode
+    return info, data
+
+
+def tar_dir(name: str, mode: int = 0o755) -> Member:
+    info = tarfile.TarInfo(name)
+    info.type = tarfile.DIRTYPE
+    info.mode = mode
+    return info, None
+
+
+def tar_symlink(name: str, target: str) -> Member:
+    info = tarfile.TarInfo(name)
+    info.type = tarfile.SYMTYPE
+    info.linkname = target
+    return info, None
+
+
+def tar_hardlink(name: str, target: str) -> Member:
+    info = tarfile.TarInfo(name)
+    info.type = tarfile.LNKTYPE
+    info.linkname = target
+    return info, None
+
+
+def tar_special(name: str, kind: bytes) -> Member:
+    """A device or FIFO: ``tarfile.CHRTYPE``, ``BLKTYPE`` or ``FIFOTYPE``."""
+    info = tarfile.TarInfo(name)
+    info.type = kind
+    return info, None
+
+
+def build_tarball(path: Path, members: list[Member]) -> tuple[str, int]:
+    """Write exactly ``members``, in order, as a gzipped tarball to ``path`` and return its SHA-256 and size; a name
+    given twice is stored twice, as ``tar -r`` appends one."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+        for info, data in members:
+            tar.addfile(info, io.BytesIO(data) if data is not None else None)
+    data = buffer.getvalue()
+    _ = path.write_bytes(data)
+    return _sha256(data), len(data)
+
+
+def manifest_json(name: str = "ns.coll", version: str = "1.0.0") -> bytes:
+    namespace, short = name.split(".")
+    return json.dumps({"collection_info": {"namespace": namespace, "name": short, "version": version}}).encode()
+
+
+def files_json(*entries: dict[str, object]) -> bytes:
+    return json.dumps({"files": [{"name": ".", "ftype": "dir"}, *entries], "format": 1}).encode()
+
+
+def listed(name: str, data: bytes | None = None, *, sha256: str | None = None) -> dict[str, object]:
+    """A FILES.json file entry, its checksum that of ``data``, or ``sha256``."""
+    return {"name": name, "ftype": "file", "chksum_type": "sha256", "chksum_sha256": sha256 or _sha256(data or b"")}
+
+
+def listed_dir(name: str) -> dict[str, object]:
+    return {"name": name, "ftype": "dir", "chksum_type": None, "chksum_sha256": None}
+
+
 def _add(tar: tarfile.TarFile, name: str, data: bytes, mode: int = 0o644) -> None:
     info = tarfile.TarInfo(name)
     info.size = len(data)

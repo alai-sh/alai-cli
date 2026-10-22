@@ -1,0 +1,57 @@
+name: Alai CLI Publish
+
+# Publishing a draft release, which ci.yml makes for a version tag with the sdist and wheels as its assets, publishes
+# those same files to PyPI, once each is shown to have been built by ci.yml from the tag. The release is then
+# immutable, so what's on PyPI is what's attached to it.
+on:
+  release:
+    types:
+      - published
+
+permissions: {}
+
+jobs:
+  publish:
+    name: Publish to PyPI
+    if: startsWith(github.event.release.tag_name, 'v')
+    runs-on: ubuntu-26.04
+    environment:
+      name: pypi
+      url: https://pypi.org/project/alai/${{ steps.download.outputs.version }}/
+    permissions:
+      contents: read  # Download the release assets
+      attestations: read  # Verify the assets' build provenance
+      id-token: write  # PyPI trusted publishing
+    steps:
+      - name: Download the sdist and wheels from the release
+        id: download
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release download "$TAG" --pattern '*.tar.gz' --pattern '*.whl' --dir dist --repo "$GITHUB_REPOSITORY"
+          ls dist
+
+          # The version, in its PEP 440 form, for the environment's URL, from alai-<version>.tar.gz.
+          sdist=(dist/alai-*.tar.gz)
+          version="${sdist[0]#dist/alai-}"
+          echo "version=${version%.tar.gz}" >> "$GITHUB_OUTPUT"
+
+      # Anyone who can write to the repository can upload files to a release, or to ci.yml's draft before it's
+      # published, so only publish files that ci.yml built from this tag, as its attestations show.
+      - name: Verify the sdist and wheels were built by ci.yml from the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          for file in dist/*; do
+            gh attestation verify "$file" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml" \
+              --source-ref "refs/tags/$TAG" \
+              --deny-self-hosted-runners
+          done
+
+      # The sdist and every wheel, published in one step, so no one installs between them and builds from source.
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2

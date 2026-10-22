@@ -1,0 +1,30 @@
+# alai's native code, built by maturin into the alai package as the private module alai._native (see pyproject.toml);
+# a member of the workspace in the repository's root Cargo.toml, which holds the build profile.
+[package]
+name = "alai"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+# zlib-rs, the fastest of flate2's backends and still pure Rust, so no C toolchain is needed.
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
+# The FICLONE ioctl and macOS's clonefile, which std has no wrapper for.
+libc = "0.2"
+# The stable ABIs, so three wheels per platform cover every CPython from 3.10: built for 3.10 to 3.14, one abi3 wheel for
+# CPython 3.10 and later; for 3.15, one abi3.abi3t wheel (PEP 803) for 3.15 and later, free-threaded or not; and for
+# free-threaded 3.14, which has no stable ABI, a cp314t wheel of its own. extension-module, so as not to link libpython,
+# is turned on by maturin (pyproject.toml's [tool.maturin] features) rather than here, so a cargo test can still link it.
+pyo3 = { version = "0.30", features = ["abi3-py310", "abi3t-py315"] }
+# MANIFEST.json and FILES.json, read and checked here so a tarball is extracted in one call.
+serde_json = "1"
+# Uses the CPU's SHA-256 instructions, where it has them, found at runtime. 0.11.1 at least, for the fix to how its
+# AArch64 code loads the round constants (RustCrypto/hashes#922).
+sha2 = "0.11.1"
+tar = { version = "0.4", default-features = false }

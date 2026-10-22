@@ -81,7 +81,7 @@ Downloading all 97 tarballs takes 1.4 s; extracting them was the 21 s.
 - **What's left**, profiled over all 97 on one thread: `tarfile`'s
   pure-Python header parsing (`_frombuf`, `_proc_pax`, `nts`, `nti`) about
   2.6 s of 7 s, zlib 1.0 s, and opening and closing 47k files 1.2 s. That's
-  what a native extension replaces.
+  what [the native extension](#the-native-extension) replaces.
 
 ## Cloning
 
@@ -108,7 +108,590 @@ A cold `sync` took 3.6 s to install against 2.15 s for the same files
 here, probably because freshly extracted files still had dirty pages for
 XFS to write out before sharing their extents; not verified.
 
-## Planned: a native extension
+## A cold sync, profiled
+
+`sivel.acd` from nothing (no cache, no environment), on the development
+machine, 2026-10-22, with the extension built. That machine is a VM with
+7 GB of RAM, about 1 GB of it free for the page cache, on a virtual disk
+at 92% full: writes are throttled almost at once (creating 46k 9 KB files
+from a Python loop takes 2.6 s), so disk costs here are larger than on a
+typical workstation, and run to run they vary by a second or more. The
+scripts are in the session's scratchpad, not the repository.
+
+| Phase | With the extension | Pure Python |
+|---|---|---|
+| Resolve, no lock (network) | 1.1–5.3 s | 1.1–5.3 s |
+| Prepare (download and extract) | 3.7 s | 7.0 s |
+| Install (clone) | 4.2 s | 3.9 s |
+
+- **Resolve is the network.** 132 requests, about 1.4 s cold of which
+  the CPU is 0.33 s parsing 5,950 index lines (`_parse_line`, with
+  `_semver` 0.16 s of it) and 0.2 s of TLS handshakes on 16 connections.
+  Each connection also loads the CA store again
+  (`set_default_verify_paths`, 16 calls, 55 ms), which one shared
+  `SSLContext` would avoid. Index parsing is a candidate for the
+  extension, worth a few tenths of a second cold and most of the 0.3 s
+  warm resolve.
+- **Index lines parse the same strings again and again.** Over
+  sivel.acd's 130 index files, `_parse_line` took 72.5 ms, of which
+  dependency requirements were 36 ms (14,523 parsed, 711 distinct) and
+  `requires_ansible` 11.6 ms (5,273 parsed, 96 distinct). Each distinct
+  text is now parsed once and the result shared, as it's never changed:
+  26 ms for one pass from empty, and a warm offline `alai lock` went from
+  167–178 ms to about 100 ms. What's left there is mostly checking each
+  field (`_field`, 41,650 calls) and the resolver filtering versions.
+- **Downloads wait on extraction.** Alone, all 97 download in 1.3–1.4 s
+  (16 threads, to XFS or tmpfs). In a sync they end at 4–5 s: each of
+  `get_all`'s 16 threads downloads then extracts, so a thread waiting for
+  its turn to extract isn't downloading. Separate pools, downloads never
+  waiting, end them at 1.2–1.4 s; then extraction is the limit, and on this
+  disk that's writing the files.
+- **Cloning a freshly written file waits for it to reach disk.** XFS
+  flushes a file's dirty pages before sharing its blocks, so installing
+  straight after extracting pays for writing everything extracted:
+
+  | Install all 97, one at a time | Cache extracted long ago | Just extracted |
+  |---|---|---|
+  | `Linker.tree`, clone (today) | 2.61 s | 4.01 s |
+  | `Linker.tree`, hardlink | 0.94 s | 0.64 s |
+  | `Linker.tree`, copy (`copy_file_range`, which clones on XFS) | 2.41 s | |
+
+  Tried and dropped: starting each file's writeback as it's extracted
+  (`sync_file_range`) moved the cost rather than saving it (clone 2.2 s to
+  1.3 s, extraction 2.3 s to 4.3 s); and installing a plain read and write
+  copy, never cloning, was no faster (2.1–2.4 s), as the extra dirty pages
+  hit the same throttling, and it doubles the disk used.
+- **A tree linker in the extension** (prototype `alai_native.link_trees`,
+  using `libc` for `FICLONE`): walk once, make directories and symlinks,
+  then clone each file with `open`, `fstat`, `open(O_EXCL)`, `fchmod` and
+  the ioctl. Threads per file contend, as they create in the same
+  directories (clone 1.6 s on one thread, 4.2 s on six); threads per
+  collection scale:
+
+  | Install all 97 | 1 thread | 2 | 3 | 6 |
+  |---|---|---|---|---|
+  | clone, cache extracted long ago | 1.33 s | 0.77 s | 0.73 s | 1.08 s |
+  | hardlink | 0.43 s | 0.23 s | 0.19 s | 0.29 s |
+  | clone, just extracted | 3.4–4.3 s | | 2.1 s | 2.4–2.8 s |
+
+  One large collection, just extracted, one thread, `Linker.tree` against
+  `link_trees`: a10.acos_axapi (3,754 members, 60 MB) 0.85 s and 0.12 s,
+  cisco.catalystcenter (5,888, 59 MB) 0.71 s and 0.14 s, oracle.oci 0.38 s
+  and 0.05 s. Its trees are the same as `Linker.tree`'s. macOS's
+  `clonefile` clones a whole directory in one call, which would replace
+  the walk there.
+- **Prepare and install together**, all 97 from nothing, the middle two of
+  four runs each:
+
+  | | Total |
+  |---|---|
+  | Today: `get_all`, then `Linker.tree` one at a time | 5.9–7.6 s |
+  | `get_all`, then `link_trees`, a collection per thread (3) | 4.9–5.0 s |
+  | Separate download, extract and link pools, each collection linked once extracted (6 extracting, 3 linking) | 5.7–5.8 s |
+  | The same with 3 extracting and 2 linking | 4.4–4.9 s |
+
+  On this disk fewer writers at once is faster; on one with more cache it
+  likely isn't, so the counts want measuring elsewhere before choosing.
+  The outliers by plugin count on the index, for testing large trees:
+  chillancezen.fortimanager (3,624 plugins), a10.acos_axapi (3,168),
+  community.general (3,019), cisco.catalystcenter (2,797), cisco.dnac
+  (2,424) and oracle.oci (2,104).
+
+What it suggests, in order of what it's worth here:
+
+1. Install with the extension's tree linker, a collection per thread, with
+   `Linker.tree` as the fallback: 2.6 s to 0.7 s warm, 4.0 s to 2.1 s
+   cold, 5–7 times faster for one large collection. Done, below.
+2. Download on its own pool, never waiting on extraction, in Python.
+   Done, below.
+3. Install each collection as it's extracted, once 1 and 2 are in.
+4. Thread counts: one per CPU is too many on this disk; measure on
+   others. Done: four at most, below.
+5. One `SSLContext` for every connection, in Python; then index parsing
+   in the extension.
+6. A parsed index cache, deferred until the tar work is done (decided
+   with the user, 2026-10-22). Index files, and `collections.json`, kept
+   parsed under the SHA-256 `collections.json` lists for each, so an entry
+   never needs invalidating; written with `marshal` (plain values only,
+   unlike `pickle`, which runs code on load) to a directory named for the
+   layout and marshal's format version, as uv keeps its index responses
+   parsed in versioned buckets. Measured over sivel.acd's 130 files: 1.3 MB,
+   loaded and rebuilt in 12.9 ms against 38 ms to parse, about a quarter of
+   a warm resolve (about 100 ms). Lazy parsing (about 16 ms at best, and
+   bad lines found late) and cheaper field checks (about 5 ms) weren't
+   worth it.
+
+### Done: the tree linker and separate download pool
+
+- **`_native.link_tree(source, dest, mode)`** recreates one tree,
+  `clone` (`FICLONE` on Linux, `clonefile` on macOS), `hardlink`, `copy`
+  (`copy_file_range` through `io::copy`) or `symlink`, with the GIL
+  released; an error names the cached file. `Linker.tree` calls it, keeping
+  `auto`'s fallback (clone, hardlink, copy) in Python, under a lock, as
+  threads share it, so several finding clone unsupported move on once; a
+  partial tree is removed before the next mode tries. The Python walk and
+  its per-file functions went when the extension became required. `libc`
+  is a new crate, for the two calls std doesn't wrap.
+- **Installs run on a pool** (`_sync._install_all`), a collection per
+  thread, the first failure by name raised once all have finished, as
+  downloads are. Namespaces are made, and any namespace link replaced,
+  first, on one thread (`_install.namespace_dir`), so no two threads race
+  for one. Up to four at once (see the thread counts below); the Python
+  walk, which held the GIL, was slower on several threads than on one
+  (6.9 s on six against 3.9 s), before it was removed.
+- **Downloads have their own pool** (`get_all`): each hands its tarball
+  to the extraction pool and takes the next, so none waits on extraction.
+- **Switches**, for measuring elsewhere while the extension was optional,
+  shown by `alai --version`: `_ALAI_IGNORE_NATIVE` (none of the extension),
+  `_ALAI_NO_NATIVE_LINK` (Python linker), `_ALAI_SHARED_DOWNLOADS` (the old
+  combined pool), `_ALAI_INSTALL_THREADS` and `_ALAI_EXTRACT_THREADS`.
+  Removed with the fallback; the measurements below were made with them.
+
+A cold `alai sync` of `sivel.acd` with its lock (no resolve), three runs
+each, on the development machine:
+
+| | Prepare | Install | Total |
+|---|---|---|---|
+| Before: shared pool, Python linker, one install at a time | 2.9–3.5 s | 3.5–4.2 s | 6.5–7.5 s |
+| Defaults: 6 extracting, 6 installing | 2.9–3.1 s | 2.9–3.4 s | 6.1–6.4 s |
+| 3 extracting, 3 installing | 2.5–2.8 s | 1.9–2.5 s | 4.6–5.2 s |
+| Pure Python (`_ALAI_IGNORE_NATIVE`), one install at a time | 6.2–7.6 s | 4.1–5.1 s | |
+
+So on this machine half the CPUs beats all of them, for both pools. The
+default became four at most after a second machine was measured, below.
+`benchmarks/cold_sync.py` times a cold sync under configurations of
+environment variables, for measuring elsewhere.
+
+### On a 16-thread machine with btrfs
+
+Measured by the user on 2026-10-22 with `cold_sync.py`, five runs each,
+medians; a machine with 16 hardware threads, btrfs, and tmpfs for
+comparison (the rest of its specification wasn't recorded). `sivel.acd`,
+cold unless it says warm:
+
+| | Prepare | Install | Total |
+|---|---|---|---|
+| Before (shared pool, Python linker, one install at a time) | 4.12 s | 4.28 s | 8.49 s |
+| Defaults (16 extracting, 16 installing) | 4.11 s | 1.98 s | 6.19 s |
+| 2 extracting, 2 installing | 3.32 s | 1.76 s | 5.11 s |
+| 3 extracting, 3 installing | 3.38 s | 1.49 s | 4.94 s |
+| Pure Python | 8.95 s | 4.20 s | 13.32 s |
+
+- **Fewer threads than CPUs win on a real disk here too.** Extraction,
+  with 16 installing: 4.43 s on 1 thread, 3.26 s on 2, 3.55 s on 3,
+  3.82 s on 8, 3.90 s on 16, 4.15 s on 32. Install, with 16 extracting:
+  2.88 s on 1, 1.75 s on 2, 1.52 s on 3, 1.64 s on 8, 1.98 s on 16, 2.01 s
+  on 32.
+- **On tmpfs more threads win**, as nothing waits on a disk (hardlinks,
+  as tmpfs can't clone): 16 extracting and installing 1.30 s and 0.09 s,
+  8 1.28 s and 0.10 s, 3 1.60 s and 0.21 s. Prepare there is about the
+  downloads alone. So one per CPU suits a fast store and two to four a
+  real disk, on both machines measured.
+- **The extension's linker** against the Python one, cold on btrfs, with
+  16 installing and 1: clone 2.00 s and 4.31 s, hardlink 1.03 s and
+  2.06 s, copy 1.96 s and 5.25 s. Warm (cache kept): clone 1.90 s with 16
+  installing, 1.31 s with 3, hardlink 0.90 s, the Python linker 4.24 s.
+- **The extension's extraction**: prepare 8.95 s in pure Python against
+  4.11 s on btrfs, and 8.04 s against 1.30 s on tmpfs.
+- **The four largest collections** (a10.acos_axapi, cisco.catalystcenter,
+  oracle.oci, chillancezen.fortimanager): cold, 1.70 s against 2.07 s
+  before and 3.15 s in pure Python; warm, installing 0.36 s against
+  0.85 s with the Python linker.
+- **Four threads**, measured the same way afterwards. The machine: an
+  AMD Ryzen 7 3700X (8 cores, 16 threads), 125 GB of RAM (57 GB in use by
+  other work, swap full), a Samsung 850 PRO SATA SSD with btrfs compressing
+  with zstd, Linux 7.2, Python 3.14.8:
+
+  | Medians | 4/4 | Best of the rest | 16/16 |
+  |---|---|---|---|
+  | Cold, clone | 5.15 s | 5.05 s (2/2) | 6.09 s |
+  | Cold, hardlink | 4.51 s | 4.29 s (2/2) | |
+  | Warm | 1.28 s | 1.38 s (3/3) | |
+  | The largest collections, cold | 1.53 s | 1.60 s (2/2) | 1.72 s |
+  | tmpfs, hardlink | 1.65 s | 1.96 s (3/3) | 1.45 s |
+
+  Install alone was fastest at 4 (1.43 s, against 1.48 s at 3 and 1.77 s
+  at 2), and extraction alone was flat from 2 to 4 (3.40 to 3.57 s).
+  **Decided** (with the user, 2026-10-22): both pools default to four, or
+  one per CPU if there are fewer (`_native.MAX_THREADS`), the best or
+  within the runs' noise of it on a real disk everywhere measured, at a
+  cost of 0.2 s on tmpfs. uv's default is one per CPU.
+- **One cold run took 186 s** to prepare, against 1.1 s otherwise: three
+  of the fetcher's 60 s read timeouts and their 0.5, 1 and 2 s backoff
+  (183.5 s) on top of a normal run, so a download that stalled three times
+  before it was served, most likely a rarely fetched artifact the
+  download host had to fetch from its origin, rather than a hang. Three
+  minutes with nothing said is long: uv's default `UV_HTTP_TIMEOUT` is
+  30 s. The four-thread runs had another, one 60 s timeout (a hardlink
+  run's prepare, 60.75 s), so the download host stalls now and then.
+  **Changed** (with the user, 2026-10-22): the read timeout is now 30 s,
+  as uv's, so a stall that would have cost 186 s costs about 96 s; the
+  connect timeout stays 15 s.
+
+## The native extension
+
+`src/rust/` is a Rust crate, built with pyo3 and maturin into the alai
+package as the private module `alai._native` (`src/alai/_native.pyi`
+types it). It's laid out as `cryptography` lays out its own: Python in
+`src/alai/`, Rust in `src/rust/`, a Cargo workspace in the root
+`Cargo.toml`, which holds the release profile, and `Cargo.lock` beside it
+(decided with the user, 2026-10-22). maturin's default puts the Rust in a
+root `src/` and the Python in `python/`, which would have moved every tool
+path for alai's src layout; the Rust inside `src/alai/` would ship in the
+wheel. It reads and extracts collection tarballs and places installed
+files, with the GIL released. It's required: alai has no pure-Python
+fallback (see [Shipping](#shipping)).
+
+- **One call, two passes, all in Rust** (decided with the user,
+  2026-10-23): `extract_collection(tarball, dest, limit, expected)`
+  extracts a collection and returns the namespace, name and version its
+  `MANIFEST.json` gives. A gzip stream can't be seeked, a tar has no index
+  (members one after another, each a header and its data), and `tar -r`
+  appends a replacement after the original, whose last copy is the one
+  that counts. So:
+  1. **Pass 1** reads only the headers: where each name's last member is,
+     its type and link target, and the content of the last
+     `MANIFEST.json` and `FILES.json`.
+  2. **Checks, before anything is written**: `MANIFEST.json` names
+     `expected`, compared as text (or, without it, gives three strings,
+     which `_artifacts.extract_any` checks with `collection_name` and
+     `Version` once it's extracted, into a directory the caller discards on
+     an error); `FILES.json` is valid, with `serde_json`; and, in its order,
+     every entry it lists has a last member, of that type, with a symlink
+     not leading out by name.
+  3. **Pass 2** writes only those last members, each file checked against
+     its SHA-256 as it's written; a path resolving outside on disk stops
+     it. Then every link is checked again, as a later link can change
+     where an earlier one leads, and symlinks' checksums (of the file each
+     points to, which can come later) and hardlinks' copies are taken from
+     disk.
+
+  Every error is raised where it's found, as an `ExtractError(kind, entry,
+  detail)` that `_artifacts` turns into the message, so the wording lives
+  in one place; filesystem errors are `OSError`s. Python makes one call.
+- **It replaced a split across the languages** (2026-10-22 to 23), whose
+  logic was hard to follow: Python read the first `MANIFEST.json` and
+  `FILES.json`, checked them and handed Rust a list and a "watch" set;
+  Rust extracted in one pass and returned a replacement if a watched name
+  repeated, for Python to check and retry, or restarted itself when any
+  other name repeated, and held a member's errors until the end in case a
+  later copy replaced it. A replaced `MANIFEST.json` went through the
+  tarball three times and wrote the collection twice. Measured before the
+  change: the headers-only pass costs about a third of each extraction
+  (a10.acos_axapi 53 ms on 161 ms, cisco.catalystcenter 75 ms on 226 ms,
+  33 to 44% across the eleven largest collections), and afterwards
+  extraction took the old time plus that (a10.acos_axapi 246 ms,
+  cisco.catalystcenter 318 ms, cisco.dnac 175 ms). It's hidden in a sync:
+  a cold `alai sync` of sivel.acd with its lock took 5.26 to 6.28 s with
+  it (prepare 2.9 to 3.2 s), as before; simulated beforehand, 5.50 to
+  6.12 s against 5.95 to 6.65 s, and for the four largest collections
+  2.02 to 2.25 s against 1.88 to 2.74 s. Holding each tarball decompressed
+  in memory would read it once, at the cost of its whole size (60 MB for
+  a10.acos_axapi, up to four at once); not needed while the second pass is
+  hidden.
+- **Reviewed on 2026-10-23**, for anything missed on speed or safety,
+  with these changes (decided with the user):
+  - Pass 1 set aside a `MANIFEST.json`'s or `FILES.json`'s claimed size
+    before reading it, so a header claiming 1 TiB aborted the process
+    (`memory allocation of 1099511627776 bytes failed`) rather than
+    failing; now at most the read buffer's 256 KiB is, as the `tar` crate
+    caps its own at 128 KiB, and the tarball is refused as corrupt.
+  - A hard link's copy and a symlink's checksum read from disk outside
+    the capped stream, so neither counted against the limit
+    ([install.md](install.md#decisions)). They now spend the same budget
+    as pass 2.
+  - A pax global header that sets anything but `comment` is refused with
+    the other members tar readers disagree on: the `tar` crate yields it as
+    a member and ignores its keys, where tarfile applies them to every later
+    member. One of only `comment` is allowed, and not taken as a member, as
+    tarfile doesn't (decided with the user, 2026-10-23): it describes the
+    archive, not its members, and it's all `git archive`, and so GitHub's
+    source tarballs, writes, holding the commit.
+  - Pass 2 wrote each member from its own read of the headers; it now
+    writes from what pass 1 recorded and checked (kind, link target,
+    executable bit), taking only a file's content from the second read.
+  - The parent-directory cache compared a directory's resolved path with
+    its literal one, so it never hit when the destination's own path went
+    through a symlink: 108k `statx` calls against 18k for 10k files in 2k
+    directories, 20 to 40% slower on tmpfs. It now compares with the
+    resolved destination, and takes one `lstat` when the directory's own
+    parent is known plain.
+  - `umask` is no longer a parameter: the kernel masks each `open` and
+    `mkdir` with the process umask, which is what Python read and passed,
+    so the `fchmod` after every file (one syscall per file, 10k of 38k in
+    the probe) went. `link_tree` keeps its `fchmod`, as a cached file's
+    mode is to be kept exactly, as a hardlink keeps it.
+  - The gzip decoder reads the 256 KiB buffered file directly
+    (`flate2::bufread`), rather than through a second buffer of its own,
+    and a listed directory is made without a `stat` first.
+  - Considered and left: an optimistic single pass (the second pass is
+    hidden in a sync, and the split flow it would bring back was just
+    removed); `openat2` with `RESOLVE_BENEATH`, which would replace the
+    name and `realpath` checks with the kernel's for a Linux-only path
+    (the cache is the user's own, so the window it closes has no other
+    writer); a cap on directory depth (a 2000-deep tree extracted on a
+    128 KiB thread stack, as musl gives; only Python 3.10 and 3.11's
+    recursive `shutil.rmtree` would fail to remove one deeper than
+    about a thousand); and tarfile's joining of the ustar prefix field
+    under GNU magic, which the `tar` crate doesn't, as alai is consistent
+    with itself either way and nothing can escape through it.
+- **Until it became required** (2026-10-22), a pure-Python backend,
+  `_tar`, did the same, and every test ran against both. Keeping the two
+  in step found three places they'd drifted, and with TOML editing to come
+  the two couldn't have edited a file alike; the reasons are in
+  [Shipping](#shipping).
+- **Crates**: `pyo3` (the `abi3-py310` stable ABI, and `gil_used = false`
+  for free-threaded builds), `tar`, `flate2` with the `zlib-rs` backend
+  (pure Rust, so no C toolchain) and `MultiGzDecoder`, as Python's gzip
+  reads every member of a multi-member stream, and `sha2`, which uses the
+  CPU's SHA-256 instructions, and `serde_json` for `MANIFEST.json` and
+  `FILES.json`: 0.91 ms for the largest `FILES.json` (a10.acos_axapi,
+  850 KB) into typed structs, against Python's `json.loads` at 2.5 ms;
+  other JSON alai parses, the index lines and `plugins.jsonl`, stays in
+  Python for now. It reads gzip only, as every build is gzipped. The crate needs Rust 1.88, the highest of the dependencies'
+  own minimums (`sha2` 0.11 1.88, `pyo3` 0.30 1.85).
+- **In development** maturin is alai's build backend, so `uv sync` builds
+  the extension into `src/alai/` (an editable install) and every tox
+  environment builds a wheel with it; both need `cargo`. uv's
+  `cache-keys` include the crate and the workspace's `Cargo.toml` and
+  `Cargo.lock`, so a change to the Rust rebuilds it.
+  The sanity run checks it with `cargo fmt` and `clippy`.
+
+Measured on the 97 `sivel.acd` tarballs, extracting each into a new
+directory with `_artifacts.extract`, the downloads already done
+(2026-10-22; XFS runs `sync` first, so the previous run's deletes aren't
+timed):
+
+| | tmpfs, 1 thread | tmpfs, 6 threads | XFS, 1 thread | XFS, 6 threads |
+|---|---|---|---|---|
+| `_tar` (pure Python) | 4.0–4.7 s | 8.4–8.6 s | 5.2–5.7 s | 9.2–9.5 s |
+| `alai_native` | 1.6–1.7 s | 0.39–0.40 s | 2.3–2.8 s | 2.1–2.2 s |
+| GNU `tar xzf`, one at a time, no hashing | 2.0 s | | 3.1 s | |
+
+Reading every tarball through first, as an earlier version of this did
+for last-wins, added 0.73 s on one thread (2.5 s, and 0.53 s on six).
+On XFS it's bound by creating 46k files, not the CPU, and varies from
+run to run: 1.3 to 2.2 s on six threads across the day's runs. A cold `alai sync` of `sivel.acd` with its lock, on XFS,
+was 8.9 s in pure Python and 6.5 s with the extension; preparing
+(downloading and extracting) went from 6.15 s to 3.47 s, and most of
+what's left is installing, by clone ([Cloning](#cloning)).
+
+### Shipping
+
+- **Built into alai** (decided with the user, 2026-10-22): one
+  distribution, `alai`, built with maturin as a mixed Python and Rust
+  project, the extension a private module of the package, rather than a
+  separate `alai-native`. Its API is shaped by what alai needs and changes
+  with it, and one package is one thing to test. alai's wheels become
+  platform wheels, and its sdist needs Rust.
+- **Wheels for Linux x86_64 and aarch64, glibc and musl, and macOS arm64**
+  (decided with the user, 2026-10-22): the platforms GitHub has runners
+  for, so every wheel is built and tested natively. Not 32-bit x86 or ARM,
+  ppc64le, s390x, riscv64 or Intel macOS, which build from the sdist (maturin's
+  cross-compiling containers could build them, even armv7 at
+  manylinux2014, if they're wanted).
+- **manylinux2014, glibc 2.17** (decided with the user, 2026-10-22):
+  Debian 8, Ubuntu 13.10, Fedora 19 and RHEL 7 or later (the manylinux
+  project's list). Rust's
+  standard library needs 2.17 on those, the extension nothing newer, and
+  nothing is gained from a later tag: `manylinux_2_28` (AlmaLinux 8) would
+  drop RHEL 7, Amazon Linux 2, SLES 12 and 15 before SP4 and Ubuntu 18.04,
+  where people still run a newer Python from uv. The wheels must be built in the manylinux containers (maturin's GitHub
+  action does by default) or with maturin's `--zig` for a given glibc: one
+  built on the development machine (glibc 2.43) needed 2.34, as the linker
+  takes each symbol's newest version (`stat64` at 2.33, `pthread_key_create`
+  at 2.34); `statx`, `copy_file_range`, `getrandom` and `gettid` are weak,
+  so the standard library finds them at run time. musl (Alpine) takes
+  `musllinux_1_2` wheels; macOS arm64 needs macOS 11, Rust's minimum
+  there, which `clonefile` fits.
+- **Free-threaded builds: three wheels per platform** (tried on
+  2026-10-22, maturin 1.15.0, pyo3 0.30 with `abi3-py310` and
+  `abi3t-py315`, the latter pyo3's support for PEP 803's stable ABI for
+  free-threaded builds). Built with a CPython from 3.10 to 3.14, maturin
+  makes one `cp310-abi3` wheel, for CPython 3.10 and later; with 3.15 or
+  3.15t, one `cp315-abi3.abi3t` wheel, for 3.15 and later whether
+  free-threaded or not (installers prefer it on 3.15, its tag being the
+  more specific); and with 3.14t, which has no stable ABI, a
+  `cp314-cp314t` wheel, maturin warning that it's version-specific. Each
+  free-threaded wheel loaded on its interpreter with the GIL left off (the
+  module declares `gil_used = false`; Python turns the GIL back on, with a
+  warning, for one that doesn't), and `test_artifacts.py`,
+  `test_extract_safety.py` and `test_install.py` passed under each (207
+  tests). tox runs the whole suite on 3.14t and 3.15t too
+  (`py3{14,15}t-tests`), each building the extension as its wheel does
+  (`cpython-314t` and `abi3t`), with `tests/test_native.py` checking, in a
+  new interpreter, that importing it leaves the GIL off; none of alai's
+  dependencies turns it on either (checked on 3.14t and 3.15t: PyYAML
+  6.0.3's C loader, argcomplete, distlib, resolvelib, truststore, urllib3,
+  coverage, pytest and pytest-xdist). The `abi3.abi3t` wheel covers 3.16
+  and later as `abi3` does, with no new wheel per release, by PEP 803's
+  promise rather than a record yet, which the tox runs on each new release
+  would catch. 3.13t, experimental, would need a `cp313t` wheel too; like
+  `cryptography`, whose free-threaded wheels are `abi3t` and `cp314t`,
+  alai needn't. PyPy has no stable ABI, so it builds from the sdist unless
+  its own wheels are added. uv 0.13.0 installed the `abi3.abi3t` wheel;
+  which pip releases understand the `abi3t` tag wasn't checked.
+- **Rust required, no pure-Python fallback** (decided with the user,
+  2026-10-22, reversing the fallback kept while measuring). The fallback
+  was a second implementation of every rule (`_tar.py`, about 350 lines
+  for extraction, every safety test run twice), and testing both found
+  three places they had drifted; with `toml_edit`, a fallback can't give
+  the same edits without reimplementing its formatting, so a file would be
+  edited differently depending on how alai was installed. Nothing is
+  released, so there's nothing to stay compatible with. Who'd need Rust:
+  platforms PyPI takes no wheels for (FreeBSD, OpenBSD, NetBSD, illumos,
+  AIX), Linux older than glibc 2.17, and anyone whose installer can't use
+  the wheels; but ansible-core depends on `cryptography`, which needs Rust
+  wherever it has no wheel either, and uv, ruff and pydantic made the same
+  choice. So, the conditions:
+  - Wheels for the common platforms, glibc and musl, and macOS, so the
+    sdist is rarely used.
+  - A declared `rust-version`: 1.88 (decided with the user, 2026-10-22),
+    set by `sha2` 0.11.1; `pyo3` 0.30 needs 1.85. The lowest floor without
+    known problems was 1.83, as `cryptography` declares, with `pyo3` 0.29
+    and `sha2` 0.10: every `pyo3` before 0.29 has advisories fixed only from
+    0.29 (RUSTSEC-2026-0176, an out-of-bounds read in list and tuple
+    iterators, and RUSTSEC-2026-0177, a missing `Sync` bound), and the
+    crate built unchanged with both, at edition 2021 (2024 itself needs
+    1.85). But `sha2` 0.10.9 has the AArch64 code 0.11.1 fixed
+    (RustCrypto/hashes#920): it loads four round constants through a
+    reference to one, undefined behaviour under Stacked Borrows though the
+    read stays in the table and the compiled code is correct, and nothing
+    is planned for 0.10. With `pyo3` likely to need as much soon, 1.88 it
+    is. Distributions' own Rust is older (Debian 12 1.63, Ubuntu 24.04 1.75
+    by default). CI should build with 1.88 itself, so it stays the floor.
+  - A `compile_error!` for anything that isn't Unix, so a Windows install
+    from the sdist says why rather than failing to compile. Done. Other
+    Unix systems, such as the BSDs, aren't blocked: only cloning is
+    platform code, so there it fails with `EOPNOTSUPP` and `auto` moves on
+    to a hardlink.
+  - The sdist and every wheel published in one step, so nobody installs in
+    the window between them and builds from source.
+  - Maybe the crates vendored into the sdist, for offline builds, and a
+    lighter release profile there than link-time optimisation with one
+    codegen unit, which is slow on a Raspberry Pi or under emulation.
+  - Documenting `pip install --only-binary alai` and
+    `uv tool install --no-build-package alai alai` for failing rather than
+    building.
+- **CI** (`.github/workflows/ci.yml`, 2026-10-22):
+  - Sanity runs `cargo fmt` and `clippy` with the rest; a job checks the
+    crate with the `rust-version` `Cargo.toml` declares, read from it.
+  - The sdist is built, the release tag checked against its version (from
+    its `PKG-INFO`, as `uv version` can't read a dynamic version), and
+    alai installed from it, compiling the extension.
+  - Each platform's three wheels are built with maturin's action, pinned,
+    maturin pinned to 1.15.0, with `--locked --compatibility pypi`: in the
+    manylinux2014 and musllinux_1_2 containers on Linux, which have every
+    interpreter, and on the host on macOS, with uv's Pythons. maturin
+    audits each against the manylinux or musllinux rules itself (its
+    `--auditwheel`), and `abi3audit` checks the `abi3` wheel uses only the
+    stable ABI, as cibuildwheel would run it. Not the `abi3.abi3t` wheel:
+    `abi3audit` 0.0.26 takes `PyModExport__native`, 3.15's module export
+    hook (PEP 793), for a violation. maturin's action rather than
+    cibuildwheel, whose FAQ points Rust projects to it; cibuildwheel would
+    call maturin through the build backend in each container, after
+    installing Rust there, with the free-threaded and `abi3t` builds to set
+    up again.
+  - Each wheel is tested where it runs: tox with every Python on x86_64
+    glibc, and 3.10, 3.15, 3.14t and 3.15t on aarch64 glibc and macOS,
+    each installing the wheel that Python would choose (`--installpkg`);
+    on musl, in uv's Alpine image (`ghcr.io/astral-sh/uv:0.13.0-alpine`,
+    which brings musl Pythons, free-threaded ones included), the same four
+    with pytest. Run with docker rather than as the job's container, as
+    JavaScript actions such as checkout can't run in an Alpine container
+    on arm64. All of this was tried locally on aarch64: the musllinux
+    wheels built, and the suite passed on musl with each.
+  - **Releasing is two steps, for GitHub's immutable releases** (decided
+    with the user, 2026-10-23, as in their PowerShell-RemoteWrench). Pushing
+    a `v*` tag runs `ci.yml` for it, whose last job, once everything has
+    passed, creates the tag's GitHub release as a draft with the sdist and
+    every wheel as its assets, or replaces a draft's assets, refusing a
+    release already published. Publishing the draft runs `publish.yml`,
+    which downloads those assets and uploads exactly them to PyPI in one
+    step, through trusted publishing in the `pypi` environment: what's on
+    PyPI is what's attached to the release, which is then immutable. Every
+    job asks only for the permissions it needs (`permissions: {}` at the
+    top); only the draft can write to the repository. The draft job also
+    attests each file's build provenance (`actions/attest`, SLSA, signed
+    with Sigstore through the run's identity, stored in the repository's
+    attestations by the file's SHA-256), so a wheel from anywhere can be
+    checked as built by `ci.yml` from the tag, with `gh attestation verify
+    <file> --repo alai-sh/alai-cli --signer-workflow
+    alai-sh/alai-cli/.github/workflows/ci.yml --source-ref
+    refs/tags/<tag>`. GitHub's attestation of an immutable release and
+    PyPI's publish attestations say what was released and how it reached
+    PyPI; only this says CI built it, as a file uploaded to the draft by
+    hand would pass both. So `publish.yml` verifies each file this way
+    before uploading any: GitHub has no setting that stops someone with
+    write access creating a release by hand or changing the draft's files
+    before it's published, so the check makes what's attached trustworthy
+    however it got there. A required reviewer on the `pypi` environment
+    would gate publishing itself; it's left out while only the maintainer
+    can write to the repository, and worth adding when anyone else can.
+  - **What builds the release is pinned** (decided with the user,
+    2026-10-23), so the same commit builds the same wheels and a new
+    release of a tool can't change one unseen. The tests take the newest
+    patch release of each Python that the pinned uv offers (uv's list of
+    Pythons is built into each release), so they move when `UV_VERSION`
+    does, not on their own. The pins, and how to move each:
+    - The actions, by commit: Dependabot.
+    - The runners: `ubuntu-26.04` and `ubuntu-26.04-arm`, one LTS release
+      for both architectures, as arm64 has no `-latest` label to follow
+      `ubuntu-latest` (decided with the user, 2026-10-23); moved together.
+      actionlint 1.7.12 doesn't know the 26.04 labels yet and reports them;
+      GitHub's runner-images list has both.
+    - uv: `UV_VERSION` in `ci.yml` and the version in `docs.yml`. The musl
+      tests' Alpine image is uv's, tagged with `UV_VERSION`
+      (`ghcr.io/astral-sh/uv:<version>-alpine`), so it follows it, with no
+      digest of its own: it's for testing, not building.
+    - maturin: `MATURIN_VERSION` in `ci.yml`, which each build step's
+      `maturin-version` takes.
+    - Rust: `rust-toolchain.toml`'s `channel`, a stable release, which
+      rustup and maturin's action in its containers both read; it isn't
+      in the sdist, so a source build still needs only `rust-version`.
+    - The build containers, by digest, which pins their Pythons
+      (`MANYLINUX2014_*` and `MUSLLINUX_1_2_*` in `ci.yml`, each named by its
+      platform's `container-env`, as a matrix can't read `env`): each
+      image's `:latest` digest, from the registry,
+      `curl -sI -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.v2+json" https://quay.io/v2/pypa/<image>/manifests/latest`
+      (its `docker-content-digest`); uv's image the same from ghcr.io,
+      with a token from `https://ghcr.io/token?scope=repository:astral-sh/uv:pull`.
+    - The macOS build's Pythons (`MACOS_PYTHONS`), to the newest patch
+      release of each that
+      the pinned uv offers (`uv python list --all-versions --only-downloads`).
+      The patch release doesn't change the ABI: CPython keeps it within a
+      minor release, and pyo3 declares the C API per minor version, so a
+      wheel built with 3.14.9t runs on 3.14.0t.
+
+    All but the actions and Rust are in `ci.yml`'s `env` block. Renovate
+    could move all of them; Dependabot moves only the actions.
+  - uv installs tox without alai (`uv sync --no-install-project`, then
+    `uv run --no-sync`), as tox builds or installs alai itself; `uv run`
+    alone would compile it first in every job.
+  - setup-uv's cache holds Python packages only, never alai, which every
+    job skips, installs from the wheel, or rebuilds, so its key needn't
+    follow the Rust; it's off for tag pushes, so a release starts clean.
+    Every job names its entry (`cache-suffix`: `sanity`, `sdist`,
+    `wheels-<platform>`, `test-<python>`, and `docs` in `docs.yml`), as
+    setup-uv keys it by the runner's platform and Python only, which jobs
+    on one runner share (glibc and musl wheels included, as setup-uv runs
+    on the host, not in the build container), so they'd restore whichever
+    job's packages were saved first and fail to save their own (decided
+    with the user, 2026-10-23). Cargo isn't cached: a clean
+    release build is about 12 s and clippy 5 s, not worth another action
+    to pin, and the wheels build in containers.
+  - basedpyright doesn't report `_native` having a stub but no module
+    (`reportMissingModuleSource`): the built module is only in `src/alai/`
+    after a local `uv sync`, and sanity failed on CI without it.
+  Every contributor needs `cargo`.
+- **TOML editing could live there too.** `alai add` and `alai remove` edit
+  `alai.toml` with a small checked editor of our own
+  ([manifest-editing.md](manifest-editing.md)) because the mature
+  format-preserving editor, `toml_edit` (cargo's and uv's), is Rust with no
+  maintained Python binding. Exposing it from the same extension would cover
+  edits beyond one requirement array, such as `[project.sources]` entries;
+  worth deciding when the extension is designed.
+### Open: YAML and TOML in the extension
 
 Open (raised 2026-10-21): whether the extension should parse YAML and TOML
 too, for `galaxy.yml`, `meta/runtime.yml`, `alai.toml` and `alai.lock`.
@@ -126,53 +709,3 @@ locked the same layout in `[tool.uv.sources]`. Supporting it in Python
 would mean tomli below 3.15 and multi-line inline tables in
 `_toml_edit`'s scanner; a TOML parser in the extension would settle it
 instead. Long git entries are what would want it.
-
-A separate library, `alai-tar` say, in Rust with pyo3, doing what's slow
-above: reading the tarball, decompressing, hashing, writing files, and
-cloning or linking them into place, with the GIL released so it can use
-every core. alai depends on it unconditionally and stays one pure-Python
-wheel itself.
-
-- **Rust only, no pure-Python fallback.** A fallback is a second
-  implementation of the same rules, the path and symlink checks included,
-  to keep in step for ever; with Rust alone there's one. Today's `tarfile`
-  code goes when the extension arrives.
-- **Wheels for every platform PyPI takes, and an sdist that needs Rust.**
-  PyPI accepts wheels for manylinux and musllinux (x86_64, i686, aarch64,
-  armv7l, ppc64le, s390x, riscv64, and manylinux ppc64), macOS, Windows,
-  iOS, Android and Emscripten (warehouse's `is_valid_platform_tag`,
-  `warehouse/utils/wheel.py`). It takes none for FreeBSD, OpenBSD,
-  NetBSD, illumos or AIX, so those, and any Linux with a glibc older than
-  the manylinux baseline built for, install from the sdist and need
-  `rustc` and `cargo` (FreeBSD: `pkg install rust`). pip and uv only use
-  the sdist when no wheel matches, so that's automatic.
-- **Building from source anywhere is opt-in** with the installers' own
-  flags: `pip install --no-binary alai-tar …`, `uv pip install
-  --no-binary-package alai-tar …`, `uv tool install --no-binary-package
-  alai-tar alai`, `[tool.uv] no-binary-package = ["alai-tar"]` or
-  `UV_NO_BINARY_PACKAGE`. Publishing a pure-Python `py3-none-any` wheel
-  as well, as charset-normalizer does, was considered and dropped: it
-  would be the second implementation, and a platform without a native
-  wheel would silently get the slow one unless its user knew to pass those
-  flags.
-- **`abi3` wheels, plus free-threaded ones.** One `abi3-py310` wheel per
-  platform covers CPython 3.10 to 3.15, but free-threaded builds (3.13t,
-  3.14t) can't load the stable ABI, so they need their own per-version
-  wheels (`cp313t`, `cp314t`); pyo3 supports them since 0.23 with the
-  module declared `gil_used = false`, and cibuildwheel builds them once
-  enabled. PEP 803 proposes a stable ABI for free-threaded builds, which
-  would fold those into one wheel; its status wasn't checked. PyPy has no
-  `abi3` either and would need its own wheels or the sdist.
-- **TOML editing could live there too.** `alai add` and `alai remove` edit
-  `alai.toml` with a small checked editor of our own
-  ([manifest-editing.md](manifest-editing.md)) because the mature
-  format-preserving editor, `toml_edit` (cargo's and uv's), is Rust with no
-  maintained Python binding. Exposing it from the same extension would cover
-  edits beyond one requirement array, such as `[project.sources]` entries;
-  worth deciding when the extension is designed.
-- **Until then**, cheap wins in today's Python: a process pool for
-  extraction (every core, at the cost of shipping errors and progress back
-  from the workers); for clones, raw file descriptors (1.42 s to 1.20 s in
-  a loop test), creating each file with its mode instead of `copymode`,
-  `os.scandir`'s cached types instead of `islink`, and a thread pool, as
-  the opens and the ioctl release the GIL.

@@ -433,9 +433,8 @@ def read_archives(
             )
     if not wanted:
         return
-    # Downloaded in parallel, as sync downloads index artifacts, through one cache: it reads the umask once, which
-    # isn't safe once threads run, and extracts one at a time. Each is checked, and kept, here, in order by name, so
-    # the first to fail by name is the one reported.
+    # Downloaded in parallel, as sync downloads index artifacts, through one cache, which limits how many extract at
+    # once. Each is checked, and kept, here, in order by name, so the first to fail by name is the one reported.
     cache = ArtifactCache(settings.cache_dir, fetcher)
     with concurrent.futures.ThreadPoolExecutor(MAX_CONNECTIONS, thread_name_prefix="alai-archive") as pool:
         futures = {name: pool.submit(cache.download, source.url) for name, source in wanted.items()}

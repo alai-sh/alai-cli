@@ -12,8 +12,6 @@
 - **Building collections**: `alai build`, with the collection's
   metadata in `alai.toml` instead of `galaxy.yml`, so `alai add` and
   `alai remove` can edit a collection project's dependencies too.
-- **Faster installs of large collections**, by moving extraction and
-  linking into native code.
 - **Several ansible-core versions per project**: resolving for one
   ansible-core version, and named environments, each with its own
   ansible-core version, groups and collections directory, for testing a

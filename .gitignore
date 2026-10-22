@@ -8,3 +8,8 @@ site/
 
 # Recorded on every docs build by scripts/cli_recordings.py.
 docs/casts/
+
+# The native extension, built into the source tree by an editable install (uv sync).
+src/alai/*.so
+# Cargo's build output, for the workspace in Cargo.toml.
+/target/

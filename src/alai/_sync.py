@@ -25,6 +25,7 @@ from ._install import (
     install,
     link_editable,
     linked,
+    namespace_dir,
     place,
     plan,
     remove,
@@ -199,12 +200,12 @@ def install_locked(
     linker = Linker(settings.link_mode)
     umask = current_umask()
     with Live(Task("Installing collections...", total=len(todo.install), bar=True)) as task:
+        cached = [name for name in todo.install if name not in directories]
         for name in todo.install:
             if name in directories:
                 _copy_directory(cdir, by_name[name], directories[name], records[name], umask)
-            else:
-                install(cdir, name, sources.paths[name], linker, records.get(name))
-            task.advance(f"{name}=={by_name[name].version}")
+                task.advance(f"{name}=={by_name[name].version}")
+        _install_all(cdir, cached, sources.paths, linker, records, lambda n: task.advance(f"{n}=={by_name[n].version}"))
     if todo.install:
         summary("Installed", len(todo.install), time.monotonic() - started)
 
@@ -235,6 +236,33 @@ def install_locked(
     # By name, a removal before its replacement, as uv lists them.
     for sign, name, rest in sorted(lines, key=lambda line: (line[1], line[0] != "-")):
         change(sign, name, rest)
+
+
+def _install_all(
+    cdir: str,
+    names: list[str],
+    paths: _c.Mapping[str, str],
+    linker: Linker,
+    records: _c.Mapping[str, dict[str, object]],
+    done: _c.Callable[[str], None],
+) -> None:
+    """Install each cached collection in ``names`` from ``paths``, several at once: each in its own directory, and
+    the extension's linker releases the GIL. Every one is attempted; if any fails, the first by name is raised once
+    the rest have finished, as downloads are. ``done`` is called with each name as it's installed."""
+    import concurrent.futures
+
+    from ._common import worker_threads
+
+    # Made before the threads start, so no two replace the same namespace link.
+    for namespace in sorted({name.split(".")[0] for name in names}):
+        _ = namespace_dir(cdir, namespace)
+    with concurrent.futures.ThreadPoolExecutor(worker_threads(), thread_name_prefix="alai-install") as pool:
+        futures = {pool.submit(install, cdir, name, paths[name], linker, records.get(name)): name for name in names}
+        for future in concurrent.futures.as_completed(futures):
+            if future.exception() is None:
+                done(futures[future])
+    for future, _name in sorted(futures.items(), key=lambda item: item[1]):
+        future.result()
 
 
 def not_installed(settings: Settings, wanted: list[LockedCollection], root: LockedRoot | None) -> int:
