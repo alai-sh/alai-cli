@@ -15,6 +15,7 @@ import os
 
 from ._common import ConfigError
 from ._manifest import SourceCollection, collection_name
+from ._output import warn
 from ._pep440 import SpecifierSet
 from ._semver import Version, VersionReq
 
@@ -22,11 +23,28 @@ GALAXY_FILE_NAME = "galaxy.yml"
 MANIFEST_FILE_NAME = "MANIFEST.json"
 
 
-def read_collection_dir(path: str) -> SourceCollection:
+def read_collection_dir(
+    path: str, version: Version | None = None, *, source: str = "", shown: str | None = None
+) -> SourceCollection:
     """The collection in the directory ``path``: a source, from its ``galaxy.yml``, or a built or installed
     collection, from its ``MANIFEST.json``. A directory with both is an error, as ansible-galaxy makes it: a
     ``MANIFEST.json`` left in a source is usually stale, and a ``galaxy.yml`` in a built collection isn't what was
-    built, so neither can be chosen safely."""
+    built, so neither can be chosen safely.
+
+    ``version``, from the ``[project.sources]`` entry ``source`` names, replaces a source's version, which may be a
+    placeholder its release fills in; a built collection's was checked when it was built, so it can't be replaced.
+    ``shown`` is what errors and warnings call ``path``, such as a git commit's ``<url>@<commit>`` in place of where
+    its files are in the cache.
+    """
+    if shown is None:
+        return _read_collection_dir(path, version, source)
+    try:
+        return _read_collection_dir(path, version, source, shown)
+    except ConfigError as e:
+        raise ConfigError(str(e).replace(path, shown)) from None
+
+
+def _read_collection_dir(path: str, version: Version | None, source: str, shown: str | None = None) -> SourceCollection:
     galaxy_file = os.path.join(path, GALAXY_FILE_NAME)
     manifest_file = os.path.join(path, MANIFEST_FILE_NAME)
     has_galaxy, has_manifest = os.path.isfile(galaxy_file), os.path.isfile(manifest_file)
@@ -36,14 +54,22 @@ def read_collection_dir(path: str) -> SourceCollection:
             + "a built collection: remove the MANIFEST.json from a source, or the galaxy.yml from a built collection"
         )
     if has_manifest:
+        if version is not None:
+            raise ConfigError(
+                f"{path} is a built collection, whose MANIFEST.json gives its version, so {source or 'its source'} "
+                + "can't give another: remove 'version' from it"
+            )
         return read_built_collection(manifest_file)
-    return read_source_collection(galaxy_file)
+    return read_source_collection(galaxy_file, version, source=source, shown=shown)
 
 
-def read_source_collection(galaxy_file: str) -> SourceCollection:
+def read_source_collection(
+    galaxy_file: str, version: Version | None = None, *, source: str = "", shown: str | None = None
+) -> SourceCollection:
     """Read the collection whose ``galaxy.yml`` is ``galaxy_file``, raising ConfigError for anything ansible-galaxy
-    would refuse to build or install."""
-    return _collection(galaxy_file, yaml_mapping(galaxy_file, required=True))
+    would refuse to build or install, its version replaced by ``version``, and its directory called ``shown`` in a
+    warning, as ``read_collection_dir`` says."""
+    return _collection(galaxy_file, yaml_mapping(galaxy_file, required=True), version, source=source, shown=shown)
 
 
 def read_built_collection(manifest_file: str) -> SourceCollection:
@@ -62,9 +88,19 @@ def read_built_collection(manifest_file: str) -> SourceCollection:
     return _collection(manifest_file, info)
 
 
-def _collection(metadata_file: str, info: dict[str, object]) -> SourceCollection:
+def _collection(
+    metadata_file: str,
+    info: dict[str, object],
+    override: Version | None = None,
+    *,
+    source: str = "",
+    shown: str | None = None,
+) -> SourceCollection:
     """The collection ``info``, the mapping read from ``metadata_file``, describes, with ``requires_ansible`` from the
-    ``meta/runtime.yml`` beside it, which neither file carries."""
+    ``meta/runtime.yml`` beside it, which neither file carries. ``override`` replaces its version, with a warning when
+    the file has a valid one of its own, as it then probably isn't needed any more; ``source`` names where the
+    collection was given, a ``[project.sources]`` entry or the command line, if anywhere, so an invalid version can say
+    where to give one."""
     path = os.path.dirname(metadata_file)
     namespace, short = info.get("namespace"), info.get("name")
     if not isinstance(namespace, str) or not isinstance(short, str):
@@ -75,12 +111,39 @@ def _collection(metadata_file: str, info: dict[str, object]) -> SourceCollection
         raise ConfigError(f"{metadata_file}: {e}") from None
 
     text = info.get("version")
-    if not isinstance(text, str):
-        raise ConfigError(f"{metadata_file}: 'version' is required and must be a string, such as '1.0.0'")
+    if source.startswith("[project.sources]"):
+        hint = f"; if it's a placeholder, give the version in {source}, such as version = '1.0.0'"
+    elif source.startswith("git+"):
+        hint = (
+            "; if it's a placeholder, give the version after the URL's #, such as #version=1.0.0, joined to "
+            + "subdirectory with &"
+        )
+    elif source:
+        hint = (
+            "; if it's a placeholder, write its [project.sources] entry in alai.toml by hand, with the version, such "
+            + "as version = '1.0.0'"
+        )
+    else:
+        hint = ""
     try:
-        version = Version(text)
-    except ValueError as e:
-        raise ConfigError(f"{metadata_file}: 'version': {e}") from None
+        if not isinstance(text, str):
+            raise ConfigError(f"{metadata_file}: 'version' is required and must be a string, such as '1.0.0'{hint}")
+        try:
+            version = Version(text)
+        except ValueError as e:
+            raise ConfigError(f"{metadata_file}: 'version': {e}{hint}") from None
+    except ConfigError:
+        if override is None:
+            raise
+        version = override
+    else:
+        if override is not None:
+            where = os.path.join(shown, os.path.basename(metadata_file)) if shown is not None else metadata_file
+            if version == override:
+                warn(f"{where} has version {version} too, so {source}'s 'version' isn't needed")
+            else:
+                warn(f"{where} has version {version}, but {source} gives {override}, which is used")
+            version = override
 
     raw: object = info.get("dependencies") or {}
     if not isinstance(raw, dict):

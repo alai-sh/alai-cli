@@ -375,7 +375,7 @@ into `ansible.builtin`, which the index lacked until it was synced.
   may route differently. Reading `meta/runtime.yml` from disk for installed
   collections would fix it. A documented limitation for now (2026-10-21).
 - **Installed collections that aren't on any index** (source checkouts,
-  later path and git sources) have no plugins listed.
+  path, tarball and git sources) have no plugins listed.
   alai-plugin-extractor can list them statically, but it's a new
   dependency, so it waits. A documented limitation.
 - **`ansible.builtin` is one ansible-core release's**, the one the index

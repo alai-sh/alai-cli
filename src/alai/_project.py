@@ -14,8 +14,17 @@ import typing as _t
 
 from ._common import ConfigError, Record
 from ._config import RawManifest, Settings, raw_manifest, read_toml
-from ._lock import ArchiveSource, ArchiveUrlSource, Lock, LockedRoot, changes, input_changes, local_changes
-from ._manifest import Manifest, PathSource, SourceCollection, UrlSource, collection_name, parse_manifest
+from ._lock import (
+    ArchiveSource,
+    ArchiveUrlSource,
+    GitCommitSource,
+    Lock,
+    LockedRoot,
+    changes,
+    input_changes,
+    local_changes,
+)
+from ._manifest import GitSource, Manifest, PathSource, SourceCollection, UrlSource, collection_name, parse_manifest
 from ._output import detail, home_path, lock_change, status, warn
 from ._progress import Live, Task
 
@@ -135,17 +144,18 @@ def read_local(settings: Settings, manifest: Manifest) -> None:
     read now, as uv reads a
     path dependency's ``pyproject.toml`` on every lock and sync. The collection there must be the one its
     ``[project.sources]`` entry names, and the directory mustn't overlap the collections directory, where a link to it,
-    or an exact sync, would replace or remove it. A path to a tarball is hashed and read through the cache; a URL
-    needs the network, so ``resolve_manifest`` reads those."""
+    or an exact sync, would replace or remove it. A path to a tarball is hashed and read through the cache; a URL or
+    a git repository needs the network, so ``resolve_manifest`` reads those."""
     for name, source in sorted(manifest.sources.items()):
-        if not isinstance(source, PathSource):
+        if not isinstance(source, (PathSource, GitSource)):
             continue
         if manifest.root is not None and name == manifest.root.name:
             raise ConfigError(
                 f"[project.sources] takes {name} from {source}, but it's the project's own collection, which is "
                 + "always the checkout"
             )
-        manifest.local[name] = read_path_source(settings, name, source)
+        if isinstance(source, PathSource):
+            manifest.local[name] = read_path_source(settings, name, source)
 
 
 def read_path_source(settings: Settings, name: str | None, source: PathSource) -> SourceCollection:
@@ -160,6 +170,11 @@ def read_path_source(settings: Settings, name: str | None, source: PathSource) -
             raise ConfigError(
                 f"{home_path(where)} is a tarball, which can't be editable{_for(name)}: give a directory to link to"
             )
+        if source.version is not None:
+            raise ConfigError(
+                f"{home_path(where)} is a tarball, whose MANIFEST.json gives its version, so its source can't give "
+                + f"another{_for(name)}: remove 'version'"
+            )
         return _read_archive(settings, name, str(source), where)
     if not os.path.isdir(where):
         raise ConfigError(f"{home_path(where)} doesn't exist or isn't a directory" + _for(name))
@@ -167,7 +182,7 @@ def read_path_source(settings: Settings, name: str | None, source: PathSource) -
         raise ConfigError(
             f"{home_path(where)} has no galaxy.yml or MANIFEST.json, so it isn't a collection{_for(name)}"
         )
-    collection = read_collection_dir(where)
+    collection = read_collection_dir(where, source.version, source=_entry(name))
     if name is not None and collection.name != name:
         raise ConfigError(
             f"[project.sources] takes {name} from {source}, but its {collection.metadata} is for {collection.name}"
@@ -185,6 +200,116 @@ def read_path_source(settings: Settings, name: str | None, source: PathSource) -
 
 def _for(name: str | None) -> str:
     return f" (from [project.sources] for {name})" if name is not None else ""
+
+
+def _entry(name: str | None) -> str:
+    """Where a source was given, in messages: the ``[project.sources]`` entry for ``name``, or the command line."""
+    return f"[project.sources] for {name}" if name is not None else "the command line"
+
+
+def read_git_source(
+    settings: Settings, name: str | None, source: GitSource, commit: str | None = None
+) -> SourceCollection:
+    """The collection at a git source's ``subdirectory`` of ``commit``, or of the commit its ``rev`` is at now when
+    None, fetched into the cache if it isn't there, checked to be ``name`` when given."""
+    from ._galaxy import read_collection_dir
+    from ._git import update
+
+    commit, files = update(
+        settings.cache_dir,
+        source.url,
+        source.rev,
+        commit,
+        offline=settings.offline,
+        names=[name] if name is not None else (),
+    )
+    where = os.path.join(files, *source.subdirectory.split("/")) if source.subdirectory is not None else files
+    shown = f"{source.url}@{commit[:7]}" + (f" ({source.subdirectory})" if source.subdirectory is not None else "")
+    if not any(os.path.isfile(os.path.join(where, f)) for f in ("galaxy.yml", "MANIFEST.json")):
+        if not os.path.isdir(where):
+            message = f"{shown} has no directory {source.subdirectory}"
+        else:
+            message = f"{shown} has no galaxy.yml or MANIFEST.json, so it isn't a collection"
+        # As ansible-galaxy looks for collections one level down when a repository's root isn't one.
+        found = sorted(
+            d
+            for d in os.listdir(files)
+            if any(os.path.isfile(os.path.join(files, d, f)) for f in ("galaxy.yml", "MANIFEST.json"))
+        )
+        if found:
+            message += f"; collections are in {', '.join(found)}: give one as its subdirectory"
+        raise ConfigError(message + _for(name))
+    collection = read_collection_dir(
+        where,
+        source.version,
+        source=_entry(name) if name is not None else str(source),
+        shown=f"{source.url}@{commit[:7]}" + (f"/{source.subdirectory}" if source.subdirectory is not None else ""),
+    )
+    if name is not None and collection.name != name:
+        raise ConfigError(
+            f"[project.sources] takes {name} from {source}, but its {collection.metadata} is for {collection.name}"
+        )
+    return SourceCollection(
+        collection.name,
+        collection.version,
+        collection.path,
+        dependencies=collection.dependencies,
+        requires_ansible=collection.requires_ansible,
+        metadata=collection.metadata,
+        commit=commit,
+    )
+
+
+def read_git_sources(
+    settings: Settings, manifest: Manifest, locked: Lock | None, upgrade: bool | _c.Collection[str]
+) -> None:
+    """Fill ``manifest.local`` with each git source's collection, in parallel.
+
+    One already in ``manifest.local``, as ``alai add`` fetches one to read its name, isn't read again. One locked from
+    the same ``[project.sources]`` entry is taken from the lock, with no network, unless ``upgrade`` names it, as uv
+    keeps a git dependency's locked commit until it's upgraded; one locked from the same repository and ``rev`` keeps
+    its commit, read from the cache. Anything else resolves ``rev`` to its commit now.
+    """
+
+    def upgrading(name: str) -> bool:
+        return upgrade is True or (upgrade is not False and name in upgrade)
+
+    before = parse_manifest(locked.manifest).sources if locked is not None else {}
+    wanted: dict[str, tuple[GitSource, str | None]] = {}
+    for name, source in sorted(manifest.sources.items()):
+        if not isinstance(source, GitSource) or name in manifest.local:
+            continue
+        was = locked.get(name) if locked is not None else None
+        if was is None or not isinstance(was.source, GitCommitSource) or upgrading(name):
+            wanted[name] = (source, None)
+        elif before.get(name) == source:
+            manifest.local[name] = SourceCollection(
+                name,
+                was.version,
+                "",
+                dependencies=was.requirements or (),
+                requires_ansible=was.requires_ansible,
+                commit=was.source.commit,
+            )
+        else:
+            wanted[name] = (source, was.source.commit if was.source.same_source(source) else None)
+    if not wanted:
+        return
+    # As sync downloads index artifacts: in parallel, each checked and kept here, in order by name, so the first to
+    # fail by name is the one reported.
+    with concurrent.futures.ThreadPoolExecutor(8, thread_name_prefix="alai-git") as pool:
+        futures = {
+            name: pool.submit(read_git_source, settings, name, source, commit)
+            for name, (source, commit) in wanted.items()
+        }
+    for name, future in futures.items():
+        manifest.local[name] = future.result()
+
+
+def fetch_git_source(settings: Settings, source: GitSource) -> SourceCollection:
+    """``read_git_source`` for a repository given on the command line."""
+    with Live(Task(f"Fetching {source}...")):
+        return read_git_source(settings, None, source)
 
 
 def _read_archive(settings: Settings, name: str | None, shown: str, path: str) -> SourceCollection:
@@ -365,6 +490,7 @@ def resolve_manifest(
         Live(Task("Resolving collections...")) as task,
     ):
         read_archives(settings, manifest, fetcher, locked, upgrade)
+        read_git_sources(settings, manifest, locked, upgrade)
         clients = [IndexClient(index, fetcher, settings.cache_dir) for index in settings.indexes]
         resolution = resolve(
             manifest,

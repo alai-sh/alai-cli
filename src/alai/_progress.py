@@ -111,15 +111,20 @@ class Live:
         """How many lines of the block are on screen now."""
         self._frame = 0
         self._ascii = not _encodes(_SPINNER + "█░")
+        self._suspended = 0
+        """How many ``Suspended`` blocks are running; nothing is drawn while any is."""
 
     def __enter__(self) -> Task:
+        global _current
         if self._enabled:
             _output.live = self.print
+            _current = self
             self._thread = threading.Thread(target=self._run, name="alai-progress", daemon=True)
             self._thread.start()
         return self.task
 
     def __exit__(self, *_: object) -> None:
+        global _current
         if self._thread is None:
             return
         self._stop.set()
@@ -127,6 +132,7 @@ class Live:
         with self._lock:
             self._write(self._clear() + "\x1b[?25h")
             _output.live = None
+            _current = None
 
     def print(self, text: str) -> None:
         """Write a message above the block."""
@@ -141,8 +147,20 @@ class Live:
                 self._frame += 1
                 self._write(self._clear() + self._draw())
 
+    def suspend(self) -> None:
+        with self._lock:
+            self._suspended += 1
+            # The cursor is shown again, at the start of a cleared line, for whatever writes to the terminal.
+            self._write(self._clear() + "\x1b[?25h")
+
+    def resume(self) -> None:
+        with self._lock:
+            self._suspended -= 1
+            if not self._suspended:
+                self._write("\x1b[?25l")
+
     def _draw(self) -> str:
-        if not self._frame:
+        if not self._frame or self._suspended:
             return ""
         size = shutil.get_terminal_size()
         lines = self.task.lines(self._frame, size.columns, size.lines, ascii_only=self._ascii)
@@ -161,6 +179,27 @@ class Live:
         if data:
             _ = sys.stderr.write(data)
             _ = sys.stderr.flush()
+
+
+_current: Live | None = None
+"""The ``Live`` drawing now, if any."""
+
+
+class Suspended:
+    """Stops the progress drawn now, if any, from being drawn until the ``with`` block ends, for something that may
+    write to the terminal itself: ssh asking for a passphrase or to trust a host's key, which it writes to the
+    terminal rather than to a stream alai could capture. Blocks in several threads at once each hold it off."""
+
+    def __init__(self) -> None:
+        self._live = _current
+
+    def __enter__(self) -> None:
+        if self._live is not None:
+            self._live.suspend()
+
+    def __exit__(self, *_: object) -> None:
+        if self._live is not None:
+            self._live.resume()
 
 
 def _encodes(text: str) -> bool:

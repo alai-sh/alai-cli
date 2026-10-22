@@ -316,17 +316,17 @@ name = "ansible.netcommon"
 
 ## Other sources
 
-Directories and tarballs, by path or URL, are implemented (2026-10-22); git
-repositories are next, and the shapes below are chosen so they slot in. Each is a `[project.sources]` entry in `alai.toml`
-and a `source` table naming its kind in the lock, with uv's names for each
-kind, since uv 0.13.0 draws the same lines:
+Directories, tarballs by path or URL, and git repositories are implemented
+(2026-10-22). Each is a `[project.sources]` entry in `alai.toml` and a
+`source` table naming its kind in the lock, with uv's names for each kind,
+since uv 0.13.0 draws the same lines:
 
 | `[project.sources]` | `source` in the lock | Pinned by | Status |
 |---|---|---|---|
 | `{ index = "<name>" }` | `{ index = "<url>" }` | `cksum`, `size` | Done |
 | `{ path = "<dir>" }` | `{ directory = "<dir>" }` | Nothing: `requirements` re-read | Done |
 | `{ path = "<dir>", editable = true }` | `{ editable = "<dir>" }` | Nothing: `requirements` re-read | Done |
-| `{ git = "<url>", rev = "<rev>" }` | `{ git = "<url>", rev = "<rev>", commit = "<sha>" }` | `commit`, plus `requirements` | Planned |
+| `{ git = "<url>", rev = "<rev>", subdirectory = "<dir>" }` | `{ git = "<url>", rev = "<rev>", subdirectory = "<dir>", commit = "<sha>" }` | `commit`, plus `requirements` | Done ([below](#git-repositories)) |
 | `{ url = "<tarball url>" }` | `{ url = "<tarball url>" }` | `cksum`, `size`, plus `requirements` | Done |
 | `{ path = "<file>.tar.gz" }` | `{ path = "<file>.tar.gz" }` | `cksum`, `size`, plus `requirements` | Done |
 
@@ -372,7 +372,7 @@ dependencies = []
 ```
 
 - **What pins the content depends on the source.** An index or tarball has
-  `cksum` and `size`; git will have the commit (with the requested `rev`, so
+  `cksum` and `size`; git has the commit (with the requested `rev`, so
   `--upgrade` can move a branch); a directory has nothing, since it's meant
   to change. `cksum` and `size` are written only when there is one.
 - **A directory's metadata is a snapshot**, re-read every time. Its
@@ -386,7 +386,8 @@ dependencies = []
   `sync` locks again, and `lock --check` and `--locked` fail, when they
   change. uv 0.13.0 did the same: after bumping `lib`'s version, `uv sync`
   locked again and replaced it, and `uv lock --check` failed. A git entry
-  will carry `requirements` too, read from the commit.
+  carries `requirements` too, read from the commit, so locking again
+  needn't fetch it.
 - **A directory's dependencies are chosen like any other collection's**:
   their own `[project.sources]` entry, else the first index that has them.
 - **A source applies to any collection in the resolution**, as an index
@@ -496,3 +497,113 @@ Tried with uv 0.13.0 on 2026-10-22, with an sdist on disk and served by
 
 How each is installed is in [install.md](install.md#directory-and-editable-sources)
 and [install.md](install.md#tarball-sources).
+
+### Git repositories
+
+Implemented on 2026-10-22 (`GitSource` in `_manifest.py`, `GitCommitSource`
+in `_lock.py`, `read_git_sources` in `_project.py`). How a commit is fetched
+and installed is in [install.md](install.md#git-sources).
+
+```toml
+# alai.toml
+[project.sources]
+"corp.net" = { git = "https://git.example.com/corp/net.git", rev = "v2.1.0" }
+"chocolatey.chocolatey" = { git = "https://github.com/chocolatey-community/chocolatey-ansible", rev = "1.5.0", subdirectory = "chocolatey", version = "1.5.0" }
+```
+
+```toml
+# alai.lock
+[[collection]]
+name = "chocolatey.chocolatey"
+version = "1.5.0"                          # the source's version, galaxy.yml's is a placeholder
+source = { git = "https://github.com/chocolatey-community/chocolatey-ansible", rev = "1.5.0", subdirectory = "chocolatey", commit = "e1c6b3787307ad08e0f84d9b2fc8965471b264d9" }
+requires_ansible = ">=2.10.0"              # meta/runtime.yml, at the commit
+requirements = []                          # galaxy.yml's dependencies, at the commit
+dependencies = []
+```
+
+Tried with uv 0.13.0 on 2026-10-22, against github.com:
+
+- **`uv add "git+<url>@<rev>#subdirectory=<dir>"`** wrote `{ git = "<url>",
+  subdirectory = "<dir>", rev = "<rev>" }` to `[tool.uv.sources]`, and
+  locked `source = { git = "<url>?subdirectory=<dir>&rev=<rev>#<sha>" }`.
+  alai keeps the separate keys it planned, as its other `source` tables
+  have, with uv's names; the meaning is the same.
+- **The commit is resolved from `rev`** and the lock is what's installed;
+  `rev` is kept so `-U` and `-P` can move a branch.
+- **uv's GitHub fast path**: for a github.com URL, `uv lock` asked
+  `api.github.com/repos/<owner>/<repo>/commits/<rev>` for the commit and
+  read `pyproject.toml` from `raw.githubusercontent.com`, so it locked
+  without running git; git ran only to install. alai could do the same for
+  `galaxy.yml` and `meta/runtime.yml`; it's only faster, so it's left for
+  later.
+
+ansible-galaxy writes the same thing as
+`git+<url>#/<subdir>,<rev>`: `parse_scm` in ansible-core 2.22.0rc1's
+`galaxy/collection/concrete_artifact_manager.py` takes the fragment as the
+directory and what follows the comma as the version to check out. When
+that directory has no `galaxy.yml` or `MANIFEST.json`, it installs every
+collection one level below it (`_find_collections_in_subdirs` in
+`galaxy/dependency_resolution/dataclasses.py`).
+
+- **`subdirectory` is explicit.** A `[project.sources]` entry names one
+  collection, so there's no scan for several; when the repository's root
+  isn't a collection, the error lists the directories below it that are.
+  The checkout is the whole commit, so collections from different
+  directories of one commit share it.
+- **The name must match**, and only the project's manifest can name a git
+  source, as for a directory ([above](#other-sources)).
+
+### A version that isn't one
+
+Decided with the user on 2026-10-22: a directory or git source whose
+`galaxy.yml` has no usable version is an error unless the source gives
+one, `version = "<semver>"`, which the lock then records and a build
+writes into `MANIFEST.json`. `alai add` writes it for a git URL given with
+`#version=<semver>` ([install.md](install.md#git-sources)); a directory's
+is added by hand (decided with the user, 2026-10-22). uv 0.13.0 reads a
+`#` part on a plain path too (`uv add ../lib#subdirectory=.` added
+`../lib`), which keeps a directory with a `#` in its name from being
+given as one (`../odd#dir/lib2`: "Distribution not found"); a directory
+whose `galaxy.yml` has a placeholder is usually one being worked on,
+better linked editable with its version written once in `alai.toml`. A
+`file://` URL with a `#` part, which uv ignores (`#egg=x` was dropped),
+is an error, so it isn't installed as something other than what was
+asked for. Some repositories keep a placeholder their
+release script fills in: chocolatey-ansible's `galaxy.yml` has `version:
+'{{ REPLACE_VERSION }}'` at every commit.
+
+- **Only where the version comes from `galaxy.yml`**: a `path` source that's
+  a collection's source, plain or editable, and a git source. An index's
+  artifact, a tarball, and a built directory have a `MANIFEST.json` written
+  by a build, which checks the version, so `version` on those is an error,
+  as it is for a git repository whose commit holds a built collection,
+  read when it's locked. Errors and warnings name a commit's files as
+  `<url>@<commit>`, not where they are in the cache.
+- **ansible-galaxy accepts `null`, `''` and `'*'`** as version `*`, which
+  satisfies any requirement, and writes `"version": "*"` into
+  `MANIFEST.json`; it rejects a missing version and other strings such as
+  `'1.0'` or `'main'` ("A SemVer-compliant version or '*' is required"),
+  and crashes on `'{{ REPLACE_VERSION }}'` (`Non integer values in
+  LooseVersion`), so it can't install chocolatey from git either (tried
+  with `ansible-galaxy collection install <dir>`, ansible-core 2.22.0rc1).
+  alai rejects all of these today (`read_collection_dir`), and keeps doing
+  so: a collection counted as any version would satisfy a requirement it
+  doesn't, and other collections' requirements on it would mean nothing.
+- **Python has no versionless package**: core metadata requires `Version`,
+  and pip 24.1+ and uv reject one that isn't PEP 440. Where Python allows
+  `dynamic = ["version"]`, the build works it out (setuptools-scm from `git
+  describe`); a collection has no build step alai could run, as
+  chocolatey's is its own script. uv's nearest override is
+  `[[tool.uv.dependency-metadata]]`, which supplies a package's version and
+  dependencies when they can't be read.
+- **Not chosen**: counting an unusable version as `*`, as ansible-galaxy
+  does, and taking the version from a tag that points at the locked commit.
+  Either can be added later; an explicit version is the one that's never
+  wrong without the user saying so. See
+  [user-questions.md](user-questions.md#a-source-with-no-usable-version).
+
+- **The source's `version` wins** over a valid one in `galaxy.yml`, with a
+  warning naming both (decided with the user, 2026-10-22): like a source
+  itself, it's an override, and the warning catches one left behind after
+  the repository fixed its version.

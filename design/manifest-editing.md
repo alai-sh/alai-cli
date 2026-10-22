@@ -36,6 +36,15 @@ Tested against `uv add` and `uv remove` (uv 0.13) on 2026-10-20, with a
   (try: `uv remove certifi --group test`)"). Here it's one line:
   `d.d isn't in project.collections; it's in group 'test' (try: alai remove
   d.d --group test)`.
+- **`remove` takes names, never the source given to `add`** (2026-10-22),
+  as `uv remove` does: uv 0.13.0 refused `uv remove git+https://…` ("URL
+  requirement must be preceded by a package name"). Given a source,
+  `alai remove` says which collections `[project.sources]` takes from it
+  (`_by_source`: a git URL matched by repository and `subdirectory`,
+  whatever its `rev`; a path by where it resolves), as `uv pip uninstall`
+  looks a URL up among what's installed ("Skipping `git+https://…` as it
+  is not installed"). `collection uninstall` does the same from the
+  install records alai writes, and an editable link's target.
 - **A new collection goes in order when the list is sorted**, else at the
   end, as uv keeps a sorted list sorted.
 - **`alai.toml` keeps its newlines (`\n` or `\r\n`) and permissions**, and is

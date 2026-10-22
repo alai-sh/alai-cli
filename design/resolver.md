@@ -160,8 +160,9 @@ meet:` and the requirements, as for the project's own collection. `-v` gives `ns
 source changed, and `ns.col's galaxy.yml now says 1.1.0` when the version
 did.
 
-A git source will be the same, read from the checkout of its commit; a
-tarball will be one candidate with its `cksum`.
+A git source is the same, read from its commit's files, as is a tarball,
+read from its `MANIFEST.json`. `-v` gives `git+<url> is now at commit
+<short>` when `-U` or `-P` moved a git source's `rev` to another commit.
 
 ## Not done yet
 

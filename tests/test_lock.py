@@ -230,8 +230,23 @@ class TestParse:
                 r"'source' is required and must be a table",
             ),
             (
+                ('source = { index = "https://index.alai.sh/" }', 'source = { svn = "https://g/x.git" }'),
+                r"unknown source \(svn\); it may need a newer alai",
+            ),
+            (
+                ('source = { index = "https://index.alai.sh/" }', 'source = { git = "https://g/x.git", tag = "v1" }'),
+                r"unknown git source \(git, tag\); it may need a newer alai",
+            ),
+            (
                 ('source = { index = "https://index.alai.sh/" }', 'source = { git = "https://g/x.git" }'),
-                r"unknown source \(git\); it may need a newer alai",
+                "'commit' is required and must be a non-empty string",
+            ),
+            (
+                (
+                    'source = { index = "https://index.alai.sh/" }',
+                    'source = { git = "https://g/x.git", commit = "abc" }',
+                ),
+                "'commit' must be a full lowercase hex commit hash",
             ),
             (
                 ('source = { index = "https://index.alai.sh/" }', 'source = { index = "u", path = "p" }'),

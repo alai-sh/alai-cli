@@ -18,10 +18,17 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         "remove",
         help="remove collections from alai.toml, then lock and sync",
         description="Remove collections from the project's alai.toml, then lock and sync, which uninstalls what "
-        + "nothing needs any more. Every other line of alai.toml is left as it is.",
+        + "nothing needs any more. A collection is given by its name, even one added from a directory, a tarball or "
+        + "a git repository, whose [project.sources] entry goes with it. Every other line of alai.toml is left as it "
+        + "is.",
         formatter_class=HelpFormatter,
     )
-    _ = remove.add_argument("names", metavar="NAME", nargs="+", help="a collection name, such as ansible.posix")
+    _ = remove.add_argument(
+        "names",
+        metavar="NAME",
+        nargs="+",
+        help="a collection name, such as ansible.posix, not the directory, tarball or git URL it was added from",
+    )
     add_edit_args(remove, verb="remove")
     add_global_args(remove, suppress=True)
     add_settings_args(remove, "resolve", "install")

@@ -115,6 +115,18 @@ too, for `galaxy.yml`, `meta/runtime.yml`, `alai.toml` and `alai.lock`.
 PyYAML is used for now, with its C loader where it's built with libyaml,
 and only imported in a collection project.
 
+TOML 1.1's multi-line inline tables wait on that answer (decided with the
+user, 2026-10-22): `alai.toml` is TOML 1.0, an inline table on one line,
+for now. Today what reads one depends on the Python: checked on
+2026-10-22, a `[project.sources]` entry spread over lines was read by
+tomli 2.5.0 (Python 3.10) and Python 3.15's `tomllib`, refused by 3.11's,
+3.13's and 3.14's ("Invalid initial character for a key part"), and
+refused by `_toml_edit`, so `alai add` couldn't edit the file; uv 0.13.0
+locked the same layout in `[tool.uv.sources]`. Supporting it in Python
+would mean tomli below 3.15 and multi-line inline tables in
+`_toml_edit`'s scanner; a TOML parser in the extension would settle it
+instead. Long git entries are what would want it.
+
 A separate library, `alai-tar` say, in Rust with pyo3, doing what's slow
 above: reading the tarball, decompressing, hashing, writing files, and
 cloning or linking them into place, with the GIL released so it can use

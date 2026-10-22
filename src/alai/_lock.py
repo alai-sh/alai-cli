@@ -17,6 +17,7 @@ import secrets
 from ._common import Error, Record, as_table
 from ._config import RawManifest, read_toml
 from ._manifest import (
+    GitSource,
     IndexPin,
     Manifest,
     PathSource,
@@ -37,6 +38,8 @@ _HEADER = (
     "# comments included, are lost the next time alai writes it.\n"
 )
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
+GIT_COMMIT_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+"""A full git commit hash, SHA-1 or SHA-256."""
 _BARE_KEY_RE = re.compile(r"[A-Za-z0-9_-]+")
 # An array longer than this goes one item per line, so adding an item changes one line of the diff.
 _INLINE_ARRAY_WIDTH = 80
@@ -63,7 +66,7 @@ class IndexSource(Record):
 
 class DirectorySource(Record):
     """A collection copied from a directory holding its ``galaxy.yml``, as uv locks a path dependency: ``{ directory =
-    "../col" }``. A later git source is built the same way from a checkout."""
+    "../col" }``. A git source is built the same way from its commit's files."""
 
     __slots__ = ("path",)
 
@@ -127,7 +130,39 @@ class ArchiveUrlSource(Record):
         return self.url
 
 
-LockedSource = IndexSource | DirectorySource | EditableSource | ArchiveSource | ArchiveUrlSource
+class GitCommitSource(Record):
+    """A collection built from a commit of a git repository, as a directory's is: ``{ git = "<url>", rev = "v1",
+    subdirectory = "col", commit = "<sha>" }``, its ``[project.sources]`` entry with the commit ``rev`` was at, as uv
+    locks a git dependency. ``rev`` stays, so ``-U`` or ``-P`` can move a branch."""
+
+    __slots__ = ("commit", "rev", "subdirectory", "url")
+
+    def __init__(self, url: str, commit: str, *, rev: str | None = None, subdirectory: str | None = None) -> None:
+        self.url = url
+        self.commit = commit
+        self.rev = rev
+        self.subdirectory = subdirectory
+
+    def table(self) -> dict[str, str]:
+        table = {"git": self.url}
+        if self.rev is not None:
+            table["rev"] = self.rev
+        if self.subdirectory is not None:
+            table["subdirectory"] = self.subdirectory
+        table["commit"] = self.commit
+        return table
+
+    def same_source(self, source: GitSource) -> bool:
+        """Whether this was locked from ``source``'s repository, revision and directory, whatever the commit."""
+        return (self.url, self.rev, self.subdirectory) == (source.url, source.rev, source.subdirectory)
+
+    def __str__(self) -> str:
+        """As uv shows one: ``git+<url>@<commit>#subdirectory=<dir>``."""
+        subdirectory = f"#subdirectory={self.subdirectory}" if self.subdirectory is not None else ""
+        return f"git+{self.url}@{self.commit}{subdirectory}"
+
+
+LockedSource = IndexSource | DirectorySource | EditableSource | ArchiveSource | ArchiveUrlSource | GitCommitSource
 
 
 def local_source(path: str, *, editable: bool) -> DirectorySource | EditableSource:
@@ -135,7 +170,17 @@ def local_source(path: str, *, editable: bool) -> DirectorySource | EditableSour
 
 
 class LockedCollection(Record):
-    __slots__ = ("cksum", "dependencies", "name", "requirements", "requires_ansible", "size", "source", "version")
+    __slots__ = (
+        "cksum",
+        "dependencies",
+        "name",
+        "requirements",
+        "requires_ansible",
+        "size",
+        "source",
+        "source_version",
+        "version",
+    )
 
     def __init__(
         self,
@@ -148,6 +193,7 @@ class LockedCollection(Record):
         requires_ansible: str | None = None,
         requirements: tuple[str, ...] | None = None,
         dependencies: tuple[str, ...] = (),
+        source_version: bool = False,
     ) -> None:
         self.name = name
         self.version = version
@@ -161,9 +207,13 @@ class LockedCollection(Record):
         self.requirements = requirements
         """For a directory, its ``galaxy.yml`` dependencies when it was locked, in ``alai.toml``'s syntax, so a change
         to them makes the lock stale, as uv keeps a local package's ``requires-dist``; for a tarball, its
-        ``MANIFEST.json``'s, so locking again needn't download it. None for an index's, whose index file has them."""
+        ``MANIFEST.json``'s, and for a git source, its commit's, so locking again needn't download it. None for an
+        index's, whose index file has them."""
         self.dependencies = dependencies
         """The names of the locked collections it depends on, sorted."""
+        self.source_version = source_version
+        """Whether ``version`` is the one its ``[project.sources]`` entry gives, in place of its ``galaxy.yml``'s, so a
+        build writes it whatever ``galaxy.yml`` says. Not written in the entry: the lock's ``[sources]`` has it."""
 
     def is_local(self) -> bool:
         """Whether it comes from a directory, with metadata read from its ``galaxy.yml`` or ``MANIFEST.json`` every time,
@@ -173,6 +223,9 @@ class LockedCollection(Record):
     def is_archive(self) -> bool:
         """Whether it comes from a tarball named in ``[project.sources]``, by path or URL."""
         return isinstance(self.source, (ArchiveSource, ArchiveUrlSource))
+
+    def is_git(self) -> bool:
+        return isinstance(self.source, GitCommitSource)
 
 
 class LockedRoot(Record):
@@ -438,18 +491,26 @@ def _compare(
 
 
 def _described(source: Source) -> str:
-    return f"'{source.index}'" if isinstance(source, IndexPin) else str(source)
+    if isinstance(source, IndexPin):
+        return f"'{source.index}'"
+    if isinstance(source, (PathSource, GitSource)) and source.version is not None:
+        return f"{source}, as version {source.version}"
+    return str(source)
 
 
 def locked_source(source: Source, collection: SourceCollection) -> LockedSource:
-    """How the lock records a collection ``source``, a path or URL ``[project.sources]`` entry, takes from where
-    ``collection`` was read: a directory, editable or not, or a tarball."""
+    """How the lock records a collection ``source``, a path, URL or git ``[project.sources]`` entry, takes from where
+    ``collection`` was read: a directory, editable or not, a tarball, or a commit."""
     if isinstance(source, PathSource):
         if collection.is_archive():
             return ArchiveSource(source.path)
         return local_source(source.path, editable=source.editable)
     if isinstance(source, IndexPin):
         raise ValueError(f"{collection.name} comes from index '{source.index}', not {collection.path}")
+    if isinstance(source, GitSource):
+        if collection.commit is None:
+            raise ValueError(f"{collection.name} wasn't read from a commit")
+        return GitCommitSource(source.url, collection.commit, rev=source.rev, subdirectory=source.subdirectory)
     return ArchiveUrlSource(source.url)
 
 
@@ -497,6 +558,9 @@ def parse_lock(table: _c.Mapping[str, object], path: str) -> Lock:
     for collection in [*locked.values(), *([root] if root is not None else [])]:
         if missing := [d for d in collection.dependencies if d not in names]:
             raise LockError(f"{path}: '{collection.name}' depends on '{missing[0]}', which isn't locked")
+    for name, source in manifest.sources.items():
+        if "version" in source and name in locked and (locked[name].is_local() or locked[name].is_git()):
+            locked[name].source_version = True
     return Lock(manifest, locked.values(), root)
 
 
@@ -666,22 +730,29 @@ def _parse_collection(entry: object, where: str) -> LockedCollection | LockedRoo
 
     if set(source_table) == {"editable"} and source_table["editable"] == ".":
         return LockedRoot(name, version, requires_ansible=requires_ansible, dependencies=names)
+    if "git" in source_table:
+        return LockedCollection(
+            name,
+            version,
+            source=_git_source(source_table, where),
+            requires_ansible=requires_ansible,
+            requirements=_requirements(table, where),
+            dependencies=names,
+        )
     kind = next(iter(source_table)) if len(source_table) == 1 else None
     value = source_table.get(kind) if kind is not None else None
     if not isinstance(value, str) or not value or kind not in ("index", "directory", "editable", "path", "url"):
         kinds = ", ".join(sorted(source_table)) or "none"
         raise LockError(f"{where}: unknown source ({kinds}); it may need a newer alai")
 
-    requirements = table.get("requirements", [])
-    if not isinstance(requirements, list) or not all(isinstance(r, str) for r in _t_list(requirements)):
-        raise LockError(f"{where}: 'requirements' must be an array of strings")
+    requirements = _requirements(table, where)
     if kind in ("directory", "editable"):
         return LockedCollection(
             name,
             version,
             source=local_source(value, editable=kind == "editable"),
             requires_ansible=requires_ansible,
-            requirements=tuple(str(r) for r in _t_list(requirements)),
+            requirements=requirements,
             dependencies=names,
         )
 
@@ -709,9 +780,37 @@ def _parse_collection(entry: object, where: str) -> LockedCollection | LockedRoo
         cksum=cksum,
         size=size,
         requires_ansible=requires_ansible,
-        requirements=tuple(str(r) for r in _t_list(requirements)),
+        requirements=requirements,
         dependencies=names,
     )
+
+
+def _requirements(table: _c.Mapping[str, object], where: str) -> tuple[str, ...]:
+    requirements = table.get("requirements", [])
+    if not isinstance(requirements, list) or not all(isinstance(r, str) for r in _t_list(requirements)):
+        raise LockError(f"{where}: 'requirements' must be an array of strings")
+    return tuple(str(r) for r in _t_list(requirements))
+
+
+def _git_source(table: _c.Mapping[str, object], where: str) -> GitCommitSource:
+    """A git entry's ``source``: ``git`` and ``commit``, with ``rev`` and ``subdirectory`` when its
+    ``[project.sources]`` entry had them."""
+    if set(table) - {"git", "rev", "subdirectory", "commit"}:
+        kinds = ", ".join(sorted(table))
+        raise LockError(f"{where}: unknown git source ({kinds}); it may need a newer alai")
+    url = _string_field(table, "git", where)
+    commit = _string_field(table, "commit", where)
+    if not GIT_COMMIT_RE.fullmatch(commit):
+        raise LockError(f"{where}: 'commit' must be a full lowercase hex commit hash")
+    rev, subdirectory = table.get("rev"), table.get("subdirectory")
+    for key, value in (("rev", rev), ("subdirectory", subdirectory)):
+        if value is not None and (not isinstance(value, str) or not value):
+            raise LockError(f"{where}: '{key}' must be a non-empty string")
+    return GitCommitSource(url, commit, rev=_t_str(rev), subdirectory=_t_str(subdirectory))
+
+
+def _t_str(value: object) -> str | None:
+    return value if isinstance(value, str) else None
 
 
 def _string_field(table: _c.Mapping[str, object], key: str, where: str) -> str:
@@ -741,7 +840,7 @@ def _key(name: str) -> str:
 def _inline(table: _c.Mapping[str, object]) -> str:
     """A TOML inline table of string and boolean values, keys in a fixed order, the source's kind first: ``{ index =
     "internal" }``, ``{ path = "../col", editable = true }``."""
-    order = ["index", "path", "url", "directory", "editable"]
+    order = ["index", "path", "url", "git", "directory", "editable", "rev", "subdirectory", "commit"]
     keys = sorted(table, key=lambda k: (order.index(k) if k in order else len(order), k))
     return "{ " + ", ".join(f"{_key(k)} = {_value(table[k])}" for k in keys) + " }"
 

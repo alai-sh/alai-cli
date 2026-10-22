@@ -20,7 +20,9 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         + "name alone is written as >= the version locked for it. A directory, given with a / such as ./ns.col, is "
         + "the collection it holds, from its galaxy.yml or a built one's MANIFEST.json: its name is added, and "
         + "[project.sources] takes it from there. So is a built collection's tarball, by path, such as "
-        + "ns-col-1.0.0.tar.gz, or by https:// URL. Every other line of alai.toml is left as it is.",
+        + "ns-col-1.0.0.tar.gz, or by https:// URL, and a git repository, as "
+        + "git+URL[@REV][#subdirectory=DIR&version=VERSION]. "
+        + "Every other line of alai.toml is left as it is.",
         formatter_class=HelpFormatter,
     )
     _ = add.add_argument(
@@ -28,7 +30,8 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         metavar="REQUIREMENT",
         nargs="+",
         help="a collection, such as ansible.posix or 'cisco.ios>=11', a directory holding one, such as ../ns.col, "
-        + "or a built collection's tarball, by path or URL",
+        + "a built collection's tarball, by path or URL, or a git repository, such as "
+        + "git+https://github.com/org/repo@v1.0.0",
     )
     _ = add.add_argument(
         "--editable",

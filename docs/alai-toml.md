@@ -336,6 +336,7 @@ each kind is in [Collection sources](collection-sources.md).
 "corp.lib" = { path = "../corp.lib", editable = true }
 "corp.net" = { path = "dist/corp-net-2.1.0.tar.gz" }
 "corp.web" = { url = "https://artifacts.example.com/corp-web-1.4.0.tar.gz" }
+"corp.win" = { git = "https://git.example.com/corp/windows.git", rev = "v3.0.0" }
 ```
 
 | Value | |
@@ -345,6 +346,13 @@ each kind is in [Collection sources](collection-sources.md).
 | `{ path = "<dir>", editable = true }` | The same, but linked to the directory rather than copied, so edits there take effect without installing again. `editable = false` is the same as leaving it out |
 | `{ path = "<file>" }` | Take the collection from a built collection's tarball on disk, installed as an index's artifact is. A path to a file is a tarball, and a path to a directory a directory. It can't be editable |
 | `{ url = "<url>" }` | Take the collection from a built collection's tarball at an `http` or `https` URL, downloaded when it's locked. For a file, use `path` |
+| `{ git = "<url>" }` | Take the collection from a git repository, at the commit `rev` is at when it's locked, installed as a directory is. The URL is `https://`, `ssh://`, such as `ssh://git@github.com/org/repo.git`, or `file://`; git's `git@host:path` form isn't a URL, and is refused. Optional keys: `rev`, a branch, tag or full commit hash, the default branch if left out; `subdirectory`, the collection's directory in the repository, its root if left out |
+
+A `path` source that's a directory, editable or not, and a `git` source,
+can also have `version = "<version>"`, a semantic version used in place of
+the one in `galaxy.yml`, for a collection whose `galaxy.yml` has a
+placeholder its release fills in: see
+[A version that isn't one](collection-sources.md#a-version-that-isnt-one).
 
 An entry applies wherever the collection appears, whether the project lists
 it in `collections` or another collection depends on it, as
@@ -361,7 +369,9 @@ copied again, is in
 [Collection sources](collection-sources.md#a-directory).
 `alai add ../corp.dev` writes the entry for you. A tarball's collection
 must be the one its entry names too, and `alai.lock` pins it by its
-checksum: see [Collection sources](collection-sources.md#a-tarball).
+checksum: see [Collection sources](collection-sources.md#a-tarball). So
+must a git repository's, and `alai.lock` pins it by its commit: see
+[Collection sources](collection-sources.md#a-git-repository).
 
 Collection names contain a dot, so they're quoted, as in
 `[project.overrides]`.

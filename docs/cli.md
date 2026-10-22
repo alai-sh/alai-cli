@@ -51,7 +51,7 @@ Every command takes these, before or after its name.
 
 ## alai add
 
-Add collections to the project's alai.toml, then lock and install them. A collection given by name alone is written as >= the version locked for it. A directory, given with a / such as ./ns.col, is the collection it holds, from its galaxy.yml or a built one's MANIFEST.json: its name is added, and [project.sources] takes it from there. So is a built collection's tarball, by path, such as ns-col-1.0.0.tar.gz, or by https:// URL. Every other line of alai.toml is left as it is.
+Add collections to the project's alai.toml, then lock and install them. A collection given by name alone is written as >= the version locked for it. A directory, given with a / such as ./ns.col, is the collection it holds, from its galaxy.yml or a built one's MANIFEST.json: its name is added, and [project.sources] takes it from there. So is a built collection's tarball, by path, such as ns-col-1.0.0.tar.gz, or by https:// URL, and a git repository, as git+URL[@REV][#subdirectory=DIR&version=VERSION]. Every other line of alai.toml is left as it is.
 
 [Adding collections to a new project](casts/add.cast){ .alai-cast }
 
@@ -74,7 +74,7 @@ $ alai add [OPTIONS] REQUIREMENT [REQUIREMENT ...]
 
 | Argument | Description |
 |---|---|
-| `REQUIREMENT` | A collection, such as ansible.posix or 'cisco.ios>=11', a directory holding one, such as ../ns.col, or a built collection's tarball, by path or URL |
+| `REQUIREMENT` | A collection, such as ansible.posix or 'cisco.ios>=11', a directory holding one, such as ../ns.col, a built collection's tarball, by path or URL, or a git repository, such as git+https://github.com/org/repo@v1.0.0 |
 
 ### Options
 
@@ -152,7 +152,7 @@ $ alai collection install [OPTIONS] [REQUIREMENT ...]
 
 | Argument | Description |
 |---|---|
-| `REQUIREMENT` | A collection, such as ansible.posix or 'cisco.ios>=11'; a directory holding one, such as ../ns.col, which is copied again every time; or a built collection's tarball, such as ns-col-1.0.0.tar.gz or an https:// URL to one |
+| `REQUIREMENT` | A collection, such as ansible.posix or 'cisco.ios>=11'; a directory holding one, such as ../ns.col, which is copied again every time; a built collection's tarball, such as ns-col-1.0.0.tar.gz or an https:// URL to one; or a git repository, as git+URL[@REV][#subdirectory=DIR&version=VERSION] |
 
 ### Options
 
@@ -180,7 +180,7 @@ Also takes the [global options](#global-options).
 
 ## alai collection uninstall
 
-Uninstall collections from the collections directory. What they depend on stays. Outside a project, there's no collections directory to use, so `--collections-dir`, or the collections_dir setting, has to say where.
+Uninstall collections from the collections directory. What they depend on stays. A collection is given by its name, even one installed from a directory, a tarball or a git repository. Outside a project, there's no collections directory to use, so `--collections-dir`, or the collections_dir setting, has to say where.
 
 [Uninstalling from a project's collections directory](casts/collection-uninstall.cast){ .alai-cast }
 
@@ -197,7 +197,7 @@ $ alai collection uninstall [OPTIONS] NAME [NAME ...]
 
 | Argument | Description |
 |---|---|
-| `NAME` | A collection name, such as ansible.posix |
+| `NAME` | A collection name, such as ansible.posix, not the directory, tarball or git URL it was installed from |
 
 ### Settings
 
@@ -351,7 +351,7 @@ Also takes the [global options](#global-options).
 
 ## alai remove
 
-Remove collections from the project's alai.toml, then lock and sync, which uninstalls what nothing needs any more. Every other line of alai.toml is left as it is.
+Remove collections from the project's alai.toml, then lock and sync, which uninstalls what nothing needs any more. A collection is given by its name, even one added from a directory, a tarball or a git repository, whose [project.sources] entry goes with it. Every other line of alai.toml is left as it is.
 
 [Removing a collection](casts/remove.cast){ .alai-cast }
 
@@ -363,7 +363,7 @@ $ alai remove [OPTIONS] NAME [NAME ...]
 
 | Argument | Description |
 |---|---|
-| `NAME` | A collection name, such as ansible.posix |
+| `NAME` | A collection name, such as ansible.posix, not the directory, tarball or git URL it was added from |
 
 ### Options
 
