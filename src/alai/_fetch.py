@@ -123,26 +123,37 @@ class Fetcher:
         unique = f"{url}{'&' if '?' in url else '?'}r={secrets.token_hex(8)}"
         return self._executor.submit(self._get, url, cache_path, unique).result()
 
-    def download(self, url: str, path: str, *, max_size: int) -> tuple[str, int]:
+    def download(
+        self, url: str, path: str, *, max_size: int, magic: bytes = b"", kind: str = "file"
+    ) -> tuple[str, int]:
         """Download ``url`` to the new file ``path``, waiting for it, and return the SHA-256 and size of what was
         written.
 
         For artifacts: streamed rather than held in memory, and never cached here, since the caller keeps what it
-        extracts. It stops once more than ``max_size`` bytes arrive, so a wrong or hostile response can't fill the disk.
-        Not found and offline are FetchErrors, as the caller only asks for what a lock lists.
+        extracts. It stops once more than ``max_size`` bytes arrive, so a wrong or hostile response can't fill the disk,
+        and as soon as it's clear the file doesn't start with ``magic``, the bytes every ``kind`` of file starts with,
+        so a response that's something else, such as an error page, isn't downloaded whole. Not found and offline are
+        FetchErrors, as the caller only asks for what a lock or a source names.
         """
         digest = hashlib.sha256()
         size = 0
+        start = b""
         try:
             with open(path, "xb") as out:
                 for chunk in self._chunks(url):
                     size += len(chunk)
                     if size > max_size:
-                        raise FetchError(f"{url}: larger than the {max_size} bytes the index lists")
+                        raise FetchError(f"{url}: larger than the {max_size} bytes expected")
+                    if len(start) < len(magic):
+                        start += chunk[: len(magic) - len(start)]
+                        if not magic.startswith(start):
+                            raise FetchError(f"{url}: not a {kind}")
                     digest.update(chunk)
                     _ = out.write(chunk)
         except OSError as e:
             raise FetchError(f"can't write {path}: {e.strerror or e}") from None
+        if len(start) < len(magic):
+            raise FetchError(f"{url}: not a {kind}")
         trace(f"GET {url}: {size} bytes")
         return digest.hexdigest(), size
 

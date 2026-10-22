@@ -234,8 +234,9 @@ from a machine ~250 ms (TCP plus TLS) from Cloudflare.
 
 ## Not done yet
 
-- **Credentials** for private indexes. The spec leaves authentication to the
-  host; a `401` already reports "credentials required".
+- **Credentials** for private indexes, and for tarball URLs
+  ([lockfile.md](lockfile.md#tarballs)). The spec leaves authentication to
+  the host; a `401` already reports "credentials required".
 - **Prefetching dependencies.** Index files that changed still cost one round
   trip per wave of dependencies. Prefetching every dependency of each file as
   it arrives, in slice 3, turns those into roughly one.

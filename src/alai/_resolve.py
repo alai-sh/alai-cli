@@ -19,16 +19,17 @@ import resolvelib.resolvers
 from . import _semver
 from ._common import Error, Record
 from ._index import CollectionVersion, IndexClient, IndexFile
-from ._lock import IndexSource, Lock, LockedCollection, local_source
-from ._manifest import Manifest, PathSource, Requirement, SourceCollection
+from ._lock import IndexSource, Lock, LockedCollection, locked_source
+from ._manifest import IndexPin, Manifest, Requirement, SourceCollection
 from ._pep440 import SpecifierSet, Version
 from ._semver import VersionReq
 
 _MAX_ROUNDS = 5000
 """How many rounds resolvelib may take, each pinning one collection or backtracking from one."""
 _LOCAL = ""
-"""The index name of a collection read from a directory: the project's own, when its root is one, or a path source. No
-configured index can be called this, so it's never fetched, and its one version is what its galaxy.yml says."""
+"""The index name of a collection read from a directory or a tarball: the project's own, when its root is one, or a path
+or URL source. No configured index can be called this, so it's never fetched, and its one version is what its
+galaxy.yml or MANIFEST.json says."""
 
 
 class ResolutionError(Error):
@@ -157,14 +158,16 @@ def resolve(
                     dependencies=dependencies,
                 )
             )
-        elif (local := manifest.local.get(c.name)) is not None and isinstance(
-            source := manifest.sources[c.name], PathSource
+        elif (local := manifest.local.get(c.name)) is not None and not isinstance(
+            source := manifest.sources[c.name], IndexPin
         ):
             collections.append(
                 LockedCollection(
                     c.name,
                     local.version,
-                    source=local_source(source.path, editable=source.editable),
+                    source=locked_source(source, local),
+                    cksum=local.cksum,
+                    size=local.size,
                     requires_ansible=local.requires_ansible,
                     requirements=local.dependencies,
                     dependencies=dependencies,
@@ -248,7 +251,7 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
         self._unusable: dict[str, dict[str, str]] = {}
         """Per collection, versions that met every requirement but were skipped for unreadable metadata."""
         for name, pin in manifest.sources.items():
-            if not isinstance(pin, PathSource) and pin.index not in indexes:
+            if isinstance(pin, IndexPin) and pin.index not in indexes:
                 raise ResolutionError(
                     f"[project.sources] takes {name} from index '{pin.index}', which isn't configured"
                     + _did_you_mean(pin.index, indexes)
@@ -434,10 +437,11 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
                 continue
             if candidate.index == _LOCAL:
                 source = self._manifest.sources[name]
-                if not was.is_local() or str(was.source) != str(source):
+                local = self._manifest.local[name]
+                if not (was.is_local() or was.is_archive()) or str(was.source) != str(source):
                     out[name] = f"{name} now comes from {source}"
                 elif was.version != candidate.version.version:
-                    out[name] = f"{name}'s galaxy.yml now says {candidate.version.version}"
+                    out[name] = f"{name}'s {local.metadata} now says {candidate.version.version}"
                 continue
             root = self._indexes[candidate.index].config().root
             if was.version == candidate.version.version and was.source == IndexSource(root):
@@ -548,7 +552,7 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
         if name in self._local:
             return _LOCAL
         pin = self._manifest.sources.get(name)
-        if pin is not None and not isinstance(pin, PathSource):
+        if isinstance(pin, IndexPin):
             return pin.index
         return next((index for index, client in self._indexes.items() if client.has(name)), None)
 

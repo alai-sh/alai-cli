@@ -19,15 +19,16 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         description="Add collections to the project's alai.toml, then lock and install them. A collection given by "
         + "name alone is written as >= the version locked for it. A directory, given with a / such as ./ns.col, is "
         + "the collection it holds, from its galaxy.yml or a built one's MANIFEST.json: its name is added, and "
-        + "[project.sources] takes it from there. Every other line of alai.toml is left as it is.",
+        + "[project.sources] takes it from there. So is a built collection's tarball, by path, such as "
+        + "ns-col-1.0.0.tar.gz, or by https:// URL. Every other line of alai.toml is left as it is.",
         formatter_class=HelpFormatter,
     )
     _ = add.add_argument(
         "requirements",
         metavar="REQUIREMENT",
         nargs="+",
-        help="a collection, such as ansible.posix or 'cisco.ios>=11', or a directory holding one, such "
-        + "as ../ns.col",
+        help="a collection, such as ansible.posix or 'cisco.ios>=11', a directory holding one, such as ../ns.col, "
+        + "or a built collection's tarball, by path or URL",
     )
     _ = add.add_argument(
         "--editable",

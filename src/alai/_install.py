@@ -153,9 +153,12 @@ def plan(
     return Plan(install, remove, unchanged, unlink, replace)
 
 
-def install(collections_dir: str, name: str, source: str, linker: Linker) -> None:
-    """Install the collection extracted at ``source`` as ``name``, replacing what's there."""
-    place(collections_dir, name, lambda temp: linker.tree(source, temp), source)
+def install(
+    collections_dir: str, name: str, source: str, linker: Linker, record: dict[str, object] | None = None
+) -> None:
+    """Install the collection extracted at ``source`` as ``name``, replacing what's there, with ``record`` saying
+    where it came from when that isn't an index."""
+    place(collections_dir, name, lambda temp: linker.tree(source, temp), source, record)
 
 
 def place(
@@ -207,7 +210,9 @@ def write_record(collections_dir: str, name: str, record: dict[str, object] | No
 
     A record is ``ansible_collections/.alai/<name>.json``, holding ``{"source": {"directory": "<path>"}}`` and the
     hashes of the files that decide when it's copied again, as uv records a directory's ``pyproject.toml`` time in
-    ``uv_cache.json`` (see ``_sync.directory_record``); a git source will record its commit. ansible-galaxy writes none for a directory, and a file in
+    ``uv_cache.json`` (see ``_sync.directory_record``); one from a tarball holds its path or URL and its sha256,
+    as uv's ``direct_url.json`` holds an archive's URL, so a new tarball of the same version replaces it; a git source
+    will record its commit. ansible-galaxy writes none for a directory, and a file in
     the collection would be one ``FILES.json`` doesn't list, so it's kept beside the collections.
     """
     path = os.path.join(namespaces_dir(collections_dir), _RECORDS, f"{name}.json")

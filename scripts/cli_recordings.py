@@ -35,6 +35,7 @@ import tomllib
 
 sys.path.insert(0, "tests")
 
+from artifact_data import build_artifact
 from index_data import make_index, v
 from index_server import IndexServer
 
@@ -158,6 +159,8 @@ def _record(recording: dict[str, object], home: pathlib.Path, env: dict[str, str
         target = project / path
         target.parent.mkdir(parents=True, exist_ok=True)
         _ = target.write_text(str(content).lstrip("\n"), encoding="utf-8")
+    for path, spec in _as_dict(recording.get("tarballs")).items():
+        _tarball(project / path, _as_dict(spec))
     for command in _as_list(recording.get("setup")):
         result = subprocess.run(  # noqa: S602 - the commands are the recording's own
             command, shell=True, cwd=project, env=env, capture_output=True, text=True, check=False
@@ -206,6 +209,22 @@ def _record(recording: dict[str, object], home: pathlib.Path, env: dict[str, str
     lines = [json.dumps(header)]
     lines += [json.dumps([round(t, 3), "o", data], ensure_ascii=False) for t, data in events]
     return "\n".join(lines) + "\n"
+
+
+def _tarball(path: pathlib.Path, spec: dict[str, object]) -> None:
+    """A built collection's tarball at ``path``, as ``ansible-galaxy collection build`` lays one out: ``name``,
+    ``version``, ``dependencies`` for its ``MANIFEST.json``, and ``files``, its other files by relative path."""
+    name, version = str(spec["name"]), str(spec["version"])
+    namespace, short = name.split(".")
+    files: dict[str, bytes | object] = {p: str(c).lstrip("\n").encode() for p, c in _as_dict(spec.get("files")).items()}
+    info = {
+        "namespace": namespace,
+        "name": short,
+        "version": version,
+        "dependencies": _as_dict(spec.get("dependencies")),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _ = build_artifact(path, name, version, files, manifest={"collection_info": info})  # pyright: ignore[reportArgumentType]
 
 
 def _prompt(cwd: pathlib.Path, home: pathlib.Path) -> str:

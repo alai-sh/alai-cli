@@ -216,8 +216,35 @@ class TestDownload:
         assert fetcher.download(f"{server.url}dl", str(tmp_path / "out"), max_size=len(self.BODY))[0] == artifact
 
     def test_too_large(self, server: IndexServer, fetcher: Fetcher, tmp_path: Path, artifact: str) -> None:
-        with pytest.raises(FetchError, match="larger than the 1000 bytes the index lists"):
+        with pytest.raises(FetchError, match="larger than the 1000 bytes expected"):
             _ = fetcher.download(f"{server.url}a.tar.gz", str(tmp_path / "out"), max_size=1000)
+
+    def test_magic(self, server: IndexServer, fetcher: Fetcher, tmp_path: Path, artifact: str) -> None:
+        result = fetcher.download(
+            f"{server.url}a.tar.gz", str(tmp_path / "out"), max_size=len(self.BODY), magic=self.BODY[:2]
+        )
+
+        assert result == (artifact, len(self.BODY))
+
+    def test_wrong_magic_stops_early(self, server: IndexServer, fetcher: Fetcher, tmp_path: Path) -> None:
+        # Something else, such as an error page served with a 200, is given up on at its first chunk, not downloaded.
+        server.compress = False
+        server.responses["/big"] = [(200, {}, b"<html>" + b"x" * (8 << 20))]
+
+        with pytest.raises(FetchError, match="big: not a gzip file"):
+            _ = fetcher.download(
+                f"{server.url}big", str(tmp_path / "out"), max_size=16 << 20, magic=b"\x1f\x8b", kind="gzip file"
+            )
+
+        assert (tmp_path / "out").stat().st_size == 0
+
+    def test_shorter_than_magic(self, server: IndexServer, fetcher: Fetcher, tmp_path: Path) -> None:
+        server.responses["/short"] = [(200, {}, b"\x1f")]
+
+        with pytest.raises(FetchError, match="short: not a gzip file"):
+            _ = fetcher.download(
+                f"{server.url}short", str(tmp_path / "out"), max_size=10, magic=b"\x1f\x8b", kind="gzip file"
+            )
 
     def test_not_found(self, server: IndexServer, fetcher: Fetcher, tmp_path: Path) -> None:
         with pytest.raises(FetchError, match=r"not found \(HTTP 404\)"):

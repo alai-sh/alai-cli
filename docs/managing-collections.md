@@ -165,8 +165,12 @@ between the two. `alai remove corp.dev` removes its `[project.sources]`
 entry too, once no group lists it; an `{ index = ... }` entry stays, as it
 can apply to what other collections depend on.
 
-How a directory is installed, when it's copied again, and when to use an
-index, a directory or an editable one is in
+`alai add` takes a built collection's tarball the same way, by path, such
+as `dist/corp-net-2.1.0.tar.gz`, or by `https://` URL, and `alai remove`
+removes its entry too.
+
+How a directory or a tarball is installed, when it's installed again, and
+when to use an index, a directory or an editable one is in
 [Collection sources](collection-sources.md).
 
 ## Locking

@@ -2,17 +2,20 @@
 
 A collection's source is where alai gets it from. Most come from an
 [index](indexes.md), found by name, and need nothing set. A collection can
-also be taken from a particular index, or from a directory on disk, by
-naming it in [`[project.sources]`](alai-toml.md#projectsources):
+also be taken from a particular index, a directory on disk, or a built
+collection's tarball, by naming it in
+[`[project.sources]`](alai-toml.md#projectsources):
 
 ```toml
 [project]
-collections = ["cisco.ios", "corp.dev", "corp.lib"]
+collections = ["cisco.ios", "corp.dev", "corp.lib", "corp.net", "corp.web"]
 
 [project.sources]
 "ansible.netcommon" = { index = "internal" }
 "corp.dev" = { path = "../corp.dev" }
 "corp.lib" = { path = "../corp.lib", editable = true }
+"corp.net" = { path = "dist/corp-net-2.1.0.tar.gz" }
+"corp.web" = { url = "https://artifacts.example.com/corp-web-1.4.0.tar.gz" }
 ```
 
 | Source | Written as | Installed by | Use it for |
@@ -20,12 +23,12 @@ collections = ["cisco.ios", "corp.dev", "corp.lib"]
 | [An index](#an-index) | Nothing, or `{ index = "<name>" }` | Downloading the version locked | Published collections: the default |
 | [A directory](#a-directory) | `{ path = "<dir>" }` | Copying it, as if built and installed | A collection that isn't published, or a change to one you want to try |
 | [An editable directory](#an-editable-directory) | `{ path = "<dir>", editable = true }` | Linking to it | A collection you're working on alongside the project |
+| [A tarball](#a-tarball) | `{ path = "<file>" }` or `{ url = "<url>" }` | Extracting it, as an index's artifact is | A built collection that isn't on an index, such as a CI build or a release download |
 
 An entry applies wherever the collection appears: in the project's
 collections, a group's, or as what another collection depends on. It's
 written in `alai.lock` too, so everyone installing the project gets the same
-thing. Git repositories and collection tarballs are
-[planned](roadmap.md).
+thing. Git repositories are [planned](roadmap.md).
 
 ## An index
 
@@ -161,11 +164,65 @@ Where it falls short:
 `alai add` of the same directory with or without `--editable` switches
 between the two.
 
+## A tarball
+
+`{ path = "<file>" }`, a path to a file rather than a directory, takes the
+collection from a built collection's tarball, such as one
+`ansible-galaxy collection build` writes. `{ url = "<url>" }` downloads one
+from an `http` or `https` URL. `alai add` writes either for you, given the
+file, such as `alai add dist/corp-net-2.1.0.tar.gz` (a name ending in
+`.tar.gz` is a file, with or without a `/`), or the URL. A `file://` URL is
+written as the file's path. The tarball must be gzipped, as
+`ansible-galaxy collection build` writes it; anything else is refused
+before it's read or downloaded whole.
+
+[Adding a collection from a tarball](casts/source-tarball.cast){ .alai-cast }
+
+```toml
+[project.sources]
+"corp.net" = { path = "dist/corp-net-2.1.0.tar.gz" }
+"corp.web" = { url = "https://artifacts.example.com/corp-web-1.4.0.tar.gz" }
+```
+
+The tarball is installed exactly as one from an index is: only what its
+`FILES.json` lists, each file checked against its checksum. Its version and
+dependencies are what its `MANIFEST.json` says, its `requires_ansible` what
+its `meta/runtime.yml` says, and its dependencies come from indexes, unless
+they have a source of their own.
+
+`alai.lock` records the tarball's checksum and size, as it does an index's
+artifact, so what's installed is what was locked:
+
+- **A URL is downloaded when it's locked**, and not again: locking again
+  keeps what `alai.lock` says about it, so if the file behind the URL
+  changes, `alai sync` fails on the checksum when it next downloads it.
+  `alai lock -P corp.web` (`--upgrade-collection`) downloads it again and
+  locks what's there now. Give a new release a new URL.
+- **A file is checked every time**, as it's cheap to: if it's no longer the
+  tarball `alai.lock` has, `alai sync` and `alai lock` stop and say so.
+  `alai lock -P corp.net` locks the file as it is now, as does replacing it
+  with a release of another name, such as
+  `alai add dist/corp-net-2.2.0.tar.gz`.
+
+Use one for:
+
+- **A collection published somewhere other than an index**, such as a
+  release on a git host, or an internal artifact store.
+- **Testing a build** before publishing it, as users of the published
+  collection will get it.
+
+Where it falls short:
+
+- **A file must be there for everyone**, as a directory must.
+- **Credentials aren't sent**, so a URL has to be readable without them.
+- **It can't be editable**: a tarball is a release. Use a directory to work
+  on the collection.
+
 ## Installing by hand
 
 [`alai collection install`](installing-by-hand.md) takes a directory too,
-copied again every time, or `-e DIR` to link it, without changing
-`alai.toml` or `alai.lock`.
+copied again every time, or `-e DIR` to link it, and a tarball, by path or
+URL, without changing `alai.toml` or `alai.lock`.
 
 ## What a directory can't be
 

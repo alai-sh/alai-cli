@@ -9,6 +9,8 @@
 #   title        shown above it
 #   directory    where it starts, in the home directory: "project" unless set
 #   files        files written to that directory first, by relative path
+#   tarballs     built collections' tarballs written to that directory first,
+#                by relative path, each { name, version, dependencies, files }
 #   setup        shell commands run before recording starts, not shown
 #   commands     shell commands typed and run in the recording, in order
 #   columns      the terminal's width, 80 unless set: wider for output that
@@ -161,6 +163,14 @@ files."../corp.dev/README.md" = "# corp.dev\n"
 files."../corp.dev/notes.txt" = "Not part of the collection.\n"
 files."../corp.dev/plugins/modules/hello.py" = "# A module.\n"
 commands = ["alai add ../corp.dev", "cat alai.toml", "tree collections/ansible_collections/corp"]
+
+[[recording]]
+name = "source-tarball"
+title = "Adding a collection from a tarball"
+# A built collection's tarball in the project, needing a collection from the index.
+files."alai.toml" = "[project]\n"
+tarballs."dist/corp-net-2.1.0.tar.gz" = { name = "corp.net", version = "2.1.0", dependencies = { "ansible.posix" = ">=2.0.0" }, files = { "README.md" = "# corp.net\n", "plugins/modules/hello.py" = "# A module.\n" } }
+commands = ["alai add dist/corp-net-2.1.0.tar.gz", "cat alai.toml", "tree collections/ansible_collections/corp"]
 
 [[recording]]
 name = "source-editable"

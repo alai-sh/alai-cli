@@ -65,7 +65,9 @@ class IndexPin(Record):
 
 class PathSource(Record):
     """A ``[project.sources]`` entry taking a collection from a directory holding its ``galaxy.yml``: copied into the
-    collections directory as ansible-galaxy installs one, or with ``editable``, linked to it so edits are seen."""
+    collections directory as ansible-galaxy installs one, or with ``editable``, linked to it so edits are seen. A path
+    to a file is a built collection's tarball, installed as an index's artifact is; which it is is read from disk, as
+    uv tells an archive from a directory."""
 
     __slots__ = ("editable", "path")
 
@@ -78,15 +80,29 @@ class PathSource(Record):
         return f"{self.path} (editable)" if self.editable else self.path
 
 
-Source = IndexPin | PathSource
+class UrlSource(Record):
+    """A ``[project.sources]`` entry taking a collection from a built collection's tarball at an ``http`` or ``https``
+    URL, as uv's ``{ url = ... }``: downloaded when it's locked, and pinned by its checksum."""
+
+    __slots__ = ("url",)
+
+    def __init__(self, url: str) -> None:
+        self.url = url
+
+    def __str__(self) -> str:
+        return self.url
+
+
+Source = IndexPin | PathSource | UrlSource
 """Where ``[project.sources]`` takes a collection from."""
 
 
 class SourceCollection(Record):
-    """A collection in a directory, such as the project's root or a path source: what its metadata names it, and what
-    it needs. A source has a ``galaxy.yml``; a built or installed collection has a ``MANIFEST.json`` instead."""
+    """A collection in a directory, such as the project's root or a path source, or in a tarball: what its metadata
+    names it, and what it needs. A source has a ``galaxy.yml``; a built or installed collection, or a tarball, has a
+    ``MANIFEST.json`` instead."""
 
-    __slots__ = ("dependencies", "metadata", "name", "path", "requires_ansible", "version")
+    __slots__ = ("cksum", "dependencies", "metadata", "name", "path", "requires_ansible", "size", "version")
 
     def __init__(
         self,
@@ -97,6 +113,8 @@ class SourceCollection(Record):
         dependencies: tuple[str, ...] = (),
         requires_ansible: str | None = None,
         metadata: str = "galaxy.yml",
+        cksum: str | None = None,
+        size: int | None = None,
     ) -> None:
         self.name = name
         """``namespace.name``."""
@@ -111,6 +129,13 @@ class SourceCollection(Record):
         ``ansible.utils>=2.0.0``, in the order written."""
         self.requires_ansible = requires_ansible
         """``meta/runtime.yml``'s ``requires_ansible``, or None when it doesn't set one."""
+        self.cksum = cksum
+        """For a tarball, its sha256, which pins it as an index's artifact is pinned; None for a directory."""
+        self.size = size
+        """For a tarball, its size in bytes."""
+
+    def is_archive(self) -> bool:
+        return self.cksum is not None
 
 
 class Manifest(Record):
@@ -159,8 +184,9 @@ class Manifest(Record):
         """Where a collection comes from, by collection name, for any collection in the resolution, not only those
         the project lists. One without an entry comes from its parent's index, or the first index that has it."""
         self.local = local or {}
-        """The collections ``sources`` takes from a directory, by name, as their ``galaxy.yml`` describes them now. Read
-        from disk by ``_project``, not from ``alai.toml``, so empty in a manifest a lock copied."""
+        """The collections ``sources`` takes from a directory or a tarball, by name, as their ``galaxy.yml`` or
+        ``MANIFEST.json`` describes them now. Read by ``_project``, not from ``alai.toml``, so empty in a manifest a
+        lock copied."""
 
     def resolution_key(self) -> tuple[object, ...]:
         """What resolving this manifest depends on, comparable between two manifests.
@@ -185,15 +211,36 @@ class Manifest(Record):
 def _source_key(source: Source) -> tuple[object, ...]:
     if isinstance(source, PathSource):
         return (source.path, source.editable)
+    if isinstance(source, UrlSource):
+        return (source.url,)
     return (source.index,)
 
 
+def is_url(text: str) -> bool:
+    """Whether a requirement given on the command line is a tarball's URL: ``http://``, ``https://`` or ``file://``,
+    in any case, as ansible-galaxy reads a scheme."""
+    return text.lower().startswith(("http://", "https://", "file://"))
+
+
+def file_url_path(url: str) -> str:
+    """The path a ``file://`` URL given on the command line names, as uv writes one as a path source; ConfigError if
+    it names another host."""
+    import urllib.parse
+    import urllib.request
+
+    parts = urllib.parse.urlsplit(url)
+    if parts.netloc not in ("", "localhost"):
+        raise ConfigError(f"{url}: a file URL can't name another host")
+    return urllib.request.url2pathname(parts.path)
+
+
 def is_path(text: str) -> bool:
-    """Whether a requirement given on the command line is a directory rather than a collection: it has a ``/``, or is
-    ``.``, ``..`` or starts with ``~``, as uv tells ``./lib`` or ``lib/`` from the name ``lib``. A collection name
-    never does, so ``community.general`` is always the name, as ansible-galaxy reads it, even beside a directory of
-    that name."""
-    return "/" in text or text in (".", "..") or text.startswith("~")
+    """Whether a requirement given on the command line is a directory or a tarball rather than a collection: it has a
+    ``/``, is ``.``, ``..``, starts with ``~``, or ends in ``.tar.gz``, as uv tells ``./lib``, ``lib/`` or
+    ``lib-1.0.tar.gz`` from the name ``lib``. A collection name never does, so ``community.general`` is always the
+    name, as ansible-galaxy reads it, even beside a directory of that name. A URL has a ``/`` too: ``is_url`` comes
+    first."""
+    return "/" in text or text in (".", "..") or text.startswith("~") or text.endswith(".tar.gz")
 
 
 def collection_name(text: str) -> str:
@@ -276,8 +323,8 @@ def parse_manifest(raw: RawManifest) -> Manifest:
 
 
 def _source(table: dict[str, object], where: str) -> Source:
-    """One ``[project.sources]`` entry: ``{ index = "<name>" }``, or ``{ path = "<dir>" }`` with an optional
-    ``editable = true``, as uv's ``[tool.uv.sources]`` writes a path."""
+    """One ``[project.sources]`` entry: ``{ index = "<name>" }``, ``{ path = "<dir or file>" }`` with an optional
+    ``editable = true``, or ``{ url = "<tarball>" }``, as uv's ``[tool.uv.sources]`` writes them."""
     if "index" in table:
         index = table["index"]
         if set(table) != {"index"} or not isinstance(index, str):
@@ -289,14 +336,25 @@ def _source(table: dict[str, object], where: str) -> Source:
         directory, editable = table["path"], table.get("editable", False)
         if set(table) - {"path", "editable"} or not isinstance(directory, str) or not directory:
             raise ConfigError(
-                f'{where}: a path source is {{ path = "<dir>" }}, with editable = true or false, got {_kinds(table)}'
+                f'{where}: a path source is {{ path = "<dir or file>" }}, with editable = true or false, got '
+                + f"{_kinds(table)}"
             )
         if not isinstance(editable, bool):
             raise ConfigError(f"{where}: 'editable' must be true or false")
         return PathSource(directory, editable=editable)
+    if "url" in table:
+        url = table["url"]
+        if set(table) != {"url"} or not isinstance(url, str) or not url:
+            raise ConfigError(f'{where}: a URL source is {{ url = "<tarball URL>" }} alone, got {_kinds(table)}')
+        # As uv refuses a file:// URL here ("URL scheme is not allowed"): a local tarball is a path.
+        if not url.lower().startswith(("http://", "https://")):
+            raise ConfigError(
+                f"{where}: '{url}' isn't an http or https URL; a tarball on disk is {{ path = \"<file>\" }}"
+            )
+        return UrlSource(url)
     raise ConfigError(
-        f'{where}: expected {{ index = "<name>" }} or {{ path = "<dir>" }}, got {_kinds(table)}; git and archive '
-        + "sources aren't supported yet"
+        f'{where}: expected {{ index = "<name>" }}, {{ path = "<dir or file>" }} or {{ url = "<tarball URL>" }}, got '
+        + f"{_kinds(table)}; git sources aren't supported yet"
     )
 
 

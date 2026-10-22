@@ -39,8 +39,9 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         "requirements",
         metavar="REQUIREMENT",
         nargs="*",
-        help="a collection, such as ansible.posix or 'cisco.ios>=11', or a directory holding one, such "
-        + "as ../ns.col, which is copied again every time",
+        help="a collection, such as ansible.posix or 'cisco.ios>=11'; a directory holding one, such as ../ns.col, "
+        + "which is copied again every time; or a built collection's tarball, such as ns-col-1.0.0.tar.gz or an "
+        + "https:// URL to one",
     )
     _ = install.add_argument(
         "-e",
