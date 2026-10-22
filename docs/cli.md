@@ -51,7 +51,7 @@ Every command takes these, before or after its name.
 
 ## alai add
 
-Add collections to the project's alai.toml, then lock and install them. A collection given by name alone is written as >= the version locked for it. A directory, given with a / such as ./ns.col, is the collection it holds, from its galaxy.yml or a built one's MANIFEST.json: its name is added, and [project.sources] takes it from there. Every other line of alai.toml is left as it is.
+Add collections to the project's alai.toml, then lock and install them. A collection given by name alone is written as >= the version locked for it. A directory, given with a / such as ./ns.col, is the collection it holds, from its galaxy.yml or a built one's MANIFEST.json: its name is added, and [project.sources] takes it from there. So is a built collection's tarball, by path, such as ns-col-1.0.0.tar.gz, or by https:// URL. Every other line of alai.toml is left as it is.
 
 [Adding collections to a new project](casts/add.cast){ .alai-cast }
 
@@ -74,7 +74,7 @@ $ alai add [OPTIONS] REQUIREMENT [REQUIREMENT ...]
 
 | Argument | Description |
 |---|---|
-| `REQUIREMENT` | A collection, such as ansible.posix or 'cisco.ios>=11', or a directory holding one, such as ../ns.col |
+| `REQUIREMENT` | A collection, such as ansible.posix or 'cisco.ios>=11', a directory holding one, such as ../ns.col, or a built collection's tarball, by path or URL |
 
 ### Options
 
@@ -152,7 +152,7 @@ $ alai collection install [OPTIONS] [REQUIREMENT ...]
 
 | Argument | Description |
 |---|---|
-| `REQUIREMENT` | A collection, such as ansible.posix or 'cisco.ios>=11', or a directory holding one, such as ../ns.col, which is copied again every time |
+| `REQUIREMENT` | A collection, such as ansible.posix or 'cisco.ios>=11'; a directory holding one, such as ../ns.col, which is copied again every time; or a built collection's tarball, such as ns-col-1.0.0.tar.gz or an https:// URL to one |
 
 ### Options
 

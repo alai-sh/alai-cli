@@ -162,6 +162,25 @@ copy a collection again?
 
 See [install.md](install.md#when-a-copy-is-made-again).
 
+## A tarball that changed
+
+**Today:** a `{ path = "<file>" }` tarball is pinned by its checksum, so
+once the file at that path is rebuilt, `alai sync`, `alai lock` and `alai
+add` stop with an error until `alai lock -P <name>` locks the new one, as
+uv does for an archive (2026-10-22). A `{ url = ... }` tarball isn't
+downloaded again once locked, so a change behind the URL only shows when
+`sync` downloads it and the checksum fails.
+
+**The alternatives:** treat a changed file as a directory is treated, and
+lock again on the next `sync`; or let `alai add <file>` of the same file
+lock it again without `-P`, as it names the file explicitly.
+
+**Ask:** do people rebuild a tarball at the same path, say from CI into
+`dist/`, and expect `sync` to take the new one? Or is the error the
+protection they want against a file swapped under the same name?
+
+See [lockfile.md](lockfile.md#tarballs).
+
 ## requirements.yml
 
 **Today:** `-r requirements.yml` is shelved. The mapping onto `alai.toml`

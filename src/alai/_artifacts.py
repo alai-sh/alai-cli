@@ -34,6 +34,13 @@ if _t.TYPE_CHECKING:
 LAYOUT = "collections-v1"
 """The cache directory for extracted collections; a new name if what's extracted, or how, ever changes."""
 _CKSUM = re.compile(r"[0-9a-f]{64}")
+GZIP_MAGIC = b"\x1f\x8b"
+"""The bytes every gzip file starts with (RFC 1952). A tarball source must be gzipped, as every collection build is, so
+one that isn't is refused before it's read or downloaded whole; tarfile could read other formats, if that's ever
+wanted."""
+MAX_ARCHIVE_SIZE = 1 << 30
+"""The most a tarball named by URL may download, with no size known beforehand: 1 GiB, far beyond any published
+collection, so a wrong or hostile response can't fill the disk."""
 _FILE_TYPES = frozenset((tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.LNKTYPE, tarfile.SYMTYPE))
 _DIR_TYPES = frozenset((tarfile.DIRTYPE, tarfile.SYMTYPE))
 
@@ -150,6 +157,73 @@ class ArtifactCache:
         trace(f"{artifact}: extracted to {target}")
         return target
 
+    def add(self, tarball: str, cksum: str) -> str:
+        """The directory the collection tarball at ``tarball``, whose SHA-256 is ``cksum``, is extracted to,
+        extracting it first if it isn't cached. Its collection needn't be known beforehand: it's the one its
+        ``MANIFEST.json`` names, which the caller checks."""
+        target = self.path(cksum)
+        if os.path.isdir(target):
+            return target
+        try:
+            os.makedirs(self.root, exist_ok=True)
+            work = tempfile.mkdtemp(dir=self.root, prefix=".tmp-")
+        except OSError as e:
+            raise ArtifactError(f"can't write to the cache at {self.root}: {e.strerror or e}") from None
+        try:
+            return self._unpack(tarball, work, target, tarball)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+    def download(self, url: str) -> tuple[str, int, str]:
+        """Download the collection tarball at ``url`` and extract it into the cache, for a source that names a URL
+        rather than an index's artifact: its SHA-256, size, and the directory it's extracted to. Its collection is
+        the one its ``MANIFEST.json`` names, which the caller checks."""
+        from ._fetch import FetchError
+
+        if self._fetcher is None:
+            raise ArtifactError(f"{url} isn't in the cache, and there's no fetcher to download it")
+        try:
+            os.makedirs(self.root, exist_ok=True)
+            work = tempfile.mkdtemp(dir=self.root, prefix=".tmp-")
+        except OSError as e:
+            raise ArtifactError(f"can't write to the cache at {self.root}: {e.strerror or e}") from None
+        try:
+            tarball = os.path.join(work, "artifact.tar.gz")
+            try:
+                digest, size = self._fetcher.download(
+                    url,
+                    tarball,
+                    max_size=MAX_ARCHIVE_SIZE,
+                    magic=GZIP_MAGIC,
+                    kind="gzip file, so not a collection tarball",
+                )
+            except FetchError as e:
+                raise ArtifactError(f"can't download {url}: {e}") from None
+            target = self.path(digest)
+            if not os.path.isdir(target):
+                _ = self._unpack(tarball, work, target, url)
+            return digest, size, target
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+    def _unpack(self, tarball: str, work: str, target: str, shown: str) -> str:
+        """Extract ``tarball``, said to be ``shown`` in messages, to ``target`` through ``work``."""
+        name, version = artifact_collection(tarball, shown)
+        extracted = os.path.join(work, "collection")
+        try:
+            with self._extracting:
+                extract(tarball, extracted, name, version, umask=self._umask)
+            try:
+                os.rename(extracted, target)
+            except OSError:
+                # Another alai extracted the same artifact meanwhile; theirs is as good as ours.
+                if not os.path.isdir(target):
+                    raise
+        except OSError as e:
+            raise ArtifactError(f"can't extract {shown} into the cache: {e.strerror or e}") from None
+        trace(f"{name} {version}: extracted to {target}")
+        return target
+
     def get_all(self, artifacts: _c.Iterable[Artifact], report: Report | None = None) -> dict[str, str]:
         """Each artifact's extracted directory, by collection name, fetching those that aren't cached in parallel.
 
@@ -162,6 +236,34 @@ class ArtifactCache:
         with concurrent.futures.ThreadPoolExecutor(MAX_CONNECTIONS, thread_name_prefix="alai-artifact") as pool:
             futures = {a.name: pool.submit(self.get, a, report) for a in wanted}
         return {name: future.result() for name, future in futures.items()}
+
+
+def artifact_collection(tarball: str, shown: str) -> tuple[str, Version]:
+    """The collection and version a tarball's ``MANIFEST.json`` names, for one whose collection isn't known yet, as
+    ansible-galaxy reads a tarball's (``_get_meta_from_tar``). ``shown`` is where it came from, for messages."""
+    from ._manifest import collection_name
+
+    try:
+        with tarfile.open(tarball, "r:*") as tar:
+            member = tar.next()
+            # A build writes MANIFEST.json first, so this rarely reads further than the first member.
+            while member is not None and member.name != "MANIFEST.json":
+                member = tar.next()
+            if member is None:
+                raise ArtifactError(f"{shown} has no MANIFEST.json, so it isn't a built collection")
+            manifest = _read_json(tar, {"MANIFEST.json": member}, "MANIFEST.json", shown)
+    except (tarfile.TarError, EOFError, OSError) as e:
+        message = e.strerror if isinstance(e, OSError) and e.strerror else str(e)
+        raise ArtifactError(f"{shown} isn't a collection tarball: {message}") from None
+    info = manifest.get("collection_info")
+    info = _t.cast("dict[str, object]", info) if isinstance(info, dict) else {}
+    namespace, short, text = info.get("namespace"), info.get("name"), info.get("version")
+    if not isinstance(namespace, str) or not isinstance(short, str) or not isinstance(text, str):
+        raise ArtifactError(f"{shown}: MANIFEST.json's collection_info has no namespace, name and version")
+    try:
+        return collection_name(f"{namespace}.{short}"), Version(text)
+    except ValueError as e:
+        raise ArtifactError(f"{shown}: MANIFEST.json: {e}") from None
 
 
 def extract(tarball: str, dest: str, name: str, version: Version, *, umask: int) -> None:

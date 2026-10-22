@@ -57,6 +57,13 @@ is beside you. See
 [Collection sources](collection-sources.md#a-directory)
 for what's copied.
 
+A requirement ending in `.tar.gz`, such as `corp-net-2.1.0.tar.gz`, is a
+built collection's tarball, and an `http://` or `https://` URL one to
+download, as `uv pip install` takes an archive. It's installed as an
+index's artifact is, and left as it is when the same tarball is already
+installed from there; a different one, of the same version or not, replaces
+it.
+
 If the project has an `alai.toml`, it's read as for any command: it marks
 the project, and its settings, such as the indexes and `collections_dir`,
 apply. Its `[project]` collections and `alai.lock` are neither used nor

@@ -188,7 +188,7 @@ def set_table(text: str, path: tuple[str, ...], value: _c.Mapping[str, str | boo
 
 def remove_key(text: str, path: tuple[str, ...]) -> str:
     """Remove the key at ``path``, written on a line of its own, and that line with it. A table left empty keeps its
-    header, as uv leaves ``[tool.uv.sources]``."""
+    header, though uv 0.13.0 removes an empty ``[tool.uv.sources]``: only the one line changes."""
     scan = _Scan(text)
     scan.document()
     found = scan.values.get(path)

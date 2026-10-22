@@ -519,7 +519,7 @@ rather than one file taking precedence over the other
 | `galaxy.yml` | A collection's source | `galaxy.yml` | Building it ([above](#copying-a-directory-as-its-artifact-would-be)) |
 | `MANIFEST.json` | A built or installed collection | `MANIFEST.json`'s `collection_info` | Copying it as it is |
 | Both | Unclear | An error, saying which to remove | |
-| A tarball (planned) | A built artifact | The archive's `MANIFEST.json` | Extracting it, as an index's |
+| A tarball | A built artifact | The archive's `MANIFEST.json` | Extracting it, as an index's ([Tarball sources](#tarball-sources)) |
 
 `meta/runtime.yml` gives `requires_ansible` for all of them, as
 `MANIFEST.json` doesn't carry it.
@@ -552,8 +552,8 @@ rather than one file taking precedence over the other
   ([collection-development.md](collection-development.md#what-todays-code-must-keep-possible)).
 
 A git checkout goes through the same reader, so a repository that commits
-a built collection works without more code. A tarball needs neither the
-snapshot's re-reading nor a cache key: its `cksum` pins it.
+a built collection works without more code. A tarball needs no cache key:
+its `cksum` pins it.
 
 ### Editable
 
@@ -584,6 +584,45 @@ linking or copying into the place where the directory itself is would
 replace it, and an exact sync could remove it. A directory holding the
 collections directory would also copy it.
 
+## Tarball sources
+
+Implemented on 2026-10-22 for `[project.sources]` `{ path = "<file>" }`
+and `{ url = "<url>" }` ([lockfile.md](lockfile.md#tarballs)), and
+`alai collection install <file>.tar.gz` and `<url>`.
+
+- **Installed as an index's artifact is**: extracted into
+  `collections-v1/<cksum>/` with the same checks
+  ([Decisions](#decisions)), then linked into place. Locking extracts it
+  (`ArtifactCache.add` for a file, `ArtifactCache.download` for a URL),
+  since its metadata is inside, so `sync` usually finds it cached. When it
+  isn't, as with `--frozen` on a fresh cache, it's fetched from its URL,
+  or its file as a `file://` URL, and checked against `cksum` and `size`
+  like any download.
+- **URLs are downloaded in parallel while locking**, up to the fetcher's
+  16 connections, as `sync` downloads artifacts, through one
+  `ArtifactCache` made before the threads start, since reading the umask
+  isn't thread-safe and its lock keeps extraction to one at a time. The
+  results are taken in order by name, so when several fail, the first by
+  name is reported (`read_archives`).
+- **A URL with no size known** stops at 1 GiB (`MAX_ARCHIVE_SIZE`), for the
+  same reason the lock's `size` stops an index's download: a wrong or
+  hostile response can't fill the disk. One that doesn't start as a gzip
+  file stops at its first chunk ([lockfile.md](lockfile.md#tarballs)).
+- **It carries an install record**, `{"source": {"path": "<absolute>"},
+  "cksum": "…"}` or `{"source": {"url": "…"}, "cksum": "…"}`, as uv's
+  `direct_url.json` records an archive's URL. So a collection that moves
+  between an index and a tarball, or to a different tarball of the same
+  version (after `-P`), is replaced, as uv's sync replaced the rebuilt
+  archive (`~ lib==0.1.0`).
+- **`collection install` leaves the same tarball installed**: tried with uv
+  0.13.0, a second `uv pip install ./lib-0.1.0.tar.gz`, or of the same URL,
+  said `Checked 1 package`. Here the record matches, so it's `Checked`; a
+  different tarball at the same path replaces it. A directory is copied
+  every time instead, as uv rebuilt one. A URL is still downloaded each
+  time, to learn which collection it holds.
+- **Reported as `+ ns.col==1.0.0 (from <path or URL>)`**, as uv shows an
+  archive's source.
+
 ## Not done yet
 
 - **`--no-editable`** on `sync`, as uv's, to install editable sources as
@@ -599,6 +638,11 @@ collections directory would also copy it.
   `--verify` on `sync`, could check cached or installed collections against
   it, which uv has no equivalent for.
 - **Progress** while downloading; see [output.md](output.md).
+- **Remembering what a URL held**: a URL that isn't locked, or given to
+  `collection install`, is downloaded every time, as the cache is keyed by
+  checksum. uv's cache keeps a URL's download with its HTTP caching headers;
+  a map from URL to checksum, revalidated with an ETag, would do the same.
+
 - **Leftover `.tmp-*` directories** from a run killed mid-download stay in
   `collections-v1/` until a future `alai cache clean` or prune removes them;
   they're never read.

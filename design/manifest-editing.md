@@ -94,6 +94,27 @@ Tested against `uv add` and `uv remove` (uv 0.13) on 2026-10-20, with a
     }` entry once nothing in `project.collections` or any group lists the
     collection; an `{ index = ... }` entry stays, as it also applies to what
     other collections depend on and `alai add` never writes one.
+- **A tarball adds the collection it holds** (2026-10-22), by path or URL,
+  as `uv add` takes an archive. Tried with uv 0.13.0 on 2026-10-22, with an
+  sdist served by `python -m http.server`:
+  - `uv add ../dist/lib-0.1.0.tar.gz` wrote `lib = { path =
+    "../dist/lib-0.1.0.tar.gz" }`, and `uv add lib-0.1.0.tar.gz`, with no
+    `/`, `{ path = "lib-0.1.0.tar.gz" }`: a name ending in an archive
+    extension is a file. alai takes `.tar.gz` that way, the only extension
+    a collection build writes; `x.tar.gz` can't be a collection name, which
+    has one dot.
+  - `uv add http://…/lib-0.1.0.tar.gz` wrote `lib = { url = "…" }`, and
+    `uv add file:///…/lib-0.1.0.tar.gz` the absolute path, `{ path = "/…"
+    }`. alai does both: `http://`, `https://` and `file://`, in any case,
+    are URLs, checked before the `/` that makes a path. A URL is downloaded
+    to read its name, and that download handed to the lock, so it isn't
+    downloaded twice.
+  - `--editable` with a tarball is an error, as nothing can be linked.
+  - `uv remove lib` removed the archive's source as it does a directory's;
+    alai removes a `{ url = ... }` entry as it does a `{ path = ... }` one.
+    uv also removed `[tool.uv.sources]` once empty; alai keeps the empty
+    `[project.sources]` header (decided with the user, 2026-10-22), so
+    `remove_key` only ever touches the one line.
 
 ## The editor
 

@@ -37,12 +37,10 @@ rather than `<index>:ns.name`, say), the decision here holds.
 
 Next, in order (2026-10-21):
 
-1. **Git and tarball sources** in `[project.sources]`: git repositories,
-   then built collections' tarballs by URL (`http(s)://`, `file://`) or
-   file, beside the directories done on 2026-10-22:
-   [lockfile.md](lockfile.md#other-sources) and
-   [install.md](install.md#directory-and-editable-sources), which say how
-   each fits what's there.
+1. **Git sources** in `[project.sources]`, beside the directories and
+   tarballs done on 2026-10-22: [lockfile.md](lockfile.md#other-sources)
+   and [install.md](install.md#directory-and-editable-sources), which say
+   how it fits what's there.
 2. **`alai build`, and the collection defined in `alai.toml`**, before the
    first release (raised 2026-10-21): `alai add` and `alai remove` can't
    edit `galaxy.yml` without a YAML editor that keeps its formatting, so a
@@ -53,8 +51,9 @@ Next, in order (2026-10-21):
 Done on 2026-10-21: `alai run` and `alai env` ([run.md](run.md)), and
 collection projects
 ([collection-development.md](collection-development.md)); on 2026-10-22,
-path sources, plain and editable ([lockfile.md](lockfile.md#other-sources)),
-with what's left of those in each note's "Not done yet".
+path sources, plain and editable, and tarballs by path or URL
+([lockfile.md](lockfile.md#other-sources)), with what's left of those in
+each note's "Not done yet".
 
 Shelved: `-r requirements.yml` ([requirements-file.md](requirements-file.md));
 what to ask users about it is in [user-questions.md](user-questions.md).

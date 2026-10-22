@@ -170,7 +170,7 @@ class TestDownloadErrors:
     def test_larger_than_listed(self, tmp_path: Path, cache: ArtifactCache) -> None:
         item = artifact(tmp_path)
 
-        with pytest.raises(ArtifactError, match="larger than the 10 bytes the index lists"):
+        with pytest.raises(ArtifactError, match="larger than the 10 bytes expected"):
             _ = cache.get(Artifact(item.name, item.version, url=item.url, cksum=item.cksum, size=10))
         assert leftovers(cache) == []
 

@@ -92,7 +92,9 @@ each example from the help and record it with Spectre.Console's recorder.
 
 - **Scenarios in `scripts/cli_recordings.toml`**, apart from where they're
   shown: each `[[recording]]` has a name, a title, where it starts, files to
-  start with, hidden setup commands, and the commands typed. One
+  start with, built collections' tarballs to start with (made with the
+  tests' `build_artifact`, as no `ansible-galaxy` is installed), hidden
+  setup commands, and the commands typed. One
   `[[reference."<command>"]]` table per recording the CLI reference shows
   under a command, in order, names it and gives an optional description for
   that place. So one recording can be shown under several commands, each

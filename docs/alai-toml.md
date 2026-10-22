@@ -334,6 +334,8 @@ each kind is in [Collection sources](collection-sources.md).
 "ansible.netcommon" = { index = "internal" }
 "corp.dev" = { path = "../corp.dev" }
 "corp.lib" = { path = "../corp.lib", editable = true }
+"corp.net" = { path = "dist/corp-net-2.1.0.tar.gz" }
+"corp.web" = { url = "https://artifacts.example.com/corp-web-1.4.0.tar.gz" }
 ```
 
 | Value | |
@@ -341,6 +343,8 @@ each kind is in [Collection sources](collection-sources.md).
 | `{ index = "<name>" }` | Take the collection from the [`[[index]]`](#index) with that name, and only from there |
 | `{ path = "<dir>" }` | Take the collection from a directory holding its `galaxy.yml`, built and copied into the collections directory, or from a directory holding a built collection's `MANIFEST.json`, copied as it is. A relative path is relative to the project root |
 | `{ path = "<dir>", editable = true }` | The same, but linked to the directory rather than copied, so edits there take effect without installing again. `editable = false` is the same as leaving it out |
+| `{ path = "<file>" }` | Take the collection from a built collection's tarball on disk, installed as an index's artifact is. A path to a file is a tarball, and a path to a directory a directory. It can't be editable |
+| `{ url = "<url>" }` | Take the collection from a built collection's tarball at an `http` or `https` URL, downloaded when it's locked. For a file, use `path` |
 
 An entry applies wherever the collection appears, whether the project lists
 it in `collections` or another collection depends on it, as
@@ -355,7 +359,9 @@ version is the one its `galaxy.yml`, or a built collection's
 indexes, or from entries of their own. How it's installed, and when it's
 copied again, is in
 [Collection sources](collection-sources.md#a-directory).
-`alai add ../corp.dev` writes the entry for you.
+`alai add ../corp.dev` writes the entry for you. A tarball's collection
+must be the one its entry names too, and `alai.lock` pins it by its
+checksum: see [Collection sources](collection-sources.md#a-tarball).
 
 Collection names contain a dot, so they're quoted, as in
 `[project.overrides]`.

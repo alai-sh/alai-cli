@@ -16,7 +16,16 @@ import secrets
 
 from ._common import Error, Record, as_table
 from ._config import RawManifest, read_toml
-from ._manifest import IndexPin, Manifest, Requirement, Source, collection_name, parse_manifest
+from ._manifest import (
+    IndexPin,
+    Manifest,
+    PathSource,
+    Requirement,
+    Source,
+    SourceCollection,
+    collection_name,
+    parse_manifest,
+)
 from ._semver import Version
 
 LOCK_FILE_NAME = "alai.lock"
@@ -54,8 +63,7 @@ class IndexSource(Record):
 
 class DirectorySource(Record):
     """A collection copied from a directory holding its ``galaxy.yml``, as uv locks a path dependency: ``{ directory =
-    "../col" }``. A later git source is built the same way from a checkout, and an archive (``{ path = ... }``, ``{ url
-    = ... }``) installed as an index's artifact is."""
+    "../col" }``. A later git source is built the same way from a checkout."""
 
     __slots__ = ("path",)
 
@@ -86,7 +94,40 @@ class EditableSource(Record):
         return f"{self.path} (editable)"
 
 
-LockedSource = IndexSource | DirectorySource | EditableSource
+class ArchiveSource(Record):
+    """A collection from a built collection's tarball on disk, installed as an index's artifact is: ``{ path =
+    "../col.tar.gz" }``, as uv locks a path to an archive."""
+
+    __slots__ = ("path",)
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        """As ``[project.sources]`` writes it: relative to the project root, or absolute."""
+
+    def table(self) -> dict[str, str]:
+        return {"path": self.path}
+
+    def __str__(self) -> str:
+        return self.path
+
+
+class ArchiveUrlSource(Record):
+    """A collection from a built collection's tarball at a URL, installed as an index's artifact is: ``{ url =
+    "https://..." }``, as uv locks one."""
+
+    __slots__ = ("url",)
+
+    def __init__(self, url: str) -> None:
+        self.url = url
+
+    def table(self) -> dict[str, str]:
+        return {"url": self.url}
+
+    def __str__(self) -> str:
+        return self.url
+
+
+LockedSource = IndexSource | DirectorySource | EditableSource | ArchiveSource | ArchiveUrlSource
 
 
 def local_source(path: str, *, editable: bool) -> DirectorySource | EditableSource:
@@ -112,15 +153,15 @@ class LockedCollection(Record):
         self.version = version
         self.source = source
         self.cksum = cksum
-        """The artifact's sha256; None for a directory, which is meant to change."""
+        """The artifact's sha256, from the index or the tarball; None for a directory, which is meant to change."""
         self.size = size
         self.requires_ansible = requires_ansible
         """The version's own ``requires_ansible``, as the index or its ``meta/runtime.yml`` gave it, or None if it has
         none."""
         self.requirements = requirements
         """For a directory, its ``galaxy.yml`` dependencies when it was locked, in ``alai.toml``'s syntax, so a change
-        to them makes the lock stale, as uv keeps a local package's ``requires-dist``. None for an index's, whose
-        metadata can't change."""
+        to them makes the lock stale, as uv keeps a local package's ``requires-dist``; for a tarball, its
+        ``MANIFEST.json``'s, so locking again needn't download it. None for an index's, whose index file has them."""
         self.dependencies = dependencies
         """The names of the locked collections it depends on, sorted."""
 
@@ -128,6 +169,10 @@ class LockedCollection(Record):
         """Whether it comes from a directory, with metadata read from its ``galaxy.yml`` or ``MANIFEST.json`` every time,
         rather than an artifact's."""
         return isinstance(self.source, (DirectorySource, EditableSource))
+
+    def is_archive(self) -> bool:
+        """Whether it comes from a tarball named in ``[project.sources]``, by path or URL."""
+        return isinstance(self.source, (ArchiveSource, ArchiveUrlSource))
 
 
 class LockedRoot(Record):
@@ -222,17 +267,24 @@ def stale(lock: Lock | None, manifest: Manifest, index_urls: _c.Collection[str])
     for collection in lock.collections:
         if isinstance(collection.source, IndexSource) and collection.source.url not in index_urls:
             return f"{collection.name} comes from {collection.source.url}, which isn't a configured index"
-        if collection.is_local() and (why := local_changed(collection, manifest)) is not None:
+        if (collection.is_local() or isinstance(collection.source, ArchiveSource)) and (
+            why := local_changed(collection, manifest)
+        ) is not None:
             return why
     return None
 
 
 def local_changed(collection: LockedCollection, manifest: Manifest) -> str | None:
     """Why a collection locked from a directory no longer matches its ``galaxy.yml`` and ``meta/runtime.yml``, as
-    ``manifest.local`` read them, or None if it does. Requirements compare as parsed, as the project's do."""
+    ``manifest.local`` read them, or None if it does. Requirements compare as parsed, as the project's do. One from a
+    tarball on disk no longer matches when the file's checksum has changed."""
     now = manifest.local.get(collection.name)
     if now is None:
         # Not taken from a directory any more: is_current reports that, as the sources changed.
+        return None
+    if now.cksum is not None or collection.cksum is not None:
+        if now.cksum != collection.cksum:
+            return f"{collection.name}'s {collection.source} has changed since it was locked"
         return None
     if (collection.version, collection.requires_ansible) != (now.version, now.requires_ansible) or _parsed(
         collection.requirements or ()
@@ -387,6 +439,18 @@ def _compare(
 
 def _described(source: Source) -> str:
     return f"'{source.index}'" if isinstance(source, IndexPin) else str(source)
+
+
+def locked_source(source: Source, collection: SourceCollection) -> LockedSource:
+    """How the lock records a collection ``source``, a path or URL ``[project.sources]`` entry, takes from where
+    ``collection`` was read: a directory, editable or not, or a tarball."""
+    if isinstance(source, PathSource):
+        if collection.is_archive():
+            return ArchiveSource(source.path)
+        return local_source(source.path, editable=source.editable)
+    if isinstance(source, IndexPin):
+        raise ValueError(f"{collection.name} comes from index '{source.index}', not {collection.path}")
+    return ArchiveUrlSource(source.url)
 
 
 def lock_path(project_root: str) -> str:
@@ -604,14 +668,14 @@ def _parse_collection(entry: object, where: str) -> LockedCollection | LockedRoo
         return LockedRoot(name, version, requires_ansible=requires_ansible, dependencies=names)
     kind = next(iter(source_table)) if len(source_table) == 1 else None
     value = source_table.get(kind) if kind is not None else None
-    if not isinstance(value, str) or not value or kind not in ("index", "directory", "editable"):
+    if not isinstance(value, str) or not value or kind not in ("index", "directory", "editable", "path", "url"):
         kinds = ", ".join(sorted(source_table)) or "none"
         raise LockError(f"{where}: unknown source ({kinds}); it may need a newer alai")
 
-    if kind != "index":
-        requirements = table.get("requirements", [])
-        if not isinstance(requirements, list) or not all(isinstance(r, str) for r in _t_list(requirements)):
-            raise LockError(f"{where}: 'requirements' must be an array of strings")
+    requirements = table.get("requirements", [])
+    if not isinstance(requirements, list) or not all(isinstance(r, str) for r in _t_list(requirements)):
+        raise LockError(f"{where}: 'requirements' must be an array of strings")
+    if kind in ("directory", "editable"):
         return LockedCollection(
             name,
             version,
@@ -628,13 +692,24 @@ def _parse_collection(entry: object, where: str) -> LockedCollection | LockedRoo
     if not isinstance(size, int) or isinstance(size, bool) or size < 0:
         raise LockError(f"{where}: 'size' is required and must be a non-negative integer")
 
+    if kind == "index":
+        return LockedCollection(
+            name,
+            version,
+            source=IndexSource(value),
+            cksum=cksum,
+            size=size,
+            requires_ansible=requires_ansible,
+            dependencies=names,
+        )
     return LockedCollection(
         name,
         version,
-        source=IndexSource(value),
+        source=ArchiveSource(value) if kind == "path" else ArchiveUrlSource(value),
         cksum=cksum,
         size=size,
         requires_ansible=requires_ansible,
+        requirements=tuple(str(r) for r in _t_list(requirements)),
         dependencies=names,
     )
 
@@ -666,7 +741,7 @@ def _key(name: str) -> str:
 def _inline(table: _c.Mapping[str, object]) -> str:
     """A TOML inline table of string and boolean values, keys in a fixed order, the source's kind first: ``{ index =
     "internal" }``, ``{ path = "../col", editable = true }``."""
-    order = ["index", "path", "directory", "editable"]
+    order = ["index", "path", "url", "directory", "editable"]
     keys = sorted(table, key=lambda k: (order.index(k) if k in order else len(order), k))
     return "{ " + ", ".join(f"{_key(k)} = {_value(table[k])}" for k in keys) + " }"
 

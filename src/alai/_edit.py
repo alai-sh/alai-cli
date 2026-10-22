@@ -19,9 +19,26 @@ from . import _toml_edit
 from ._common import NAME_RE, ConfigError
 from ._config import Settings, raw_manifest
 from ._lock import Lock, lock_path, read_lock, write_lock
-from ._manifest import PathSource, Requirement, collection_name, is_path
+from ._manifest import (
+    PathSource,
+    Requirement,
+    SourceCollection,
+    UrlSource,
+    collection_name,
+    file_url_path,
+    is_path,
+    is_url,
+)
 from ._output import error, home_path, shown_path, summary
-from ._project import Upgrade, lock_unchanged, read_path_source, report_changes, resolve_project, with_root
+from ._project import (
+    Upgrade,
+    fetch_url_source,
+    lock_unchanged,
+    read_path_source,
+    report_changes,
+    resolve_project,
+    with_root,
+)
 from ._sync import DEFAULT_GROUPS, install_locked
 
 if sys.version_info >= (3, 11):
@@ -121,17 +138,21 @@ def _add(
     with one. A name alone is written with the lowest version it can have, ``>=`` the version locked for it, once
     resolving has found one; with ``frozen`` nothing is resolved, so it's written as given. A directory, or with
     ``editable`` every requirement, is the collection whose source it holds: its name is added alone, and
-    ``[project.sources]`` takes it from there, replacing any entry it had, as ``uv add ../lib`` does.
+    ``[project.sources]`` takes it from there, replacing any entry it had, as ``uv add ../lib`` does. A tarball, by
+    path or URL, is the same, as ``uv add ../lib-1.0.tar.gz`` and ``uv add https://.../lib-1.0.tar.gz`` are.
     """
     config, text = _read(settings, group)
     path = _array_path(group)
     parsed: list[Requirement] = []
-    sources: dict[str, PathSource] = {}
+    sources: dict[str, PathSource | UrlSource] = {}
+    fetched: dict[str, SourceCollection] = {}
     for given in requirements:
-        if editable or is_path(given):
-            name, source = _path_source(settings, given, editable=editable)
-            parsed.append(Requirement.parse(name))
-            sources[name] = source
+        if editable or is_url(given) or is_path(given):
+            collection, source = _path_source(settings, given, editable=editable)
+            parsed.append(Requirement.parse(collection.name))
+            sources[collection.name] = source
+            if isinstance(source, UrlSource):
+                fetched[collection.name] = collection
         else:
             parsed.append(_requirement(given))
     bare: list[str] = []
@@ -150,8 +171,8 @@ def _add(
         if not requirement.req.clauses and requirement.name not in sources:
             bare.append(requirement.name)
     for name, source in sources.items():
-        table: dict[str, str | bool] = {"path": source.path}
-        if source.editable:
+        table: dict[str, str | bool] = {"url": source.url} if isinstance(source, UrlSource) else {"path": source.path}
+        if isinstance(source, PathSource) and source.editable:
             table["editable"] = True
         text = _toml_edit.set_table(text, ("project", "sources", name), table)
     if frozen:
@@ -178,6 +199,7 @@ def _add(
         locked=locked,
         upgrade=upgrade,
         reinstall=reinstall,
+        fetched=fetched,
     )
 
 
@@ -232,10 +254,11 @@ def _lock_and_sync(
     locked: bool,
     upgrade: Upgrade | None,
     reinstall: bool | set[str],
+    fetched: _c.Mapping[str, SourceCollection] | None = None,
 ) -> bool:
     """Resolve ``text`` as the new ``alai.toml``, let ``finish`` give its final text from the lock, and write both;
     then sync, with ``group`` installed as well as the default groups, reinstalling ``reinstall``. Nothing is written
-    if resolving fails.
+    if resolving fails. ``fetched`` are the URL sources already downloaded, by name, so they aren't again.
 
     With ``locked``, a missing ``alai.lock``, or one the edit would change, is an error that writes nothing (False),
     checked before resolving and after, as ``alai sync --locked`` does. Otherwise ``alai.toml`` is written, as uv
@@ -243,6 +266,7 @@ def _lock_and_sync(
     """
     started = time.monotonic()
     raw, manifest = with_root(settings, raw_manifest(tomllib.loads(text), config))
+    manifest.local.update(fetched or {})
     path = lock_path(settings.project.root)
     existing = read_lock(path)
     if locked and existing is None:
@@ -272,25 +296,32 @@ def _lock_and_sync(
     return True
 
 
-def _path_source(settings: Settings, given: str, *, editable: bool) -> tuple[str, PathSource]:
-    """The collection in the directory ``given`` and the source taking it from there: written relative to the project
-    root, as uv writes one given from a subdirectory, unless it was given as an absolute path."""
+def _path_source(settings: Settings, given: str, *, editable: bool) -> tuple[SourceCollection, PathSource | UrlSource]:
+    """The collection in the directory or tarball ``given`` and the source taking it from there: written relative to
+    the project root, as uv writes one given from a subdirectory, unless it was given as an absolute path. An ``http``
+    or ``https`` URL is downloaded to read its name; a ``file`` URL is its absolute path, as uv writes one."""
+    if is_url(given) and not given.lower().startswith("file:"):
+        if editable:
+            raise ConfigError(f"{given} is a tarball, which can't be editable: give a directory to link to")
+        source = UrlSource(given)
+        return fetch_url_source(settings, source), source
+    if is_url(given):
+        given = file_url_path(given)
     expanded = os.path.expanduser(given)
     where = os.path.abspath(expanded)
     written = expanded if os.path.isabs(expanded) else os.path.relpath(where, settings.project.root)
     source = PathSource(written, editable=editable)
-    collection = read_path_source(settings, None, source)
-    return collection.name, source
+    return read_path_source(settings, None, source), source
 
 
 def _drop_path_source(text: str, name: str) -> str:
-    """``text`` without ``name``'s ``[project.sources]`` entry when it's a directory and nothing lists the collection
-    any more, as ``uv remove`` drops its source. An index pin stays: it also applies to what other collections
-    depend on."""
+    """``text`` without ``name``'s ``[project.sources]`` entry when it's a directory or a tarball and nothing lists the
+    collection any more, as ``uv remove`` drops its source. An index pin stays: it also applies to what other
+    collections depend on."""
     data = tomllib.loads(text)
     raw = raw_manifest(data, "alai.toml")
     source = raw.sources.get(name)
-    if source is None or "path" not in source:
+    if source is None or ("path" not in source and "url" not in source):
         return text
     listed = [*raw.collections, *(r for items in raw.groups.values() for r in items)]
     if name in (_name_of(r) for r in listed):

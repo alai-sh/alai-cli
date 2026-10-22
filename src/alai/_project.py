@@ -7,17 +7,20 @@ from __future__ import annotations
 
 import argparse
 import collections.abc as _c
+import concurrent.futures
+import hashlib
 import os
 import typing as _t
 
 from ._common import ConfigError, Record
 from ._config import RawManifest, Settings, raw_manifest, read_toml
-from ._lock import Lock, LockedRoot, changes, input_changes, local_changes
-from ._manifest import Manifest, PathSource, SourceCollection, collection_name, parse_manifest
+from ._lock import ArchiveSource, ArchiveUrlSource, Lock, LockedRoot, changes, input_changes, local_changes
+from ._manifest import Manifest, PathSource, SourceCollection, UrlSource, collection_name, parse_manifest
 from ._output import detail, home_path, lock_change, status, warn
 from ._progress import Live, Task
 
 if _t.TYPE_CHECKING:
+    from ._fetch import Fetcher
     from ._resolve import Resolution
     from ._semver import Version
 
@@ -132,7 +135,8 @@ def read_local(settings: Settings, manifest: Manifest) -> None:
     read now, as uv reads a
     path dependency's ``pyproject.toml`` on every lock and sync. The collection there must be the one its
     ``[project.sources]`` entry names, and the directory mustn't overlap the collections directory, where a link to it,
-    or an exact sync, would replace or remove it."""
+    or an exact sync, would replace or remove it. A path to a tarball is hashed and read through the cache; a URL
+    needs the network, so ``resolve_manifest`` reads those."""
     for name, source in sorted(manifest.sources.items()):
         if not isinstance(source, PathSource):
             continue
@@ -146,10 +150,17 @@ def read_local(settings: Settings, manifest: Manifest) -> None:
 
 def read_path_source(settings: Settings, name: str | None, source: PathSource) -> SourceCollection:
     """The collection in a path source's directory, from its ``galaxy.yml``, or a built collection's
-    ``MANIFEST.json``, checked to be ``name`` when given, and not to overlap the collections directory."""
+    ``MANIFEST.json``, checked to be ``name`` when given, and not to overlap the collections directory; or in the
+    tarball it names, from its ``MANIFEST.json``."""
     from ._galaxy import read_collection_dir
 
     where = source_dir(settings, source.path)
+    if os.path.isfile(where):
+        if source.editable:
+            raise ConfigError(
+                f"{home_path(where)} is a tarball, which can't be editable{_for(name)}: give a directory to link to"
+            )
+        return _read_archive(settings, name, str(source), where)
     if not os.path.isdir(where):
         raise ConfigError(f"{home_path(where)} doesn't exist or isn't a directory" + _for(name))
     if not any(os.path.isfile(os.path.join(where, f)) for f in ("galaxy.yml", "MANIFEST.json")):
@@ -174,6 +185,138 @@ def read_path_source(settings: Settings, name: str | None, source: PathSource) -
 
 def _for(name: str | None) -> str:
     return f" (from [project.sources] for {name})" if name is not None else ""
+
+
+def _read_archive(settings: Settings, name: str | None, shown: str, path: str) -> SourceCollection:
+    """The collection in the tarball at ``path``, extracted into the artifact cache, by its checksum, if it isn't
+    there yet: hashing a tarball costs little, and a tarball already extracted isn't read again."""
+    from ._artifacts import GZIP_MAGIC, ArtifactCache
+
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with open(path, "rb") as f:
+            if f.read(len(GZIP_MAGIC)) != GZIP_MAGIC:
+                raise ConfigError(f"{home_path(path)} isn't a gzip file, so it isn't a collection tarball{_for(name)}")
+            _ = f.seek(0)
+            while chunk := f.read(1024 * 1024):
+                digest.update(chunk)
+                size += len(chunk)
+    except OSError as e:
+        raise ConfigError(f"can't read {home_path(path)}: {e.strerror or e}") from None
+    cksum = digest.hexdigest()
+    return _archive_collection(name, shown, ArtifactCache(settings.cache_dir).add(path, cksum), cksum, size)
+
+
+def _archive_collection(name: str | None, shown: str, extracted: str, cksum: str, size: int) -> SourceCollection:
+    """The collection a tarball named ``shown`` holds, from the copy extracted at ``extracted``: its ``MANIFEST.json``
+    and ``meta/runtime.yml``, checked to be ``name`` when given."""
+    from ._galaxy import read_built_collection
+
+    collection = read_built_collection(os.path.join(extracted, "MANIFEST.json"))
+    if name is not None and collection.name != name:
+        raise ConfigError(f"[project.sources] takes {name} from {shown}, but it holds {collection.name}")
+    return SourceCollection(
+        collection.name,
+        collection.version,
+        extracted,
+        dependencies=collection.dependencies,
+        requires_ansible=collection.requires_ansible,
+        metadata=collection.metadata,
+        cksum=cksum,
+        size=size,
+    )
+
+
+def read_url_source(settings: Settings, name: str | None, source: UrlSource, fetcher: Fetcher) -> SourceCollection:
+    """The collection in the tarball at a URL source, downloaded into the artifact cache, checked to be ``name`` when
+    given."""
+    from ._artifacts import ArtifactCache
+
+    cksum, size, extracted = ArtifactCache(settings.cache_dir, fetcher).download(source.url)
+    return _archive_collection(name, str(source), extracted, cksum, size)
+
+
+def fetch_url_source(settings: Settings, source: UrlSource) -> SourceCollection:
+    """``read_url_source`` with a fetcher of its own, for a URL given on the command line."""
+    from . import __version__
+    from ._fetch import Fetcher
+
+    with Fetcher(
+        user_agent=f"alai/{__version__}", offline=settings.offline, system_certs=settings.system_certs
+    ) as fetcher:
+        return read_url_source(settings, None, source, fetcher)
+
+
+def read_archives(
+    settings: Settings,
+    manifest: Manifest,
+    fetcher: Fetcher,
+    locked: Lock | None,
+    upgrade: bool | _c.Collection[str],
+) -> None:
+    """Fill ``manifest.local`` with each URL source's collection, and check each tarball's against ``locked``.
+
+    One already in ``manifest.local``, as ``alai add`` downloads one to read its name, isn't downloaded again. A URL
+    locked from the same URL is taken from the lock, with no download, unless ``upgrade`` names it: what's
+    behind a URL is assumed not to change, as uv assumes, and the checksum catches it at install if it does. A tarball
+    on disk that no longer matches its locked checksum is an error unless ``upgrade`` names it, as uv makes it, since
+    a lock is meant to pin what's installed: a new tarball at the same path takes ``-P``.
+    """
+
+    from ._artifacts import ArtifactCache
+    from ._fetch import MAX_CONNECTIONS
+
+    def upgrading(name: str) -> bool:
+        return upgrade is True or (upgrade is not False and name in upgrade)
+
+    wanted: dict[str, UrlSource] = {}
+    for name, source in sorted(manifest.sources.items()):
+        was = locked.get(name) if locked is not None else None
+        if isinstance(source, UrlSource) and (name not in manifest.local or not manifest.local[name].is_archive()):
+            if (
+                was is not None
+                and was.source == ArchiveUrlSource(source.url)
+                and was.cksum is not None
+                and not upgrading(name)
+            ):
+                manifest.local[name] = SourceCollection(
+                    name,
+                    was.version,
+                    "",
+                    dependencies=was.requirements or (),
+                    requires_ansible=was.requires_ansible,
+                    metadata="MANIFEST.json",
+                    cksum=was.cksum,
+                    size=was.size,
+                )
+            else:
+                wanted[name] = source
+        elif (
+            isinstance(source, PathSource)
+            and (now := manifest.local.get(name)) is not None
+            and now.is_archive()
+            and was is not None
+            and was.source == ArchiveSource(source.path)
+            and was.cksum != now.cksum
+            and not upgrading(name)
+        ):
+            raise ConfigError(
+                f"{home_path(source_dir(settings, source.path))} has changed since {name} was locked from it: its "
+                + f"SHA-256 is {now.cksum}, where alai.lock has {was.cksum}; run alai lock -P {name} to lock it "
+                + "as it is now"
+            )
+    if not wanted:
+        return
+    # Downloaded in parallel, as sync downloads index artifacts, through one cache: it reads the umask once, which
+    # isn't safe once threads run, and extracts one at a time. Each is checked, and kept, here, in order by name, so
+    # the first to fail by name is the one reported.
+    cache = ArtifactCache(settings.cache_dir, fetcher)
+    with concurrent.futures.ThreadPoolExecutor(MAX_CONNECTIONS, thread_name_prefix="alai-archive") as pool:
+        futures = {name: pool.submit(cache.download, source.url) for name, source in wanted.items()}
+    for name, future in futures.items():
+        cksum, size, extracted = future.result()
+        manifest.local[name] = _archive_collection(name, str(wanted[name]), extracted, cksum, size)
 
 
 def resolve_project(
@@ -221,6 +364,7 @@ def resolve_manifest(
         ) as fetcher,
         Live(Task("Resolving collections...")) as task,
     ):
+        read_archives(settings, manifest, fetcher, locked, upgrade)
         clients = [IndexClient(index, fetcher, settings.cache_dir) for index in settings.indexes]
         resolution = resolve(
             manifest,

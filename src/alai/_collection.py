@@ -15,7 +15,18 @@ import time
 from ._common import ConfigError
 from ._config import Settings
 from ._install import installed, remove
-from ._manifest import Manifest, PathSource, Requirement, SourceCollection, collection_name, is_path
+from ._manifest import (
+    Manifest,
+    PathSource,
+    Requirement,
+    Source,
+    SourceCollection,
+    UrlSource,
+    collection_name,
+    file_url_path,
+    is_path,
+    is_url,
+)
 from ._output import DIM, change, debug, home_path, shown_path, status, styled, summary, warn
 from ._project import resolve_manifest
 from ._sync import install_locked
@@ -53,7 +64,9 @@ def install(
 ) -> None:
     """Install ``requirements`` and what they need, preferring what's already installed, and remove nothing else.
     A requirement that's a directory (see ``is_path``) installs the collection whose source it holds, copied, and one
-    in ``editable`` links it, as ``uv pip install ./lib`` and ``-e ./lib`` do.
+    in ``editable`` links it, as ``uv pip install ./lib`` and ``-e ./lib`` do. A tarball, by path or URL, installs the
+    collection it holds, as ``uv pip install ./lib-1.0.tar.gz`` does, and is left as it is when the same tarball is
+    already installed.
 
     If every requirement is already met by what's installed, and nothing is to be upgraded or reinstalled, nothing is
     resolved or fetched, as ``uv pip install`` checks first. ``reinstall``, everything resolved or the names given,
@@ -61,29 +74,41 @@ def install(
     such as a source checkout with no ``MANIFEST.json``, counts as installed whatever version is asked for, as
     ansible-galaxy counts one: it's left as it is, and isn't resolved when it's asked for.
     """
-    from ._project import read_path_source
+    from ._project import fetch_url_source, read_path_source
 
     started = time.monotonic()
     cdir = target(settings)
     _ = _using(cdir)
     wanted: list[Requirement] = []
-    sources: dict[str, PathSource] = {}
+    sources: dict[str, Source] = {}
     local: dict[str, SourceCollection] = {}
     for text, edit in [*((t, False) for t in requirements), *((t, True) for t in editable)]:
-        if edit or is_path(text):
-            source = PathSource(os.path.abspath(os.path.expanduser(text)), editable=edit)
+        if is_url(text) and not text.lower().startswith("file:"):
+            if edit:
+                raise ConfigError(f"{text} is a tarball, which can't be editable: give a directory to link to")
+            source = UrlSource(text)
+            collection = fetch_url_source(settings, source)
+        elif edit or is_url(text) or is_path(text):
+            path = file_url_path(text) if is_url(text) else text
+            source = PathSource(os.path.abspath(os.path.expanduser(path)), editable=edit)
             collection = read_path_source(settings, None, source)
-            if collection.name in sources:
-                raise ConfigError(f"{collection.name} is given twice, from {sources[collection.name]} and {source}")
-            sources[collection.name] = source
-            local[collection.name] = collection
-            wanted.append(Requirement.parse(collection.name))
         else:
             wanted.append(_requirement(text))
+            continue
+        if collection.name in sources:
+            raise ConfigError(f"{collection.name} is given twice, from {sources[collection.name]} and {source}")
+        sources[collection.name] = source
+        local[collection.name] = collection
+        wanted.append(Requirement.parse(collection.name))
     if not wanted:
-        raise ConfigError("give a collection or a directory to install")
-    # A directory is copied again every time, as uv pip install builds one again; an editable one only needs linking.
-    copies = {name for name, source in sources.items() if not source.editable}
+        raise ConfigError("give a collection, a directory or a tarball to install")
+    # A directory is copied again every time, as uv pip install builds one again; an editable one only needs linking,
+    # and a tarball already installed from the same file or URL, by its checksum, is left, as uv pip install leaves it.
+    copies = {
+        name
+        for name, source in sources.items()
+        if isinstance(source, PathSource) and not source.editable and not local[name].is_archive()
+    }
     if copies and reinstall is not True:
         reinstall = (reinstall or set()) | copies
     every = installed(cdir)

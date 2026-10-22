@@ -10,6 +10,7 @@ import argparse
 import collections.abc as _c
 import hashlib
 import os
+import pathlib
 import time
 import typing as _t
 
@@ -28,7 +29,15 @@ from ._install import (
     remove,
     unlink_namespace,
 )
-from ._lock import DirectorySource, EditableSource, IndexSource, LockedCollection, LockedRoot
+from ._lock import (
+    ArchiveSource,
+    ArchiveUrlSource,
+    DirectorySource,
+    EditableSource,
+    IndexSource,
+    LockedCollection,
+    LockedRoot,
+)
 from ._manifest import Manifest
 from ._output import change, error, home_path, shown_path, summary
 from ._progress import Live, Task
@@ -145,6 +154,8 @@ def install_locked(
     version from the cache, or copies them again from their directory, as uv reinstalls from its own. With ``brief``,
     nothing is said when nothing changed, and each collection's line only with ``-v``. ``root``, the project's own
     collection, is linked to the project's root."""
+    from ._project import source_dir
+
     started = time.monotonic()
     cdir = settings.collections_dir
     links, directories, records, todo = _plan(
@@ -188,7 +199,7 @@ def install_locked(
             if name in directories:
                 _copy_directory(cdir, by_name[name], directories[name], records[name], umask)
             else:
-                install(cdir, name, sources.paths[name], linker)
+                install(cdir, name, sources.paths[name], linker, records.get(name))
             task.advance(f"{name}=={by_name[name].version}")
     if todo.install:
         summary("Installed", len(todo.install), time.monotonic() - started)
@@ -206,8 +217,16 @@ def install_locked(
         version = f"=={collection.version}" if collection.version is not None else " (unknown version)"
         lines.append(("-", collection.name, version))
     for name in todo.install:
-        # One from a directory says which, as uv shows a path dependency's source.
-        where = f" (from {home_path(directories[name])})" if name in directories else ""
+        # One from a directory or a tarball says which, as uv shows a path or URL dependency's source.
+        source = by_name[name].source
+        if name in directories:
+            where = f" (from {home_path(directories[name])})"
+        elif isinstance(source, ArchiveSource):
+            where = f" (from {home_path(source_dir(settings, source.path))})"
+        elif isinstance(source, ArchiveUrlSource):
+            where = f" (from {source.url})"
+        else:
+            where = ""
         lines.append(("~" if name in same else "+", name, f"=={by_name[name].version}{where}"))
     # By name, a removal before its replacement, as uv lists them.
     for sign, name, rest in sorted(lines, key=lambda line: (line[1], line[0] != "-")):
@@ -230,8 +249,8 @@ def _plan(
     reinstall: bool | set[str] = False,
 ) -> tuple[list[tuple[str, Version, str]], dict[str, str], dict[str, dict[str, object]], Plan]:
     """What ``install_locked`` does: the editable installs to link, by name, version and checkout, the project's own
-    collection first; each collection to copy from a directory, by name, and the record it's installed with; and the
-    plan for the rest."""
+    collection first; each collection to copy from a directory, by name; the record each collection from a directory
+    or a tarball is installed with; and the plan for the rest."""
     from ._project import source_dir
 
     links = [
@@ -241,6 +260,11 @@ def _plan(
         links.insert(0, (root.name, root.version, settings.project.root))
     directories = {c.name: source_dir(settings, c.source.path) for c in wanted if isinstance(c.source, DirectorySource)}
     records = {name: directory_record(path) for name, path in directories.items()}
+    for c in wanted:
+        if isinstance(c.source, ArchiveSource):
+            records[c.name] = {"source": {"path": source_dir(settings, c.source.path)}, "cksum": c.cksum}
+        elif isinstance(c.source, ArchiveUrlSource):
+            records[c.name] = {"source": {"url": c.source.url}, "cksum": c.cksum}
     todo = plan(
         settings.collections_dir,
         {c.name: c.version for c in wanted if not isinstance(c.source, EditableSource)},
@@ -307,7 +331,8 @@ def _fetch(collections: list[LockedCollection], settings: Settings) -> _Sources:
 
     The fetcher, and so the HTTP library, is only loaded when something has to be downloaded. Each download comes
     from the index its lock entry names: by its configured name when one has that URL, else from the URL alone, as
-    ``--frozen`` may use a lock whose index isn't configured any more.
+    ``--frozen`` may use a lock whose index isn't configured any more. A tarball comes from its URL, or its file,
+    checked against the lock as an index's is.
     """
     from ._artifacts import Artifact, ArtifactCache
 
@@ -315,7 +340,7 @@ def _fetch(collections: list[LockedCollection], settings: Settings) -> _Sources:
     paths: dict[str, str] = {}
     missing: list[LockedCollection] = []
     for collection in collections:
-        path = cache.cached(_artifact(collection)[1])
+        path = cache.cached(_artifact(collection)[0])
         if path is not None:
             paths[collection.name] = path
         else:
@@ -326,6 +351,7 @@ def _fetch(collections: list[LockedCollection], settings: Settings) -> _Sources:
     from . import __version__
     from ._fetch import Fetcher
     from ._index import IndexClient, artifact_url
+    from ._project import source_dir
 
     configured = {i.url: i for i in settings.indexes}
     with Fetcher(
@@ -334,11 +360,20 @@ def _fetch(collections: list[LockedCollection], settings: Settings) -> _Sources:
         clients: dict[str, IndexClient] = {}
         artifacts: list[Artifact] = []
         for collection in missing:
-            url, cksum, size = _artifact(collection)
-            if url not in clients:
-                index = configured.get(url) or Index(url, url, source=f"{settings.project.root}/alai.lock")
-                clients[url] = IndexClient(index, fetcher, settings.cache_dir)
-            dl = artifact_url(clients[url].config(), collection.name, collection.version, cksum)
+            cksum, size = _artifact(collection)
+            source = collection.source
+            if isinstance(source, ArchiveUrlSource):
+                dl = source.url
+            elif isinstance(source, ArchiveSource):
+                dl = pathlib.Path(source_dir(settings, source.path)).as_uri()
+            elif isinstance(source, IndexSource):
+                url = source.url
+                if url not in clients:
+                    index = configured.get(url) or Index(url, url, source=f"{settings.project.root}/alai.lock")
+                    clients[url] = IndexClient(index, fetcher, settings.cache_dir)
+                dl = artifact_url(clients[url].config(), collection.name, collection.version, cksum)
+            else:
+                raise ValueError(f"{collection.name} doesn't come from an artifact")
             artifacts.append(Artifact(collection.name, collection.version, url=dl, cksum=cksum, size=size))
         with Live(Task("Preparing collections...", total=len(artifacts))) as task:
 
@@ -354,9 +389,8 @@ def _fetch(collections: list[LockedCollection], settings: Settings) -> _Sources:
     return _Sources(paths, len(missing))
 
 
-def _artifact(collection: LockedCollection) -> tuple[str, str, int]:
-    """An index's collection's index URL, artifact sha256 and size, which reading a lock requires of every one."""
-    source = collection.source
-    if not isinstance(source, IndexSource) or collection.cksum is None or collection.size is None:
-        raise ValueError(f"{collection.name} doesn't come from an index")
-    return source.url, collection.cksum, collection.size
+def _artifact(collection: LockedCollection) -> tuple[str, int]:
+    """An artifact's sha256 and size, which reading a lock requires of every index's or tarball's collection."""
+    if collection.cksum is None or collection.size is None:
+        raise ValueError(f"{collection.name} doesn't come from an artifact")
+    return collection.cksum, collection.size

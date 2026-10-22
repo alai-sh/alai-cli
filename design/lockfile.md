@@ -91,9 +91,9 @@ dependencies = ["ansible.netcommon"]
 | `project` | The project as a root of the resolution: its `requires_ansible`, `requirements` (`alai.toml`'s `project.collections`) and `groups.<name>.requirements`, as written |
 | `collection` | One entry per locked collection, sorted by name |
 | `collection.name`, `.version` | What's installed |
-| `collection.source` | Where it comes from, as a table naming the kind: `{ index = "<index root URL>" }`, or a directory (see [Other sources](#other-sources)) |
-| `collection.cksum`, `.size` | The artifact's sha256 and size, from the index; not for a directory |
-| `collection.requirements` | A directory's `galaxy.yml` dependencies when it was locked, so a change to them makes the lock stale; only for a directory |
+| `collection.source` | Where it comes from, as a table naming the kind: `{ index = "<index root URL>" }`, or a directory or tarball (see [Other sources](#other-sources)) |
+| `collection.cksum`, `.size` | The artifact's sha256 and size, from the index or the tarball; not for a directory |
+| `collection.requirements` | A directory's `galaxy.yml` dependencies when it was locked, so a change to them makes the lock stale, or a tarball's `MANIFEST.json` dependencies, so locking again needn't download it; not for an index's |
 | `collection.requires_ansible` | The version's own `requires_ansible`, as the index gives it; absent when it has none |
 | `collection.dependencies` | The names of the locked collections it depends on, sorted |
 
@@ -316,9 +316,8 @@ name = "ansible.netcommon"
 
 ## Other sources
 
-Directories are implemented (2026-10-22); git repositories and tarballs,
-by URL or file, are next (asked for 2026-10-22), and the shapes below are
-chosen so they slot in. Each is a `[project.sources]` entry in `alai.toml`
+Directories and tarballs, by path or URL, are implemented (2026-10-22); git
+repositories are next, and the shapes below are chosen so they slot in. Each is a `[project.sources]` entry in `alai.toml`
 and a `source` table naming its kind in the lock, with uv's names for each
 kind, since uv 0.13.0 draws the same lines:
 
@@ -328,8 +327,8 @@ kind, since uv 0.13.0 draws the same lines:
 | `{ path = "<dir>" }` | `{ directory = "<dir>" }` | Nothing: `requirements` re-read | Done |
 | `{ path = "<dir>", editable = true }` | `{ editable = "<dir>" }` | Nothing: `requirements` re-read | Done |
 | `{ git = "<url>", rev = "<rev>" }` | `{ git = "<url>", rev = "<rev>", commit = "<sha>" }` | `commit`, plus `requirements` | Planned |
-| `{ url = "<tarball url>" }` | `{ url = "<tarball url>" }` | `cksum`, `size` | Planned |
-| `{ path = "<file>.tar.gz" }` | `{ path = "<file>.tar.gz" }` | `cksum`, `size` | Planned |
+| `{ url = "<tarball url>" }` | `{ url = "<tarball url>" }` | `cksum`, `size`, plus `requirements` | Done |
+| `{ path = "<file>.tar.gz" }` | `{ path = "<file>.tar.gz" }` | `cksum`, `size`, plus `requirements` | Done |
 
 Tried with uv 0.13.0 on 2026-10-22: `uv add ../lib` wrote `lib = { path =
 "../lib" }` to `[tool.uv.sources]` and locked `source = { directory =
@@ -414,4 +413,86 @@ dependencies = []
   `galaxy.yml` lists dependencies by name and version only, so a
   dependency can't pull in a git URL or a local path.
 
-How each is installed is in [install.md](install.md#directory-and-editable-sources).
+### Tarballs
+
+Implemented on 2026-10-22. A path to a file, rather than a directory, is a
+built collection's tarball, as uv tells an archive from a directory on
+disk, and `{ url = ... }` downloads one:
+
+```toml
+# alai.toml
+[project.sources]
+"corp.net" = { path = "dist/corp-net-2.1.0.tar.gz" }
+"corp.web" = { url = "https://artifacts.example.com/corp-web-1.4.0.tar.gz" }
+```
+
+```toml
+# alai.lock
+[[collection]]
+name = "corp.net"
+version = "2.1.0"                          # MANIFEST.json
+source = { path = "dist/corp-net-2.1.0.tar.gz" }
+cksum = "9c1e…"
+size = 48213
+requires_ansible = ">=2.16"                # meta/runtime.yml, in the tarball
+requirements = ["ansible.utils>=2"]        # MANIFEST.json's dependencies
+dependencies = ["ansible.utils"]
+```
+
+Tried with uv 0.13.0 on 2026-10-22, with an sdist on disk and served by
+`python -m http.server`:
+
+- **The lock records the archive's hash**: `source = { path =
+  "../dist/lib-0.1.0.tar.gz" }` or `{ url = "http://…" }`, with `sdist = {
+  hash = "sha256:…" }`. Here that's `cksum` and `size`, as an index's
+  artifact has, and the `requirements` snapshot a directory has, so a URL
+  entry carries everything the resolver needs without the tarball.
+- **A URL is downloaded once.** With the file behind the URL rebuilt, `uv
+  lock`, `uv lock --check` and `uv sync` all passed on the cached copy; with
+  an empty cache, each failed on the hash ("Hash mismatch for `lib @ …`").
+  alai does the same: `read_archives` (`_project`) takes a URL locked from
+  the same URL from the lock entry, without downloading it, and `sync`
+  checks the download against `cksum` and `size` as for an index's. `-U`
+  or `-P` downloads it again. uv also takes its own cache's copy for the
+  URL; alai's cache is keyed by checksum, which the URL alone doesn't
+  give, so a URL that isn't locked is downloaded every time it's locked.
+- **A file that changed is an error until `-P`.** With the file rebuilt
+  at the same path, `uv sync`, `uv lock`, `uv lock --check` and even `uv add`
+  of the same file failed on the hash; `uv lock -P lib` locked the new one,
+  and `uv sync` then replaced it (`~ lib==0.1.0`). alai hashes the file on
+  every command that reads the project (`read_local`; 2 ms for a 3 MB file,
+  the size of community.general's, measured 2026-10-22), so `stale()` sees the change, and `read_archives`
+  stops with the error, naming `alai lock -P`. Locking again on its own,
+  as a directory does, was considered: the checksum is there so the lock
+  says exactly what's installed, and a file swapped under the same name,
+  from another build or by a teammate, is what it should catch. See
+  [user-questions.md](user-questions.md#a-tarball-that-changed).
+- **`url` is `http` or `https`**, as uv refused a `file://` URL in
+  `[tool.uv.sources]` ("URL scheme is not allowed"): a file is a `path`.
+  uv also requires the URL to end in an archive extension, as it picks the
+  format from it ("Expected direct URL … to end in a supported file
+  extension"); alai has one format and reads it from the content, so any
+  URL will do, such as one with a query string.
+- **Only gzip** (decided with the user, 2026-10-22), as every collection
+  build writes: a tarball source must start with gzip's magic bytes, `1f
+  8b` (RFC 1952), checked before a file is read and on a URL's first chunk,
+  so an error page served with a 200, or a large file of something else,
+  isn't downloaded whole (`GZIP_MAGIC`; `Fetcher.download`'s `magic`).
+  `tarfile`'s `r:*` could read plain, xz or bzip2 tarballs too, as
+  ansible-galaxy's `tarfile.open(mode='r')` does; allowing them later is
+  only dropping the check. Tar's own `ustar` marker is 257 bytes into the
+  decompressed stream, so it can't be checked as cheaply; a gzip file that
+  isn't a tarball fails when it's read.
+- **What's in it is read from its `MANIFEST.json`**, as ansible-galaxy
+  reads a tarball's (`_get_meta_from_tar` in ansible-core 2.21.5's
+  `concrete_artifact_manager.py`), from the copy extracted into the
+  artifact cache, so the cache holds it before `sync` needs it.
+  `meta/runtime.yml` gives `requires_ansible`, as for a directory. It must
+  be the collection its entry names.
+- **`ansible-galaxy` downloads a URL with no checksum** (`_download_file(…,
+  expected_hash=None)`, "URLs don't support checksums"), and takes any
+  existing file as a tarball (`_is_file_path`). alai pins both by checksum,
+  which is the point of the lock.
+
+How each is installed is in [install.md](install.md#directory-and-editable-sources)
+and [install.md](install.md#tarball-sources).
