@@ -1,7 +1,7 @@
 # Copyright: (c) 2026, Jordan Borean (@jborean93) <jborean93@gmail.com>
 # MIT License (see LICENSE or https://opensource.org/licenses/MIT)
 
-"""``alai collection``: install and uninstall collections by hand, outside the project's requirements and lock."""
+"""``alai collection``: install, uninstall and list collections by hand, outside the project's requirements and lock."""
 
 from __future__ import annotations
 
@@ -16,11 +16,12 @@ from .sync import add_reinstall_args, reinstall_from_args
 def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     collection = commands.add_parser(
         "collection",
-        help="install or uninstall collections outside the project's requirements and alai.lock",
-        description="Install or uninstall collections in the collections directory by hand, as uv pip does for "
-        + "packages. The project's requirements and alai.lock aren't used or changed, though an alai.toml, if the "
-        + "project has one, marks the project's directory and its settings apply, such as where collections are "
-        + "installed; the next alai sync puts the collections directory back as the lock has it.",
+        help="install, uninstall and list collections outside the project's requirements and alai.lock",
+        description="Install, uninstall and list collections in the collections directory by hand, as uv pip does "
+        + "for packages. Installing and uninstalling don't use or change the project's requirements or alai.lock, "
+        + "though an alai.toml, if the project has one, marks the project's directory and its settings apply, such as "
+        + "where collections are installed; the next alai sync puts the collections directory back as the lock has "
+        + "it. Listing compares what's installed with alai.lock.",
         formatter_class=HelpFormatter,
     )
     add_global_args(collection, suppress=True)
@@ -83,6 +84,25 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
     add_settings_args(uninstall, "install")
     uninstall.set_defaults(parser=uninstall, handler=run_uninstall)
 
+    list_ = collection_commands.add_parser(
+        "list",
+        help="list the installed collections",
+        description="List the collections in the collections directory, whatever installed them, and, when the "
+        + "project has an alai.lock, how each compares with it: as locked, not in it, installed differently, or locked "
+        + "but not installed. Outside a project, there's no collections directory to use, so --collections-dir, or the "
+        + "collections_dir setting, has to say where.",
+        formatter_class=HelpFormatter,
+    )
+    _ = list_.add_argument(
+        "--output-format",
+        choices=("text", "json"),
+        default="text",
+        help="text, the default, or json for scripts",
+    )
+    add_global_args(list_, suppress=True)
+    add_settings_args(list_, "collections_dir")
+    list_.set_defaults(parser=list_, handler=run_list)
+
 
 def run_install(args: argparse.Namespace) -> int:
     from .._collection import install
@@ -110,4 +130,11 @@ def run_uninstall(args: argparse.Namespace) -> int:
     from .._collection import uninstall
 
     uninstall(settings_from_args(args), args.names)
+    return 0
+
+
+def run_list(args: argparse.Namespace) -> int:
+    from .._list import list_collections
+
+    list_collections(settings_from_args(args), output_format=args.output_format)
     return 0

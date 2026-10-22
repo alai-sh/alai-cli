@@ -221,3 +221,22 @@ file in anger ([requirements-file.md](requirements-file.md#open-questions)):
 of its features they use, and whether `alai add -r` to import it once into
 `alai.toml` is enough, or they need `alai collection install -r` to keep
 installing from it.
+
+## Exporting a requirements file
+
+**Today:** nothing writes the lock or the installed collections out as a
+`requirements.yml`: `alai collection list` has no freeze format, and there's
+no `alai export`, as uv has `uv pip freeze` and `uv export` (2026-10-22).
+alai's index isn't Galaxy's API, and other sources may follow, so such a
+file couldn't be relied on to work with `ansible-galaxy`, AWX or
+`ansible-builder`.
+
+**The alternative:** `alai export --format requirements.yml`, pinning each
+collection's version and its Galaxy-compatible source where it has one,
+and an SBOM format such as CycloneDX.
+
+**Ask:** do people hand the project's collections to tools that only read
+`requirements.yml`, such as AWX project syncs or execution environment
+builds? Would they rather run alai there, and would an SBOM be used?
+
+See [list.md](list.md#decisions).

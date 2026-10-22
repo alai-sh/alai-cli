@@ -256,8 +256,29 @@ def _plan(
     collection first; each collection to copy from a directory, by name, to which those from a commit are added once
     it's fetched; the record each collection from a directory, a tarball or a commit is installed with; and the plan
     for the rest."""
+    links, directories, records = expected(settings, wanted, root)
+    todo = plan(
+        settings.collections_dir,
+        {c.name: c.version for c in wanted if not isinstance(c.source, EditableSource)},
+        exact=exact,
+        keep_unversioned=keep_unversioned,
+        reinstall=reinstall,
+        keep=[name for name, _, _ in links],
+        records=records,
+    )
+    return links, directories, records, todo
+
+
+def expected(
+    settings: Settings, wanted: _c.Iterable[LockedCollection], root: LockedRoot | None
+) -> tuple[list[tuple[str, Version, str]], dict[str, str], dict[str, dict[str, object]]]:
+    """How ``wanted`` and ``root`` are installed when they're as locked: the editable installs, by name, version and
+    the checkout they link to, the project's own collection first; the directory each collection copied from one comes
+    from, by name; and the record each collection from a directory, a tarball or a commit has. One from an index has
+    no record."""
     from ._project import source_dir
 
+    wanted = list(wanted)
     links = [
         (c.name, c.version, source_dir(settings, c.source.path)) for c in wanted if isinstance(c.source, EditableSource)
     ]
@@ -272,16 +293,7 @@ def _plan(
             records[c.name] = {"source": {"url": c.source.url}, "cksum": c.cksum}
         elif isinstance(c.source, GitCommitSource):
             records[c.name] = git_record(c.source)
-    todo = plan(
-        settings.collections_dir,
-        {c.name: c.version for c in wanted if not isinstance(c.source, EditableSource)},
-        exact=exact,
-        keep_unversioned=keep_unversioned,
-        reinstall=reinstall,
-        keep=[name for name, _, _ in links],
-        records=records,
-    )
-    return links, directories, records, todo
+    return links, directories, records
 
 
 def directory_record(path: str) -> dict[str, object]:

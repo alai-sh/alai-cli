@@ -18,7 +18,7 @@ $ alai [OPTIONS] <COMMAND>
 | Command | Description |
 |---|---|
 | [`add`](#alai-add) | Add collections to alai.toml, then lock and sync |
-| [`collection`](#alai-collection) | Install or uninstall collections outside the project's requirements and alai.lock |
+| [`collection`](#alai-collection) | Install, uninstall and list collections outside the project's requirements and alai.lock |
 | [`config`](#alai-config) | Inspect alai's settings |
 | [`env`](#alai-env) | Print the environment variables alai run sets, for a shell to use |
 | [`find`](#alai-find) | Find which collections have a plugin, role or playbook |
@@ -107,7 +107,7 @@ Also takes the [global options](#global-options).
 
 ## alai collection
 
-Install or uninstall collections in the collections directory by hand, as uv pip does for packages. The project's requirements and alai.lock aren't used or changed, though an alai.toml, if the project has one, marks the project's directory and its settings apply, such as where collections are installed; the next alai sync puts the collections directory back as the lock has it.
+Install, uninstall and list collections in the collections directory by hand, as uv pip does for packages. Installing and uninstalling don't use or change the project's requirements or alai.lock, though an alai.toml, if the project has one, marks the project's directory and its settings apply, such as where collections are installed; the next alai sync puts the collections directory back as the lock has it. Listing compares what's installed with alai.lock.
 
 ```console
 $ alai collection [OPTIONS] <COMMAND>
@@ -117,6 +117,7 @@ $ alai collection [OPTIONS] <COMMAND>
 |---|---|
 | [`install`](#alai-collection-install) | Install collections and what they need |
 | [`uninstall`](#alai-collection-uninstall) | Uninstall collections |
+| [`list`](#alai-collection-list) | List the installed collections |
 
 Also takes the [global options](#global-options).
 
@@ -205,6 +206,33 @@ $ alai collection uninstall [OPTIONS] NAME [NAME ...]
 |---|---|
 | `--collections-dir DIR` | Install collections under DIR/ansible_collections |
 | `--link-mode {auto,clone,hardlink,copy,symlink}` | How files get from the cache into the collections directory |
+
+Also takes the [global options](#global-options).
+
+## alai collection list
+
+List the collections in the collections directory, whatever installed them, and, when the project has an alai.lock, how each compares with it: as locked, not in it, installed differently, or locked but not installed. Outside a project, there's no collections directory to use, so `--collections-dir`, or the collections_dir setting, has to say where.
+
+[Listing a project's collections against its lock](casts/collection-list.cast){ .alai-cast }
+
+`cisco.ios` and what it needs are locked. `community.docker` was installed by hand, `ansible.posix` was installed by hand at an older version, and `ansible.utils` was uninstalled, so `alai sync` would change all three.
+{: .alai-cast-description }
+
+```console
+$ alai collection list [OPTIONS]
+```
+
+### Options
+
+| Option | Description |
+|---|---|
+| `--output-format {text,json}` | Text, the default, or json for scripts |
+
+### Settings
+
+| Option | Description |
+|---|---|
+| `--collections-dir DIR` | Install collections under DIR/ansible_collections |
 
 Also takes the [global options](#global-options).
 

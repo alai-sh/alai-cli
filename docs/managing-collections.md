@@ -324,3 +324,5 @@ To try a collection without adding it to the project, or to install into a
 directory that isn't a project, see [Installing by hand](installing-by-hand.md).
 Anything installed that way into the project's collections directory is
 removed by the next `alai sync`, unless it's run with `--inexact`.
+[`alai collection list`](installing-by-hand.md#listing) shows what's
+installed and what doesn't match `alai.lock`.
