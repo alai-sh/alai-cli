@@ -20,18 +20,24 @@ from ._common import NAME_RE, ConfigError
 from ._config import Settings, raw_manifest
 from ._lock import Lock, lock_path, read_lock, write_lock
 from ._manifest import (
+    GitSource,
     PathSource,
     Requirement,
     SourceCollection,
     UrlSource,
     collection_name,
     file_url_path,
+    given_source,
+    is_git,
     is_path,
     is_url,
+    parse_git,
+    source_key,
 )
 from ._output import error, home_path, shown_path, summary
 from ._project import (
     Upgrade,
+    fetch_git_source,
     fetch_url_source,
     lock_unchanged,
     read_path_source,
@@ -139,19 +145,20 @@ def _add(
     resolving has found one; with ``frozen`` nothing is resolved, so it's written as given. A directory, or with
     ``editable`` every requirement, is the collection whose source it holds: its name is added alone, and
     ``[project.sources]`` takes it from there, replacing any entry it had, as ``uv add ../lib`` does. A tarball, by
-    path or URL, is the same, as ``uv add ../lib-1.0.tar.gz`` and ``uv add https://.../lib-1.0.tar.gz`` are.
+    path or URL, is the same, as ``uv add ../lib-1.0.tar.gz`` and ``uv add https://.../lib-1.0.tar.gz`` are, and so is
+    a git repository, ``git+<url>[@<rev>][#subdirectory=<dir>]``, as ``uv add git+...`` writes one.
     """
     config, text = _read(settings, group)
     path = _array_path(group)
     parsed: list[Requirement] = []
-    sources: dict[str, PathSource | UrlSource] = {}
+    sources: dict[str, PathSource | UrlSource | GitSource] = {}
     fetched: dict[str, SourceCollection] = {}
     for given in requirements:
-        if editable or is_url(given) or is_path(given):
+        if editable or is_git(given) or is_url(given) or is_path(given):
             collection, source = _path_source(settings, given, editable=editable)
             parsed.append(Requirement.parse(collection.name))
             sources[collection.name] = source
-            if isinstance(source, UrlSource):
+            if isinstance(source, (UrlSource, GitSource)):
                 fetched[collection.name] = collection
         else:
             parsed.append(_requirement(given))
@@ -171,9 +178,22 @@ def _add(
         if not requirement.req.clauses and requirement.name not in sources:
             bare.append(requirement.name)
     for name, source in sources.items():
-        table: dict[str, str | bool] = {"url": source.url} if isinstance(source, UrlSource) else {"path": source.path}
-        if isinstance(source, PathSource) and source.editable:
-            table["editable"] = True
+        table: dict[str, str | bool]
+        if isinstance(source, GitSource):
+            # uv's order: the repository, then the directory in it, then the revision; then alai's version.
+            table = {"git": source.url}
+            if source.subdirectory is not None:
+                table["subdirectory"] = source.subdirectory
+            if source.rev is not None:
+                table["rev"] = source.rev
+            if source.version is not None:
+                table["version"] = source.version.text
+        elif isinstance(source, UrlSource):
+            table = {"url": source.url}
+        else:
+            table = {"path": source.path}
+            if source.editable:
+                table["editable"] = True
         text = _toml_edit.set_table(text, ("project", "sources", name), table)
     if frozen:
         _write(config, text)
@@ -220,7 +240,7 @@ def _remove(
         try:
             name = collection_name(given)
         except ValueError as e:
-            raise ConfigError(str(e)) from None
+            raise ConfigError(_by_source(settings, text, given) or str(e)) from None
         current = _toml_edit.values(text, path) or []
         found = [_name_of(v) for v in current]
         if name not in found:
@@ -296,10 +316,18 @@ def _lock_and_sync(
     return True
 
 
-def _path_source(settings: Settings, given: str, *, editable: bool) -> tuple[SourceCollection, PathSource | UrlSource]:
-    """The collection in the directory or tarball ``given`` and the source taking it from there: written relative to
-    the project root, as uv writes one given from a subdirectory, unless it was given as an absolute path. An ``http``
-    or ``https`` URL is downloaded to read its name; a ``file`` URL is its absolute path, as uv writes one."""
+def _path_source(
+    settings: Settings, given: str, *, editable: bool
+) -> tuple[SourceCollection, PathSource | UrlSource | GitSource]:
+    """The collection in the directory, tarball or git repository ``given`` and the source taking it from there: a
+    path written relative to the project root, as uv writes one given from a subdirectory, unless it was given as an
+    absolute path. An ``http`` or ``https`` URL is downloaded, and a repository fetched, to read its name; a ``file``
+    URL is its absolute path, as uv writes one."""
+    if is_git(given):
+        if editable:
+            raise ConfigError(f"{given} is a git repository, which can't be editable: give a checkout to link to")
+        git = parse_git(given)
+        return fetch_git_source(settings, git), git
     if is_url(given) and not given.lower().startswith("file:"):
         if editable:
             raise ConfigError(f"{given} is a tarball, which can't be editable: give a directory to link to")
@@ -314,14 +342,31 @@ def _path_source(settings: Settings, given: str, *, editable: bool) -> tuple[Sou
     return read_path_source(settings, None, source), source
 
 
+def _by_source(settings: Settings, text: str, given: str) -> str | None:
+    """What to say when ``alai remove`` is given a source, such as ``git+...``, rather than a collection name: the
+    collections ``[project.sources]`` takes from it, to remove by name, as ``uv remove`` takes names alone. None when
+    ``given`` isn't a source, for the error about collection names to stand."""
+    key = given_source(given)
+    if key is None:
+        return None
+    raw = raw_manifest(tomllib.loads(text), "alai.toml")
+    names = sorted(n for n, table in raw.sources.items() if source_key(table, settings.project.root) == key)
+    if not names:
+        return f"alai remove takes collection names, such as ns.col, and [project.sources] takes nothing from {given}"
+    return (
+        f"alai remove takes collection names: [project.sources] takes {', '.join(names)} from {given}, so run "
+        + f"alai remove {' '.join(names)}"
+    )
+
+
 def _drop_path_source(text: str, name: str) -> str:
-    """``text`` without ``name``'s ``[project.sources]`` entry when it's a directory or a tarball and nothing lists the
-    collection any more, as ``uv remove`` drops its source. An index pin stays: it also applies to what other
+    """``text`` without ``name``'s ``[project.sources]`` entry when it's a directory, a tarball or a git repository and
+    nothing lists the collection any more, as ``uv remove`` drops its source. An index pin stays: it also applies to what other
     collections depend on."""
     data = tomllib.loads(text)
     raw = raw_manifest(data, "alai.toml")
     source = raw.sources.get(name)
-    if source is None or ("path" not in source and "url" not in source):
+    if source is None or not {"path", "url", "git"} & set(source):
         return text
     listed = [*raw.collections, *(r for items in raw.groups.values() for r in items)]
     if name in (_name_of(r) for r in listed):

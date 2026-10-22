@@ -4,7 +4,7 @@
 """Installing a collection from its source directory as ``ansible-galaxy collection build`` would build it, straight
 into place: the files ``build_ignore`` or the ``manifest`` directives in ``galaxy.yml`` choose, with the
 ``MANIFEST.json`` and ``FILES.json`` a built artifact has, and symlinks made self-contained. A path source that isn't
-editable is installed this way, and a git source will be, from its checkout. The design is in ``design/install.md``.
+editable is installed this way, and so is a git source, from its commit's files. The design is in ``design/install.md``.
 
 It's meant to be shared with a future ``alai build``, so the two stay one file selection; following ansible-galaxy
 is where it starts, not a requirement. Checked against ansible-core ``616e7c05e0``
@@ -60,24 +60,35 @@ class BuildError(Error):
     """A source directory can't be installed as ansible-galaxy would install it."""
 
 
-def install_dir(source: str, dest: str, name: str, version: Version, *, umask: int) -> None:
+def install_dir(
+    source: str, dest: str, name: str, version: Version, *, umask: int, source_version: bool = False
+) -> None:
     """Install the collection in the directory ``source`` as the new directory ``dest``: built from its source when it
     has a ``galaxy.yml``, or copied as it is when it's built already, with only a ``MANIFEST.json``. Either way its
-    metadata must still name it ``name`` at ``version``, as locked."""
+    metadata must still name it ``name`` at ``version``, as locked, unless ``source_version`` says the version is
+    the one its ``[project.sources]`` entry gives, which a built one can't have."""
     has_galaxy = os.path.isfile(os.path.join(source, "galaxy.yml"))
     has_manifest = os.path.isfile(os.path.join(source, "MANIFEST.json"))
     if has_galaxy == has_manifest:
         what = "both a galaxy.yml and a MANIFEST.json" if has_galaxy else "no galaxy.yml or MANIFEST.json any more"
         raise BuildError(f"{name} is locked from {source}, which has {what}")
-    (build if has_galaxy else copy_built)(source, dest, name, version, umask=umask)
+    if has_galaxy:
+        build(source, dest, name, version, umask=umask, source_version=source_version)
+    elif source_version:
+        raise BuildError(f"{source} is a built collection now, whose version its source can't replace; run alai lock")
+    else:
+        copy_built(source, dest, name, version, umask=umask)
 
 
-def build(source: str, dest: str, name: str, version: Version, *, umask: int) -> None:
+def build(source: str, dest: str, name: str, version: Version, *, umask: int, source_version: bool = False) -> None:
     """Install the collection whose source is the directory ``source`` as the new directory ``dest``, checking its
-    ``galaxy.yml`` still names it ``name`` at ``version``, as locked."""
+    ``galaxy.yml`` still names it ``name`` at ``version``, as locked. With ``source_version``, ``version`` is the one
+    its ``[project.sources]`` entry gives, which ``MANIFEST.json`` gets whatever ``galaxy.yml`` says."""
     galaxy_file = os.path.join(source, "galaxy.yml")
     info = _galaxy_info(galaxy_file)
     found = f"{info['namespace']}.{info['name']}"
+    if source_version:
+        info["version"] = version.text
     if found != name or info["version"] != version.text:
         raise BuildError(
             f"{galaxy_file} is for {found} {info['version']} now, not {name} {version} as locked; run alai lock"

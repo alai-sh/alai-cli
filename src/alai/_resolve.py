@@ -19,17 +19,17 @@ import resolvelib.resolvers
 from . import _semver
 from ._common import Error, Record
 from ._index import CollectionVersion, IndexClient, IndexFile
-from ._lock import IndexSource, Lock, LockedCollection, locked_source
-from ._manifest import IndexPin, Manifest, Requirement, SourceCollection
+from ._lock import GitCommitSource, IndexSource, Lock, LockedCollection, locked_source
+from ._manifest import GitSource, IndexPin, Manifest, PathSource, Requirement, SourceCollection
 from ._pep440 import SpecifierSet, Version
 from ._semver import VersionReq
 
 _MAX_ROUNDS = 5000
 """How many rounds resolvelib may take, each pinning one collection or backtracking from one."""
 _LOCAL = ""
-"""The index name of a collection read from a directory or a tarball: the project's own, when its root is one, or a path
-or URL source. No configured index can be called this, so it's never fetched, and its one version is what its
-galaxy.yml or MANIFEST.json says."""
+"""The index name of a collection read from a directory, a tarball or a commit: the project's own, when its root is one,
+or a path, URL or git source. No configured index can be called this, so it's never fetched, and its one version is what
+its galaxy.yml or MANIFEST.json says, or its source gives."""
 
 
 class ResolutionError(Error):
@@ -171,6 +171,7 @@ def resolve(
                     requires_ansible=local.requires_ansible,
                     requirements=local.dependencies,
                     dependencies=dependencies,
+                    source_version=isinstance(source, (PathSource, GitSource)) and source.version is not None,
                 )
             )
     reasons = provider.reasons(chosen, result.criteria, locked, upgrade)
@@ -438,7 +439,14 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
             if candidate.index == _LOCAL:
                 source = self._manifest.sources[name]
                 local = self._manifest.local[name]
-                if not (was.is_local() or was.is_archive()) or str(was.source) != str(source):
+                if isinstance(was.source, GitCommitSource) and isinstance(source, GitSource):
+                    if not was.source.same_source(source):
+                        out[name] = f"{name} now comes from {source}"
+                    elif was.source.commit != local.commit and local.commit is not None:
+                        out[name] = f"{source} is now at commit {local.commit[:7]}"
+                    elif was.version != candidate.version.version:
+                        out[name] = f"{name}'s version is now {candidate.version.version}"
+                elif not (was.is_local() or was.is_archive()) or str(was.source) != str(source):
                     out[name] = f"{name} now comes from {source}"
                 elif was.version != candidate.version.version:
                     out[name] = f"{name}'s {local.metadata} now says {candidate.version.version}"

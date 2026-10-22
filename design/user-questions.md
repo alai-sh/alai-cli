@@ -181,6 +181,24 @@ protection they want against a file swapped under the same name?
 
 See [lockfile.md](lockfile.md#tarballs).
 
+## A source with no usable version
+
+**Today:** a directory or git source whose
+`galaxy.yml` version is missing, empty, `*` or not semantic, such as a
+`{{ REPLACE_VERSION }}` placeholder a release script fills in, is an error
+unless its `[project.sources]` entry sets `version = "<semver>"`
+(2026-10-22).
+
+**The alternatives:** count it as version `*`, satisfying any requirement,
+as ansible-galaxy does for `null`, `''` and `'*'`; or take the version from
+a semantic-version tag that points at the locked commit.
+
+**Ask:** how many repositories people install from keep a placeholder or
+no version, and is writing the version into `alai.toml` a chore they'd
+rather not do for each? Would a tag-derived version be what they expect?
+
+See [lockfile.md](lockfile.md#a-version-that-isnt-one).
+
 ## requirements.yml
 
 **Today:** `-r requirements.yml` is shelved. The mapping onto `alai.toml`

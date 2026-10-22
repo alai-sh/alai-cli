@@ -40,8 +40,8 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         metavar="REQUIREMENT",
         nargs="*",
         help="a collection, such as ansible.posix or 'cisco.ios>=11'; a directory holding one, such as ../ns.col, "
-        + "which is copied again every time; or a built collection's tarball, such as ns-col-1.0.0.tar.gz or an "
-        + "https:// URL to one",
+        + "which is copied again every time; a built collection's tarball, such as ns-col-1.0.0.tar.gz or an "
+        + "https:// URL to one; or a git repository, as git+URL[@REV][#subdirectory=DIR&version=VERSION]",
     )
     _ = install.add_argument(
         "-e",
@@ -67,12 +67,18 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
     uninstall = collection_commands.add_parser(
         "uninstall",
         help="uninstall collections",
-        description="Uninstall collections from the collections directory. What they depend on stays. Outside a "
-        + "project, there's no collections directory to use, so --collections-dir, or the collections_dir setting, "
-        + "has to say where.",
+        description="Uninstall collections from the collections directory. What they depend on stays. A collection is "
+        + "given by its name, even one installed from a directory, a tarball or a git repository. Outside a project, "
+        + "there's no collections directory to use, so --collections-dir, or the collections_dir setting, has to say "
+        + "where.",
         formatter_class=HelpFormatter,
     )
-    _ = uninstall.add_argument("names", metavar="NAME", nargs="+", help="a collection name, such as ansible.posix")
+    _ = uninstall.add_argument(
+        "names",
+        metavar="NAME",
+        nargs="+",
+        help="a collection name, such as ansible.posix, not the directory, tarball or git URL it was installed from",
+    )
     add_global_args(uninstall, suppress=True)
     add_settings_args(uninstall, "install")
     uninstall.set_defaults(parser=uninstall, handler=run_uninstall)

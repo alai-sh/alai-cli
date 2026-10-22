@@ -173,6 +173,29 @@ tarballs."dist/corp-net-2.1.0.tar.gz" = { name = "corp.net", version = "2.1.0", 
 commands = ["alai add dist/corp-net-2.1.0.tar.gz", "cat alai.toml", "tree collections/ansible_collections/corp"]
 
 [[recording]]
+name = "source-git"
+title = "Adding a collection from a git repository"
+# A repository with a collection needing one from the index, fetched from disk under a hosted-looking URL: the
+# recording's own git config rewrites it, as insteadOf would for a mirror. Its dates are fixed, so its commit is too.
+files."alai.toml" = "[project]\n"
+files."../repos/windows.git/galaxy.yml" = """
+namespace: corp
+name: win
+version: 3.0.0
+readme: README.md
+authors: [Example]
+dependencies:
+  ansible.posix: '>=2.0.0'
+"""
+files."../repos/windows.git/README.md" = "# corp.win\n"
+files."../repos/windows.git/plugins/modules/hello.py" = "# A module.\n"
+setup = [
+    "git config --global url.\"file://$HOME/repos/\".insteadOf https://git.example.com/corp/",
+    "cd ../repos/windows.git && git init -q -b main && git add . && GIT_AUTHOR_DATE=2026-10-22T00:00:00Z GIT_COMMITTER_DATE=2026-10-22T00:00:00Z git -c user.name=Example -c user.email=example@example.com commit -q -m 'Release 3.0.0' && git tag v3.0.0",
+]
+commands = ["alai add 'git+https://git.example.com/corp/windows.git@v3.0.0'", "cat alai.toml"]
+
+[[recording]]
 name = "source-editable"
 title = "Adding a collection from a directory, editable"
 files."alai.toml" = "[project]\n"

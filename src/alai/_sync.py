@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import collections.abc as _c
+import contextlib
 import hashlib
 import os
 import pathlib
@@ -34,6 +35,7 @@ from ._lock import (
     ArchiveUrlSource,
     DirectorySource,
     EditableSource,
+    GitCommitSource,
     IndexSource,
     LockedCollection,
     LockedRoot,
@@ -175,9 +177,11 @@ def install_locked(
         return
 
     started = time.monotonic()
+    fetched = _fetch_commits([by_name[n] for n in todo.install if by_name[n].is_git()], settings)
+    directories.update(fetched.paths)
     sources = _fetch([by_name[n] for n in todo.install if n not in directories], settings)
-    if sources.downloaded:
-        summary("Prepared", sources.downloaded, time.monotonic() - started)
+    if sources.downloaded + fetched.downloaded:
+        summary("Prepared", sources.downloaded + fetched.downloaded, time.monotonic() - started)
 
     started = time.monotonic()
     # Where each namespace link pointed, read before it's removed, to say so below.
@@ -219,12 +223,12 @@ def install_locked(
     for name in todo.install:
         # One from a directory or a tarball says which, as uv shows a path or URL dependency's source.
         source = by_name[name].source
-        if name in directories:
+        if isinstance(source, DirectorySource):
             where = f" (from {home_path(directories[name])})"
         elif isinstance(source, ArchiveSource):
             where = f" (from {home_path(source_dir(settings, source.path))})"
-        elif isinstance(source, ArchiveUrlSource):
-            where = f" (from {source.url})"
+        elif isinstance(source, (ArchiveUrlSource, GitCommitSource)):
+            where = f" (from {source.url if isinstance(source, ArchiveUrlSource) else source})"
         else:
             where = ""
         lines.append(("~" if name in same else "+", name, f"=={by_name[name].version}{where}"))
@@ -249,8 +253,9 @@ def _plan(
     reinstall: bool | set[str] = False,
 ) -> tuple[list[tuple[str, Version, str]], dict[str, str], dict[str, dict[str, object]], Plan]:
     """What ``install_locked`` does: the editable installs to link, by name, version and checkout, the project's own
-    collection first; each collection to copy from a directory, by name; the record each collection from a directory
-    or a tarball is installed with; and the plan for the rest."""
+    collection first; each collection to copy from a directory, by name, to which those from a commit are added once
+    it's fetched; the record each collection from a directory, a tarball or a commit is installed with; and the plan
+    for the rest."""
     from ._project import source_dir
 
     links = [
@@ -265,6 +270,8 @@ def _plan(
             records[c.name] = {"source": {"path": source_dir(settings, c.source.path)}, "cksum": c.cksum}
         elif isinstance(c.source, ArchiveUrlSource):
             records[c.name] = {"source": {"url": c.source.url}, "cksum": c.cksum}
+        elif isinstance(c.source, GitCommitSource):
+            records[c.name] = git_record(c.source)
     todo = plan(
         settings.collections_dir,
         {c.name: c.version for c in wanted if not isinstance(c.source, EditableSource)},
@@ -290,6 +297,16 @@ def directory_record(path: str) -> dict[str, object]:
     return {"source": {"directory": path}, "cache_keys": keys}
 
 
+def git_record(source: GitCommitSource) -> dict[str, object]:
+    """The install record of a collection built from a commit: the repository, the commit and the directory in it, so
+    another commit is installed in its place even at the same version, as uv's ``direct_url.json`` holds a git
+    dependency's commit."""
+    found: dict[str, object] = {"git": source.url, "commit": source.commit}
+    if source.subdirectory is not None:
+        found["subdirectory"] = source.subdirectory
+    return {"source": found}
+
+
 def _file_sha256(path: str) -> str | None:
     """A small file's sha256, or None when it can't be read, such as a ``meta/runtime.yml`` the collection doesn't
     have."""
@@ -306,7 +323,9 @@ def _copy_directory(cdir: str, collection: LockedCollection, path: str, record: 
     place(
         cdir,
         collection.name,
-        lambda temp: install_dir(path, temp, collection.name, collection.version, umask=umask),
+        lambda temp: install_dir(
+            path, temp, collection.name, collection.version, umask=umask, source_version=collection.source_version
+        ),
         path,
         record,
     )
@@ -386,6 +405,28 @@ def _fetch(collections: list[LockedCollection], settings: Settings) -> _Sources:
                     task.start(artifact.name, state)
 
             paths.update(ArtifactCache(settings.cache_dir, fetcher).get_all(artifacts, report))
+    return _Sources(paths, len(missing))
+
+
+def _fetch_commits(collections: list[LockedCollection], settings: Settings) -> _Sources:
+    """The directory each collection from a commit is built from, fetching the commits that aren't cached, in
+    parallel."""
+    from ._git import cached, update_all
+
+    commits = {c.name: c.source for c in collections if isinstance(c.source, GitCommitSource)}
+    if not commits:
+        return _Sources({}, 0)
+    missing = {(s.url, s.commit) for s in commits.values() if cached(settings.cache_dir, s.url, s.commit) is None}
+    with Live(Task("Fetching git repositories...", total=len(missing))) if missing else contextlib.nullcontext():
+        files = update_all(
+            settings.cache_dir,
+            [(s.url, s.rev, s.commit, name) for name, s in commits.items()],
+            offline=settings.offline,
+        )
+    paths: dict[str, str] = {}
+    for name, source in commits.items():
+        root = files[source.url, source.commit]
+        paths[name] = os.path.join(root, *source.subdirectory.split("/")) if source.subdirectory is not None else root
     return _Sources(paths, len(missing))
 
 

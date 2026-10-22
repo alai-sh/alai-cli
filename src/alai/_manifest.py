@@ -11,7 +11,9 @@ uses the manifest, so the version parsing it imports only costs those commands.
 from __future__ import annotations
 
 import keyword
+import os
 import re
+import typing as _t
 
 from ._common import NAME_RE, ConfigError, Record
 from ._config import Project, RawManifest, raw_manifest, read_toml
@@ -69,15 +71,44 @@ class PathSource(Record):
     to a file is a built collection's tarball, installed as an index's artifact is; which it is is read from disk, as
     uv tells an archive from a directory."""
 
-    __slots__ = ("editable", "path")
+    __slots__ = ("editable", "path", "version")
 
-    def __init__(self, path: str, *, editable: bool = False) -> None:
+    def __init__(self, path: str, *, editable: bool = False, version: Version | None = None) -> None:
         self.path = path
         """As written: relative to the project root, or absolute."""
         self.editable = editable
+        self.version = version
+        """The version to take it as, in place of its ``galaxy.yml``'s, which may be a placeholder a release script
+        fills in; None to use ``galaxy.yml``'s. Only for a collection's source, not a built one."""
 
     def __str__(self) -> str:
         return f"{self.path} (editable)" if self.editable else self.path
+
+
+class GitSource(Record):
+    """A ``[project.sources]`` entry taking a collection from a git repository, as uv's ``{ git = ... }``: ``rev``, a
+    branch, tag or full commit, is locked to its commit, and the collection is the source at ``subdirectory`` of that
+    commit, copied as a path source's is. ``version`` is as for a path source."""
+
+    __slots__ = ("rev", "subdirectory", "url", "version")
+
+    def __init__(
+        self, url: str, *, rev: str | None = None, subdirectory: str | None = None, version: Version | None = None
+    ) -> None:
+        self.url = url
+        self.rev = rev
+        """The branch, tag or full commit; None for the repository's default branch."""
+        self.subdirectory = subdirectory
+        """The collection's directory within the repository, ``/``-separated; None for its root."""
+        self.version = version
+
+    def __str__(self) -> str:
+        """As it's given on the command line: ``git+<url>@<rev>#subdirectory=<dir>&version=<version>``."""
+        rev = f"@{self.rev}" if self.rev is not None else ""
+        keys = [f"subdirectory={self.subdirectory}"] if self.subdirectory is not None else []
+        if self.version is not None:
+            keys.append(f"version={self.version}")
+        return f"git+{self.url}{rev}" + (f"#{'&'.join(keys)}" if keys else "")
 
 
 class UrlSource(Record):
@@ -93,7 +124,7 @@ class UrlSource(Record):
         return self.url
 
 
-Source = IndexPin | PathSource | UrlSource
+Source = IndexPin | PathSource | UrlSource | GitSource
 """Where ``[project.sources]`` takes a collection from."""
 
 
@@ -102,7 +133,7 @@ class SourceCollection(Record):
     names it, and what it needs. A source has a ``galaxy.yml``; a built or installed collection, or a tarball, has a
     ``MANIFEST.json`` instead."""
 
-    __slots__ = ("cksum", "dependencies", "metadata", "name", "path", "requires_ansible", "size", "version")
+    __slots__ = ("cksum", "commit", "dependencies", "metadata", "name", "path", "requires_ansible", "size", "version")
 
     def __init__(
         self,
@@ -115,6 +146,7 @@ class SourceCollection(Record):
         metadata: str = "galaxy.yml",
         cksum: str | None = None,
         size: int | None = None,
+        commit: str | None = None,
     ) -> None:
         self.name = name
         """``namespace.name``."""
@@ -133,6 +165,8 @@ class SourceCollection(Record):
         """For a tarball, its sha256, which pins it as an index's artifact is pinned; None for a directory."""
         self.size = size
         """For a tarball, its size in bytes."""
+        self.commit = commit
+        """For a git source, the commit it was read from; None otherwise."""
 
     def is_archive(self) -> bool:
         return self.cksum is not None
@@ -210,10 +244,121 @@ class Manifest(Record):
 
 def _source_key(source: Source) -> tuple[object, ...]:
     if isinstance(source, PathSource):
-        return (source.path, source.editable)
+        return (source.path, source.editable, source.version)
     if isinstance(source, UrlSource):
         return (source.url,)
+    if isinstance(source, GitSource):
+        return (source.url, source.rev, source.subdirectory, source.version)
     return (source.index,)
+
+
+def is_git(text: str) -> bool:
+    """Whether a requirement given on the command line is a git repository: ``git+<url>``, as uv and pip write one."""
+    return text.lower().startswith("git+")
+
+
+def parse_git(text: str) -> GitSource:
+    """The git source ``git+<url>[@<rev>][#subdirectory=<dir>&version=<version>]`` names, as ``uv add`` reads one: the
+    revision follows the last ``@`` in the URL's path, so ``git+ssh://git@host/repo`` has none, and the keys after the
+    ``#`` are joined with ``&``, as pip and uv join them. ``version`` is the source's, as in ``[project.sources]``. uv
+    ignores a key it doesn't know; here it's an error, so a misspelt one isn't dropped without a word. ConfigError if
+    it's malformed."""
+    import urllib.parse
+
+    url, _, fragment = text[len("git+") :].partition("#")
+    keys: dict[str, str] = {}
+    for item in fragment.split("&") if fragment else []:
+        key, _, value = item.partition("=")
+        if key not in ("subdirectory", "version") or not value:
+            raise ConfigError(
+                f"{text}: after the # a git URL takes subdirectory=<dir> and version=<version>, joined with &, "
+                + f"not '{item}'"
+            )
+        if key in keys:
+            raise ConfigError(f"{text}: '{key}' is given twice")
+        keys[key] = value
+    subdirectory = _subdirectory(keys["subdirectory"], text) if "subdirectory" in keys else None
+    version = None
+    if "version" in keys:
+        try:
+            version = Version(keys["version"])
+        except ValueError as e:
+            raise ConfigError(f"{text}: version: {e}") from None
+    _git_url(url, text, prefix="git+")
+    parts = urllib.parse.urlsplit(url)
+    rev = None
+    if "@" in parts.path:
+        path, rev = parts.path.rsplit("@", 1)
+        if not rev:
+            raise ConfigError(f"{text}: nothing follows the '@' that gives the revision")
+        url = urllib.parse.urlunsplit(parts._replace(path=path))
+    if not parts.scheme or (not parts.netloc and parts.scheme != "file"):
+        raise ConfigError(f"{text}: expected git+ and a URL, such as git+https://github.com/org/repo")
+    return GitSource(url, rev=rev, subdirectory=subdirectory, version=version)
+
+
+def _git_url(url: str, where: str, *, prefix: str = "") -> None:
+    """Check a git source's URL is one, ``<scheme>://...``, as uv requires: an scp-like ``user@host:path``, as GitHub
+    gives one to clone over ssh, is refused with the ``ssh://`` URL that reaches it, as is a path, with the ``file://``
+    URL; ``prefix`` is written before a suggested URL, ``git+`` on the command line. ConfigError if it isn't."""
+    if "://" in url:
+        return
+    host, colon, path = url.partition(":")
+    # A scheme with its slashes mistyped, such as https:/host, isn't a host.
+    if colon and "/" not in host and host.lower() not in ("http", "https", "ssh", "git", "file"):
+        # The path is relative to the user's home on the server, which the hosts people use ignore.
+        suggested = f"{prefix}ssh://{host}/{path.lstrip('/')}"
+        raise ConfigError(
+            f"{where}: '{url}' is git's scp-like form, which isn't a URL: write it as {suggested}, or "
+            + f"{prefix}ssh://{host}/~/{path} for a repository under the user's home on a server of your own"
+        )
+    raise ConfigError(
+        f"{where}: '{url}' isn't a URL, such as https://github.com/org/repo or ssh://git@github.com/org/repo.git; a "
+        + "repository on disk is a file:// URL"
+    )
+
+
+def _subdirectory(value: str, where: str) -> str:
+    """A git source's ``subdirectory``, which must stay inside the repository."""
+    parts = value.strip("/").split("/")
+    if value.startswith("/") or any(p in ("", "..") for p in parts):
+        raise ConfigError(f"{where}: subdirectory '{value}' must be a relative path inside the repository")
+    normal = "/".join(p for p in parts if p != ".")
+    return normal or "."
+
+
+def given_source(text: str) -> tuple[str, ...] | None:
+    """What a source given on the command line, such as to ``alai add``, is, comparable with ``source_key``: a git
+    repository's URL and directory, whatever its revision; a tarball's URL; or a directory's or tarball's path,
+    resolved from the current directory. None if ``text`` isn't one, or can't be read as one."""
+    try:
+        if is_git(text):
+            git = parse_git(text)
+            return ("git", git.url, git.subdirectory or ".")
+        if is_url(text) and not text.lower().startswith("file:"):
+            return ("url", text)
+        if is_url(text) or is_path(text):
+            path = file_url_path(text) if is_url(text) else text
+            return ("path", os.path.realpath(os.path.expanduser(path)))
+    except ConfigError:
+        return None
+    return None
+
+
+def source_key(table: dict[str, object], root: str) -> tuple[str, ...] | None:
+    """What a ``[project.sources]`` entry, or an install record's ``source``, takes a collection from, as
+    ``given_source`` gives it; a relative path is relative to ``root``. None for an index, which no command line names
+    this way."""
+    git, url = table.get("git"), table.get("url")
+    path = next((table[k] for k in ("path", "directory", "editable") if isinstance(table.get(k), str)), None)
+    if isinstance(git, str):
+        subdirectory = table.get("subdirectory")
+        return ("git", git, subdirectory if isinstance(subdirectory, str) else ".")
+    if isinstance(url, str):
+        return ("url", url)
+    if isinstance(path, str):
+        return ("path", os.path.realpath(os.path.join(root, os.path.expanduser(path))))
+    return None
 
 
 def is_url(text: str) -> bool:
@@ -224,13 +369,19 @@ def is_url(text: str) -> bool:
 
 def file_url_path(url: str) -> str:
     """The path a ``file://`` URL given on the command line names, as uv writes one as a path source; ConfigError if
-    it names another host."""
+    it names another host, or has a ``#`` part, which uv ignores but a path source has no keys for: one that's dropped
+    without a word would install something other than what was asked for."""
     import urllib.parse
     import urllib.request
 
     parts = urllib.parse.urlsplit(url)
     if parts.netloc not in ("", "localhost"):
         raise ConfigError(f"{url}: a file URL can't name another host")
+    if parts.fragment:
+        raise ConfigError(
+            f"{url}: a file URL takes nothing after a #; a directory's version, if its galaxy.yml has a placeholder, "
+            + "goes in its [project.sources] entry"
+        )
     return urllib.request.url2pathname(parts.path)
 
 
@@ -324,7 +475,8 @@ def parse_manifest(raw: RawManifest) -> Manifest:
 
 def _source(table: dict[str, object], where: str) -> Source:
     """One ``[project.sources]`` entry: ``{ index = "<name>" }``, ``{ path = "<dir or file>" }`` with an optional
-    ``editable = true``, or ``{ url = "<tarball>" }``, as uv's ``[tool.uv.sources]`` writes them."""
+    ``editable = true``, ``{ url = "<tarball>" }``, or ``{ git = "<url>" }`` with an optional ``rev`` and
+    ``subdirectory``, as uv's ``[tool.uv.sources]`` writes them; a path or git source may also give a ``version``."""
     if "index" in table:
         index = table["index"]
         if set(table) != {"index"} or not isinstance(index, str):
@@ -334,14 +486,31 @@ def _source(table: dict[str, object], where: str) -> Source:
         return IndexPin(index)
     if "path" in table:
         directory, editable = table["path"], table.get("editable", False)
-        if set(table) - {"path", "editable"} or not isinstance(directory, str) or not directory:
+        if set(table) - {"path", "editable", "version"} or not isinstance(directory, str) or not directory:
             raise ConfigError(
-                f'{where}: a path source is {{ path = "<dir or file>" }}, with editable = true or false, got '
-                + f"{_kinds(table)}"
+                f'{where}: a path source is {{ path = "<dir or file>" }}, with editable = true or false and a '
+                + f"version, got {_kinds(table)}"
             )
         if not isinstance(editable, bool):
             raise ConfigError(f"{where}: 'editable' must be true or false")
-        return PathSource(directory, editable=editable)
+        return PathSource(directory, editable=editable, version=_version(table, where))
+    if "git" in table:
+        url, rev, subdirectory = table["git"], table.get("rev"), table.get("subdirectory")
+        if set(table) - {"git", "rev", "subdirectory", "version"} or not isinstance(url, str) or not url:
+            raise ConfigError(
+                f'{where}: a git source is {{ git = "<url>" }}, with a rev, subdirectory and version, got '
+                + f"{_kinds(table)}"
+            )
+        for key, value in (("rev", rev), ("subdirectory", subdirectory)):
+            if value is not None and (not isinstance(value, str) or not value):
+                raise ConfigError(f"{where}: '{key}' must be a non-empty string")
+        _git_url(url, where)
+        return GitSource(
+            url,
+            rev=_t.cast("str | None", rev),
+            subdirectory=_subdirectory(subdirectory, where) if isinstance(subdirectory, str) else None,
+            version=_version(table, where),
+        )
     if "url" in table:
         url = table["url"]
         if set(table) != {"url"} or not isinstance(url, str) or not url:
@@ -353,9 +522,22 @@ def _source(table: dict[str, object], where: str) -> Source:
             )
         return UrlSource(url)
     raise ConfigError(
-        f'{where}: expected {{ index = "<name>" }}, {{ path = "<dir or file>" }} or {{ url = "<tarball URL>" }}, got '
-        + f"{_kinds(table)}; git sources aren't supported yet"
+        f'{where}: expected {{ index = "<name>" }}, {{ path = "<dir or file>" }}, {{ url = "<tarball URL>" }} or '
+        + f'{{ git = "<url>" }}, got {_kinds(table)}'
     )
+
+
+def _version(table: dict[str, object], where: str) -> Version | None:
+    """A source's ``version``, which replaces its ``galaxy.yml``'s."""
+    text = table.get("version")
+    if text is None:
+        return None
+    if not isinstance(text, str):
+        raise ConfigError(f"{where}: 'version' must be a string, such as '1.0.0'")
+    try:
+        return Version(text)
+    except ValueError as e:
+        raise ConfigError(f"{where}: 'version': {e}") from None
 
 
 def _kinds(table: dict[str, object]) -> str:

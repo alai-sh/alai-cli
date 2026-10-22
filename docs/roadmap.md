@@ -9,11 +9,6 @@
 
 ## Planned
 
-- **Collections from git.** Installing a collection from a git
-  repository, named in [`[project.sources]`](alai-toml.md#projectsources)
-  and pinned in `alai.lock` to a commit, as
-  [a directory](collection-sources.md#a-directory) and
-  [a tarball](collection-sources.md#a-tarball) are today.
 - **Building collections**: `alai build`, with the collection's
   metadata in `alai.toml` instead of `galaxy.yml`, so `alai add` and
   `alai remove` can edit a collection project's dependencies too.

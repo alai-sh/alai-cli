@@ -87,7 +87,7 @@ with its logic in `src/alai/_sync.py`. The user documentation is
   record file mapping names to `cksum` was considered, to tell two
   artifacts of one version apart and to know which directories alai made,
   and dropped: uv does without one, and installing custom content is what
-  path and git sources will be for. A `uv pip install`-style command,
+  path and git sources are for. A `uv pip install`-style command,
   outside the lock, could come later.
 - **`sync` is exact, as `uv sync` is**: an installed collection the lock
   doesn't list is removed, whoever installed it, and `--inexact` keeps
@@ -505,8 +505,9 @@ The record is beside the collections, not in one: ansible-galaxy writes no
 one `FILES.json` doesn't list. `.alai` starts with a dot, so neither
 Ansible nor `installed()` reads it as a namespace. It's written when the
 copy is renamed into place and removed with it (`write_record`), and when
-an editable link replaces it. A git source will record its URL and commit
-the same way.
+an editable link replaces it. A git source records its URL, commit and
+`subdirectory` the same way (`git_record` in `_sync.py`), so another commit
+at the same version is installed in its place.
 
 ### A built directory
 
@@ -623,8 +624,279 @@ and `{ url = "<url>" }` ([lockfile.md](lockfile.md#tarballs)), and
 - **Reported as `+ ns.col==1.0.0 (from <path or URL>)`**, as uv shows an
   archive's source.
 
+## Git sources
+
+Implemented on 2026-10-22 (`_git.py`); the manifest and lock shapes are in
+[lockfile.md](lockfile.md#git-repositories). `alai add` and `alai
+collection install` take `git+<url>[@<rev>][#subdirectory=<dir>]`, as
+`uv add` and `uv pip install` do (`parse_git` in `_manifest.py`); `uv add`
+wrote `{ git, subdirectory, rev }` in that order, and so does `alai add`.
+
+**A git source is a URL** (decided with the user, 2026-10-22; `_git_url`
+in `_manifest.py`), as uv requires: git's scp-like `git@github.com:org/repo.git`,
+which GitHub offers to clone over ssh, is refused with the `ssh://` URL to
+write instead, and a bare path with a pointer to `file://`. uv 0.13.0
+refused the scp form in `[tool.uv.sources]` ("relative URL without a
+base") and on the command line (`git+git@github.com:…` failed on "a
+supported file extension"), and took `git+ssh://git@github.com/…` in both.
+alai had taken it in `alai.toml`, passed to git, but not on the command
+line. The scp path is relative to the user's home on the server, so its
+exact URL is `ssh://host/~/path`; the suggestion is `ssh://host/path`,
+what GitHub, GitLab and the like document, with `/~/` given beside it for
+a server of one's own. A scheme with its slashes mistyped, `https:/host`,
+isn't read as an scp host named `https`. One form means one way to match a
+source to a URL (connection sharing, `alai remove`'s pointer), and the
+docs' `insteadOf` example rewrites `ssh://git@github.com/`, as one written
+for `git@github.com:` doesn't match an `ssh://` URL (checked with `git
+ls-remote`).
+
+**`version` goes after the `#` too, joined with `&`** (decided with the
+user, 2026-10-22): `#subdirectory=chocolatey&version=1.5.0`, written to
+`[project.sources]` after `rev`, so a collection with a placeholder version
+can be added without editing `alai.toml` or adding a flag. pip and uv join
+the keys after the `#` with `&`: uv 0.13.0 took
+`#subdirectory=.&egg=markupsafe` in either order, and read
+`#subdirectory=.,version=1` as the subdirectory `.,version=1`. A comma
+would also read as ansible-galaxy's `#/<dir>,<rev>`, where what follows it
+is the git revision, not the collection's version. `@<rev>` stays, as
+every tool writes it. uv ignores a key it doesn't know (`#foo=bar` was
+accepted and dropped); alai refuses one, so `subdirectroy=` isn't lost
+without a word.
+
+alai runs the `git` CLI, as uv and ansible-galaxy do, so a user's SSH
+config, agent, `known_hosts`, credential helpers and `insteadOf` rewrites
+work as they do for `git` itself, which a library such as dulwich or
+pygit2 wouldn't give.
+
+Tried with uv 0.13.0 on 2026-10-22, with a `git` on `PATH` that logged its
+arguments and environment:
+
+- **uv keeps a repository per URL and a checkout per commit**:
+  `git-v1/db/<url hash>` is fetched into (`git init`, then `git fetch
+  --force --update-head-ok <url> +<sha>:refs/commit/<sha>`), and
+  `git-v1/checkouts/<url hash>/<short sha>` is made from it with `git clone
+  --local`, `git reset --hard <sha>` and `git submodule update --init
+  --recursive`, then marked done with a `<short sha>.ok` file. The fetch
+  isn't shallow: markupsafe's repository held all 795 commits behind
+  `3.0.2`, back to 2010, and no `shallow` file, though only that commit's
+  history, not other branches. A file lock
+  per URL, `git-v1/locks/<url hash>`, guards the shared repository.
+- **`GIT_TERMINAL_PROMPT=0` on the fetch**, even with a terminal, so git
+  fails rather than asking for an HTTPS username or password; credential
+  helpers and credentials in the URL still work. `GIT_LFS_SKIP_SMUDGE=1`
+  on the checkout.
+- **Nothing for SSH**: no `GIT_SSH_COMMAND` or `BatchMode`, so ssh's own
+  prompts, for a passphrase or an unknown host key, reach the terminal.
+  With no agent, the fetch failed at once (`Permission denied
+  (publickey)`), shown as git's stderr under "process didn't exit
+  successfully: `/usr/bin/git fetch …`".
+
+ansible-galaxy (ansible-core 2.22.0rc1, `_extract_collection_from_git`)
+runs `git clone`, shallow only for `HEAD`, into a temporary directory, then
+`git checkout <rev>`, with no environment of its own.
+
+How alai does it, differing from uv in keeping no shared repository:
+
+1. **Resolve `rev`** (`resolve`) with `git ls-remote <url> <rev>
+   <rev>^{}`: an annotated tag's commit is only listed when its `^{}` is
+   asked for. A tag wins over a branch of the same name, as git's own
+   lookup order has it. A full hash is taken as it is, with no network; an
+   abbreviated one can't be found without the history, so it's an error
+   saying to give the full hash. With no `rev`, `HEAD`.
+2. **Use the cache** if `git-v1/<url hash>/<commit>` exists.
+3. **Otherwise fetch into a new temporary directory** beside it (`fetch`):
+   `git init`, `git fetch --depth=1 <url> <commit>`, check out, update
+   submodules when there's a `.gitmodules`, remove every `.git`, then
+   rename it into place, as an extracted artifact is
+   ([Decisions](#decisions)): if another alai renamed the same commit
+   first, ours is removed. Commits are fetched in parallel, eight at a
+   time, each once (`fetch_all`). Then the collection, at `subdirectory` if
+   given, goes through the directory reader and is copied
+   ([A built directory](#a-built-directory)), with its install record.
+
+When locking, a git source locked from the same `[project.sources]` entry
+is taken from the lock with no network, as a URL tarball is; one whose
+`version` changed keeps its commit, read again from the cache; `-U` or
+`-P` resolves `rev` again (`read_git_sources`). `--offline` works from the
+lock and the cache, and is an error when a commit isn't cached or a `rev`
+needs resolving.
+
+A shallow fetch of a commit that's no branch's tip worked against
+github.com (chocolatey-ansible's `1.3.1` tag, `d3144a8`: 1.3 s, a 520K
+`.git`). Keeping no shared repository needs no lock, as git's own
+`index.lock` makes a second fetch into one repository fail rather than
+wait. What it gives up is uv's incremental fetch, small at depth 1, and
+servers that won't serve a commit by its hash unless it's a branch or
+tag's tip, which git's first protocol allows them to refuse (`Server does
+not allow request for unadvertised object`; tested with `protocol.version=0`
+and `uploadpack.allowAnySHA1InWant=false` on a local repository): on that
+message alone, every branch and tag is fetched instead, and a commit none
+of them leads to is an error.
+
+**The cache keeps the tree, not `.git`** (decided with the user,
+2026-10-22). uv's checkout keeps its `.git` (104K for markupsafe, objects
+shared with the 1.1M full-history repository by `clone --local`), as a
+Python build can read it: setuptools-scm takes the version from `git
+describe`. Nothing in a collection's build reads it, and the copy leaves
+`.git` out ([Copying a directory](#copying-a-directory-as-its-artifact-would-be)).
+Kept, it would let someone deepen a cached checkout (`git fetch
+--unshallow <url> <sha>` worked on a depth-1 one, 1 commit to 155), but a
+commit's directory shouldn't change once it's in place; a clone of one's
+own as a `path` source is the way to work with the history.
+
+**Running fetches in parallel**: separate repositories don't share
+anything, and `subprocess` is safe from threads. uv 0.13.0 runs them in
+parallel: locking three github.com sources, the fetches of two overlapped
+(the logging `git` above, with times). What parallel fetches
+add is ssh prompts at the same time, which interleave on the terminal and
+race to write `known_hosts`, and prompts under the progress display, which
+can't capture them as ssh writes to the terminal itself.
+
+**Fetches run in parallel, with ssh left alone** (decided with the user,
+2026-10-22), as uv does. Not chosen:
+
+- **One repository at a time, or one host at a time for its first
+  connection**, which would avoid prompts colliding but slow every lock
+  for what happens once per host or per agent session.
+- **ssh's `BatchMode=yes`**, which disables every prompt, passphrase,
+  password and host key alike: with an empty `known_hosts`, `ssh -o
+  BatchMode=yes git@github.com` failed with "Host key verification
+  failed." An agent and keys without a passphrase still work. alai would
+  fail where `git clone` and uv work.
+
+What makes up for it:
+
+- **The progress display stops redrawing while a fetch runs** with a
+  terminal (`_progress.Suspended`, around each git command that reaches
+  the network), so a prompt isn't drawn over; git's stderr is captured and
+  shown on failure, as uv does. uv doesn't stop: run in a pseudo-terminal
+  with an empty `known_hosts`, its spinner went on redrawing two lines
+  every frame and erased ssh's "Are you sure you want to continue
+  connecting (yes/no/[fingerprint])?" as it was asked.
+- **`Updating <collection> from <url> (<rev>)` and `Updated …
+  (<commit>)`**, uv's lines for a git fetch with the collections it's for
+  added (asked for 2026-10-22), printed before alai first reaches a
+  repository and once its commit is cached (`_git.update`), so a paused
+  display still says what alai is waiting on: a fetch that's slow, or
+  waiting on a question, doesn't look like a hang, and an agent's request
+  to use a key comes with the collection it's for on the line above.
+  Several collections from one commit are named together; a repository
+  given to `alai collection install` has no name until it's read, so its
+  line has only the URL. An agent can't be given that context itself: its
+  protocol carries the key and what to sign, and since OpenSSH 8.9 ssh
+  adds the host the key is for (`session-bind@openssh.com`), but there's
+  no field for a reason. A password manager names what's asking from the
+  process that connected to the agent, which a forwarded agent can't see
+  past the ssh session it's forwarded over. They stay on screen, as uv's do, so nothing
+  has to be cleared from under a question ssh wrote below them; a status
+  line that cleared itself would need to know how many lines ssh wrote.
+  `-q` hides them. With nothing to fetch, nothing is printed.
+- **A hint on ssh's failures** (`_hint`): when git's stderr has `Host key
+  verification failed`, the error says to trust the host first, with `ssh
+  -T` and the fingerprint check; for `Permission denied (publickey)`, to
+  load a key with `ssh-add`; for an HTTPS username git wasn't allowed to
+  ask for, to set up a credential helper. Without a terminal, as in CI,
+  ssh can't prompt and fails with the first (`setsid ssh … </dev/null`,
+  OpenSSH 10.2), so the hint is what a CI log shows.
+- **One ssh connection per host** (asked for 2026-10-22; `_Sharing` in
+  `_git.py`): each git command that reaches a repository over ssh is its
+  own connection, and each authenticates, so with an agent that confirms
+  each use of a key, resolving a revision and fetching its commit asked
+  twice per repository, plus once per submodule. alai's
+  `GIT_SSH_COMMAND` adds `-o ControlMaster=auto -o ControlPath=<dir>/%C
+  -o ControlPersist=60`, so every command to a host shares the first
+  one's connection. Checked on 2026-10-22 with three `git ls-remote`s to
+  github.com through a forwarded agent that confirms each use: three
+  requests without sharing, one with it, and git's captured output didn't
+  wait on the backgrounded connection. The first connection to a host
+  goes alone (`turn`), the rest waiting for it, so commands run in
+  parallel don't each make, and authenticate, one; to another host they
+  don't wait. The sockets are in `/tmp/alai-ssh-*` rather than `TMPDIR`,
+  as a socket's path is limited to 104 bytes on macOS, and `TMPDIR` there
+  takes about 50 before `%C`'s 40; they're closed with `ssh -O exit` when
+  alai exits, and outlive a killed alai by `ControlPersist`'s 60 seconds.
+  Left alone: a user's own ssh command (`GIT_SSH_COMMAND`, `GIT_SSH`,
+  `core.sshCommand`), and a host whose ssh config shares connections
+  already (`ssh -G`, which prints the config without connecting, has
+  `controlmaster` other than `false`), whose connection may be open and
+  approved already, which alai's `-o` would otherwise override. uv
+  doesn't share connections; each of its fetches is one connection.
+- **The docs' git section has a `!!! warning`** that ssh may prompt, for
+  a passphrase or a new host's key, and that prompts from parallel fetches
+  can collide, followed by the workarounds below
+  ([collection-sources.md](../docs/collection-sources.md#a-git-repository)).
+
+The workarounds, checked with OpenSSH 10.2 and git 2.56 on 2026-10-22,
+all things alai inherits from the environment rather than settings of its
+own:
+
+- **Add a new host's key first**, so there's no prompt: `ssh -T
+  git@<host>` once and accept it, or `ssh-keyscan -t ed25519 <host> >>
+  ~/.ssh/known_hosts`. Either way, compare the fingerprint (`ssh-keygen -lf
+  <file>`) with the one the host publishes (GitHub's ED25519 key is
+  `SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU`), as `ssh-keyscan`
+  checks nothing.
+- **Load the key into an agent**: `ssh-add`, or `AddKeysToAgent yes` in
+  `~/.ssh/config` so its first use does it.
+- **Accept a new host's key, still refusing a changed one**:
+  `StrictHostKeyChecking accept-new`, in a `Host` block of `~/.ssh/config`
+  or through `GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new"`;
+  it printed "Permanently added 'github.com' (ED25519) to the list of
+  known hosts." It trusts whatever answers first.
+- **Disable the check** for a throwaway environment: `-o
+  StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null`. Anyone in the
+  middle can answer instead of the host, so the docs say so.
+- **Fail rather than prompt**, for CI: `GIT_SSH_COMMAND="ssh -o
+  BatchMode=yes"`, with `known_hosts` provided.
+- **Set these for git alone, without a file**: git reads `core.sshCommand`
+  and any other setting from `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>` and
+  `GIT_CONFIG_VALUE_<n>` (git 2.31+); `core.sshCommand` set that way took
+  effect.
+- **Use HTTPS instead**: `url.https://github.com/.insteadOf
+  git@github.com:` rewrites an SSH URL, so a lock written with one works
+  where only HTTPS and a credential helper are set up; through
+  `GIT_CONFIG_*` it made `git ls-remote git@github.com:…` work with no key.
+  The lock keeps the URL as written.
+- **HTTPS certificates**: git uses its own TLS (libcurl), so
+  `http.sslCAInfo` or `GIT_SSL_CAINFO` for a private CA, and
+  `GIT_SSL_NO_VERIFY=true` to disable the check. uv 0.13.0 sets
+  `GIT_SSL_NO_VERIFY=true` on the fetch for a host given to
+  `--allow-insecure-host`, and nothing for `--system-certs`, as git
+  already uses the system's store; ansible-galaxy adds `-c
+  http.sslVerify=false` for `--ignore-certs`. alai's `system_certs`
+  doesn't apply to git; if alai gets an insecure-host setting, it sets
+  `GIT_SSL_NO_VERIFY` as uv does.
+
 ## Not done yet
 
+- **Relaying ssh's questions under the progress display**, so it never
+  pauses: each git command gets a pseudo-terminal of alai's as its
+  controlling terminal, stdout and stderr staying pipes, and what ssh
+  writes there is drawn in a section under the spinner, one command at a
+  time, the others' questions waiting their turn, with keystrokes passed
+  to it in raw mode. Checked on 2026-10-22 with OpenSSH 10.2: ssh's
+  host-key question arrived on the pseudo-terminal and was answered
+  through it, and `ssh-keygen -y`'s passphrase question turned its echo
+  off, so the pseudo-terminal's own line discipline hides a secret and
+  handles backspace, with nothing for alai to mask. What it needs: setting
+  the controlling terminal between fork and exec (`setsid`, `TIOCSCTTY`),
+  which Python warns isn't safe with threads running, so a small helper
+  process per command; restoring the user's terminal from raw mode on
+  every exit, Ctrl-C included; stripping control sequences from what's
+  relayed; passing on the terminal's size; and a question waiting its
+  turn can outlast sshd's `LoginGraceTime` (120 s by default). Shelved
+  for its own branch (decided with the user, 2026-10-22).
+- **uv's GitHub fast path**, reading `galaxy.yml` and `meta/runtime.yml`
+  through GitHub's API to lock without running git
+  ([lockfile.md](lockfile.md#git-repositories)).
+- **`--rev`, `--tag` and `--branch` on `alai add`**, as `uv add` has, and
+  uv's `tag` and `branch` keys beside `rev`; `@<rev>` in the URL covers
+  them for now.
+- **Git LFS files**, which uv fetches with `lfs = true`; a collection
+  storing files in LFS gets their pointer files.
+- **One cache entry per repository whatever its URL's spelling**: uv
+  canonicalises a git URL before hashing it (no `.git`, lowercase host);
+  alai hashes it as written, so two spellings fetch the same commit twice.
 - **`--no-editable`** on `sync`, as uv's, to install editable sources as
   copies, for building an image say.
 - **`collection install -r requirements.yml`**, ansible-galaxy's

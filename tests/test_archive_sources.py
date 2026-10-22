@@ -326,6 +326,16 @@ class TestAddRemove:
 
         assert f'"ns.src" = {{ path = "{path}" }}' in (project / "alai.toml").read_text()
 
+    def test_add_file_url_fragment(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        path = project.parent / "ns-src-1.0.0.tar.gz"
+        _ = tarball(path)
+        _ = (project / "alai.toml").write_text("[project]\ncollections = []\n")
+
+        # uv drops it; here it's an error, as nothing would take it.
+        assert main(["add", f"{path.as_uri()}#version=2.0.0"]) == EXIT_ERROR
+
+        assert "a file URL takes nothing after a #" in capsys.readouterr().err
+
     def test_add_url(self, project: Path, server: IndexServer) -> None:
         _ = tarball(Path(server.root) / "ns-src-1.0.0.tar.gz")
         url = f"{server.url}ns-src-1.0.0.tar.gz"

@@ -70,7 +70,9 @@ version:
 | `version: "10.7.9"`, a bare version meaning exactly it | `"community.general==10.7.9"`: alai needs the `==` |
 | `version: "!=10.7.0"` | `"community.general!=10.7.0"` |
 | `source:` naming a Galaxy server | No equivalent; see [Indexes, not Galaxy servers](#indexes-not-galaxy-servers) |
-| `type: git`, `url`, `file` or `dir` | Not supported yet |
+| `type: git`, `name: git+<url>#/<dir>,<version>` | `"<ns>.<name>"`, with `{ git = "<url>", subdirectory = "<dir>", rev = "<version>" }` in [`[project.sources]`](collection-sources.md#a-git-repository) |
+| `type: url` or `file` | `"<ns>.<name>"`, with `{ url = "<url>" }` or `{ path = "<file>" }` in [`[project.sources]`](collection-sources.md#a-tarball) |
+| `type: dir` | `"<ns>.<name>"`, with `{ path = "<dir>" }` in [`[project.sources]`](collection-sources.md#a-directory) |
 | `signatures:` | Not supported |
 
 ```yaml
@@ -186,6 +188,5 @@ If your `ansible.cfg` sets `collections_path` to somewhere other than
 ### Not supported yet
 
 - Roles.
-- Collections from git, a directory, a URL or a tarball.
 - Verifying signatures.
 - Reading `requirements.yml`.

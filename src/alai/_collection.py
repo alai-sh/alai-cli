@@ -11,10 +11,11 @@ from __future__ import annotations
 import collections.abc as _c
 import os
 import time
+import typing as _t
 
 from ._common import ConfigError
 from ._config import Settings
-from ._install import installed, remove
+from ._install import Installed, installed, remove
 from ._manifest import (
     Manifest,
     PathSource,
@@ -24,8 +25,12 @@ from ._manifest import (
     UrlSource,
     collection_name,
     file_url_path,
+    given_source,
+    is_git,
     is_path,
     is_url,
+    parse_git,
+    source_key,
 )
 from ._output import DIM, change, debug, home_path, shown_path, status, styled, summary, warn
 from ._project import resolve_manifest
@@ -66,7 +71,8 @@ def install(
     A requirement that's a directory (see ``is_path``) installs the collection whose source it holds, copied, and one
     in ``editable`` links it, as ``uv pip install ./lib`` and ``-e ./lib`` do. A tarball, by path or URL, installs the
     collection it holds, as ``uv pip install ./lib-1.0.tar.gz`` does, and is left as it is when the same tarball is
-    already installed.
+    already installed. A git repository, ``git+<url>[@<rev>][#subdirectory=<dir>]``, installs the collection at that
+    commit, as ``uv pip install git+...`` does, and is left as it is when that commit is already installed.
 
     If every requirement is already met by what's installed, and nothing is to be upgraded or reinstalled, nothing is
     resolved or fetched, as ``uv pip install`` checks first. ``reinstall``, everything resolved or the names given,
@@ -74,7 +80,7 @@ def install(
     such as a source checkout with no ``MANIFEST.json``, counts as installed whatever version is asked for, as
     ansible-galaxy counts one: it's left as it is, and isn't resolved when it's asked for.
     """
-    from ._project import fetch_url_source, read_path_source
+    from ._project import fetch_git_source, fetch_url_source, read_path_source
 
     started = time.monotonic()
     cdir = target(settings)
@@ -83,7 +89,12 @@ def install(
     sources: dict[str, Source] = {}
     local: dict[str, SourceCollection] = {}
     for text, edit in [*((t, False) for t in requirements), *((t, True) for t in editable)]:
-        if is_url(text) and not text.lower().startswith("file:"):
+        if is_git(text):
+            if edit:
+                raise ConfigError(f"{text} is a git repository, which can't be editable: give a checkout to link to")
+            source = parse_git(text)
+            collection = fetch_git_source(settings, source)
+        elif is_url(text) and not text.lower().startswith("file:"):
             if edit:
                 raise ConfigError(f"{text} is a tarball, which can't be editable: give a directory to link to")
             source = UrlSource(text)
@@ -101,7 +112,7 @@ def install(
         local[collection.name] = collection
         wanted.append(Requirement.parse(collection.name))
     if not wanted:
-        raise ConfigError("give a collection, a directory or a tarball to install")
+        raise ConfigError("give a collection, a directory, a tarball or a git repository to install")
     # A directory is copied again every time, as uv pip install builds one again; an editable one only needs linking,
     # and a tarball already installed from the same file or URL, by its checksum, is left, as uv pip install leaves it.
     copies = {
@@ -154,7 +165,11 @@ def uninstall(settings: Settings, names: _c.Sequence[str]) -> None:
     shown = _using(cdir)
     present = installed(cdir)
     chosen: dict[str, None] = {}
-    for name in (_name(given) for given in names):
+    for given in names:
+        try:
+            name = collection_name(given)
+        except ValueError as e:
+            raise ConfigError(_by_source(present, given) or str(e)) from None
         if name in present:
             chosen[name] = None
         else:
@@ -170,15 +185,32 @@ def uninstall(settings: Settings, names: _c.Sequence[str]) -> None:
         change("-", name, f"=={version}" if version is not None else " (unknown version)")
 
 
+def _by_source(present: _c.Mapping[str, Installed], given: str) -> str | None:
+    """What to say when ``collection uninstall`` is given a source, such as ``git+...``, rather than a collection name:
+    the installed collections that came from it, by what alai recorded when it installed them, or the directory an
+    editable one links to. None when ``given`` isn't a source, for the error about collection names to stand."""
+    key = given_source(given)
+    if key is None:
+        return None
+    names: list[str] = []
+    for name, collection in sorted(present.items()):
+        if os.path.islink(collection.path):
+            found: tuple[str, ...] | None = ("path", os.path.realpath(collection.path))
+        else:
+            source = collection.record.get("source") if collection.record is not None else None
+            found = source_key(_t.cast("dict[str, object]", source), "/") if isinstance(source, dict) else None
+        if found == key:
+            names.append(name)
+    if not names:
+        return f"collection uninstall takes collection names, such as ns.col, and nothing installed is from {given}"
+    return (
+        f"collection uninstall takes collection names: {', '.join(names)} came from {given}, so run "
+        + f"alai collection uninstall {' '.join(names)}"
+    )
+
+
 def _requirement(text: str) -> Requirement:
     try:
         return Requirement.parse(text.strip())
-    except ValueError as e:
-        raise ConfigError(str(e)) from None
-
-
-def _name(text: str) -> str:
-    try:
-        return collection_name(text)
     except ValueError as e:
         raise ConfigError(str(e)) from None

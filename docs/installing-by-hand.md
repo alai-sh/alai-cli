@@ -64,6 +64,17 @@ index's artifact is, and left as it is when the same tarball is already
 installed from there; a different one, of the same version or not, replaces
 it.
 
+A requirement starting `git+`, such as
+`git+https://github.com/corp/windows.git@v3.0.0`, is a git repository, as
+`uv pip install` takes one: `@<rev>` names a branch, tag or full commit,
+and `#subdirectory=<dir>` the collection's directory in it, with
+`&version=<version>` for a collection whose `galaxy.yml` has a placeholder
+instead (see
+[A version that isn't one](collection-sources.md#a-version-that-isnt-one)). The commit is
+fetched and the collection installed from it as a directory is, and left as
+it is when that commit is already installed. See
+[Collection sources](collection-sources.md#a-git-repository).
+
 If the project has an `alai.toml`, it's read as for any command: it marks
 the project, and its settings, such as the indexes and `collections_dir`,
 apply. Its `[project]` collections and `alai.lock` are neither used nor
@@ -73,7 +84,9 @@ changed.
 
 `alai collection uninstall` removes the collections named, and only them:
 what they depend on stays installed. A collection that isn't installed is
-skipped with a warning.
+skipped with a warning. Name the collection, such as `corp.win`, even one
+installed from a directory, a tarball or a git repository; given one of
+those instead, it says which installed collection came from it.
 
 [Uninstalling from a project's collections directory](casts/collection-uninstall.cast){ .alai-cast }
 

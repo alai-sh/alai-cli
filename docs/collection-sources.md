@@ -2,13 +2,13 @@
 
 A collection's source is where alai gets it from. Most come from an
 [index](indexes.md), found by name, and need nothing set. A collection can
-also be taken from a particular index, a directory on disk, or a built
-collection's tarball, by naming it in
+also be taken from a particular index, a directory on disk, a built
+collection's tarball, or a git repository, by naming it in
 [`[project.sources]`](alai-toml.md#projectsources):
 
 ```toml
 [project]
-collections = ["cisco.ios", "corp.dev", "corp.lib", "corp.net", "corp.web"]
+collections = ["cisco.ios", "corp.dev", "corp.lib", "corp.net", "corp.web", "corp.win"]
 
 [project.sources]
 "ansible.netcommon" = { index = "internal" }
@@ -16,6 +16,7 @@ collections = ["cisco.ios", "corp.dev", "corp.lib", "corp.net", "corp.web"]
 "corp.lib" = { path = "../corp.lib", editable = true }
 "corp.net" = { path = "dist/corp-net-2.1.0.tar.gz" }
 "corp.web" = { url = "https://artifacts.example.com/corp-web-1.4.0.tar.gz" }
+"corp.win" = { git = "https://git.example.com/corp/windows.git", rev = "v3.0.0" }
 ```
 
 | Source | Written as | Installed by | Use it for |
@@ -24,11 +25,12 @@ collections = ["cisco.ios", "corp.dev", "corp.lib", "corp.net", "corp.web"]
 | [A directory](#a-directory) | `{ path = "<dir>" }` | Copying it, as if built and installed | A collection that isn't published, or a change to one you want to try |
 | [An editable directory](#an-editable-directory) | `{ path = "<dir>", editable = true }` | Linking to it | A collection you're working on alongside the project |
 | [A tarball](#a-tarball) | `{ path = "<file>" }` or `{ url = "<url>" }` | Extracting it, as an index's artifact is | A built collection that isn't on an index, such as a CI build or a release download |
+| [A git repository](#a-git-repository) | `{ git = "<url>", rev = "<rev>" }` | Fetching the commit and copying it, as a directory is | A collection that's only in a repository, or a fix that isn't released yet |
 
 An entry applies wherever the collection appears: in the project's
 collections, a group's, or as what another collection depends on. It's
 written in `alai.lock` too, so everyone installing the project gets the same
-thing. Git repositories are [planned](roadmap.md).
+thing.
 
 ## An index
 
@@ -218,11 +220,166 @@ Where it falls short:
 - **It can't be editable**: a tarball is a release. Use a directory to work
   on the collection.
 
+## A git repository
+
+`{ git = "<url>" }` takes the collection from a git repository, at the
+commit `rev` names: a branch, a tag, or a full commit hash, or the default
+branch without one. `subdirectory` names the collection's directory when
+it isn't the repository's root. `alai add` writes the entry for you, given
+`git+<url>`, with `@<rev>` and `#subdirectory=<dir>` as uv takes them, and
+[`version`](#a-version-that-isnt-one) after the `#` too, joined with `&`:
+
+[Adding a collection from a git repository](casts/source-git.cast){ .alai-cast }
+
+A collection in a directory of the repository, as in one holding several:
+
+```console
+$ alai add 'git+https://github.com/corp/monorepo@main#subdirectory=collections/corp.net'
+```
+
+```toml
+[project.sources]
+"corp.net" = { git = "https://github.com/corp/monorepo", subdirectory = "collections/corp.net", rev = "main" }
+```
+
+The repository is given as a URL:
+
+| Over | In `alai.toml` | On the command line |
+|---|---|---|
+| HTTPS | `https://github.com/corp/windows.git` | `git+https://github.com/corp/windows.git@v3.0.0` |
+| SSH | `ssh://git@github.com/corp/windows.git` | `git+ssh://git@github.com/corp/windows.git@v3.0.0` |
+| SSH, another port | `ssh://git@git.example.com:2222/corp/windows.git` | `git+ssh://git@git.example.com:2222/corp/windows.git@v3.0.0` |
+| A repository on disk | `file:///srv/git/windows.git` | `git+file:///srv/git/windows.git@v3.0.0` |
+
+git's shorter SSH form, `git@github.com:corp/windows.git`, which GitHub
+gives you to clone over SSH, isn't a URL, so it's refused, with the
+`ssh://` URL to use instead, as uv refuses it. Its path is relative to the
+user's home directory on the server, which GitHub, GitLab and the like
+ignore: `git@github.com:corp/windows.git` is
+`ssh://git@github.com/corp/windows.git`. For a repository under the home
+directory on a server of your own, write `ssh://git@host/~/windows.git`.
+
+alai runs the `git` you have installed, so whatever works for `git clone`
+works here: an SSH URL with your SSH keys and config, an HTTPS URL with a
+credential helper. It never asks for an HTTPS username or password itself.
+The commit is fetched into the cache, then the collection is installed from
+it as [a directory](#a-directory) is: built from its `galaxy.yml`, or copied
+as it is if the repository holds a built collection. Submodules are fetched
+too; files stored with Git LFS aren't.
+
+`alai.lock` records the commit `rev` was at when it was locked, and keeps
+it: a branch that has moved on, or a tag that was moved, doesn't change what
+`alai sync` installs. `alai lock -P corp.win` (`--upgrade-collection`), or
+`-U` for everything, looks `rev` up again. A new commit is installed in
+place of the old one even when the version in `galaxy.yml` is the same.
+Changing the entry in `alai.toml` locks it again.
+
+Use one for:
+
+- **A collection that's only published as a repository**, such as many on
+  GitHub.
+- **A fix that isn't released yet**: point the collection at the branch or
+  commit with it, then back at an index once it's out.
+- **A repository holding several collections**, each taken from its
+  directory with `subdirectory`.
+
+Where it falls short:
+
+- **It needs `git`**, and access to the repository for everyone who locks
+  the project or installs it with nothing cached.
+- **Edits aren't seen**: a commit is fixed. Use an editable directory, a
+  checkout of your own, to work on the collection.
+- **A commit's abbreviated hash can't be used**, as finding it needs the
+  whole history: give the full hash.
+
+!!! warning "ssh may ask questions"
+
+    alai doesn't stop ssh from asking for a key's passphrase, or whether to
+    trust a host it hasn't seen before, as `git clone` would. While git
+    reaches a repository, alai stops drawing progress, so the question
+    isn't drawn over, and says what it's waiting on with an
+    `Updating <collection> from <url>` line, then `Updated` once the commit
+    is fetched: when an agent or password manager asks to use your key, the
+    line above says which collection it's for. When several repositories
+    are fetched at once, their questions can arrive together. Without a terminal, as in CI, ssh can't ask, and the
+    fetch fails with `Host key verification failed` or
+    `Permission denied (publickey)`; alai's error says which to fix.
+
+To keep ssh from needing to ask:
+
+- **Trust a new host first**: run `ssh -T git@<host>` once and answer, or
+  add its key with `ssh-keyscan -t ed25519 <host> >> ~/.ssh/known_hosts`.
+  Either way, check the fingerprint, which `ssh-keygen -lf ~/.ssh/known_hosts`
+  shows, against the one the host publishes, as `ssh-keyscan` checks
+  nothing. GitHub's ED25519 key is
+  `SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU`.
+- **Load your key into an agent**: `ssh-add`, or `AddKeysToAgent yes` in
+  `~/.ssh/config`, so the first use adds it.
+- **Accept a new host's key, but not a changed one**: set
+  `StrictHostKeyChecking accept-new` in a `Host` block of `~/.ssh/config`,
+  or for one command,
+  `GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new" alai sync`.
+  It trusts whatever answers first.
+- **Fail rather than ask**, as a CI job should:
+  `GIT_SSH_COMMAND="ssh -o BatchMode=yes"`, with `known_hosts` provided.
+- **Turn the check off**, in a throwaway environment only:
+  `GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"`.
+  Anyone between you and the host can then answer in its place.
+
+alai uses one ssh connection per host for everything it fetches in a run,
+through ssh's connection sharing (`ControlMaster`), so your key is used,
+and an agent that confirms each use asks you, once per host rather than
+for every repository. It's left to you when you set your own ssh command,
+in `GIT_SSH_COMMAND`, `GIT_SSH` or git's `core.sshCommand`, or your
+`~/.ssh/config` already shares connections to the host.
+
+Other settings git reads that help here:
+
+- **An HTTPS URL instead of an SSH one**, where only HTTPS and a credential
+  helper are set up:
+  `git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"`.
+  `alai.lock` keeps the URL as it's written in `alai.toml`.
+- **A setting for one command, without a config file**:
+  `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.sshCommand GIT_CONFIG_VALUE_0="ssh -i ~/.ssh/deploy_key" alai sync`.
+- **A private certificate authority**: `GIT_SSL_CAINFO=/path/to/ca.pem`, or
+  `http.sslCAInfo`. git checks HTTPS certificates itself, so alai's
+  [`system_certs`](configuration.md) doesn't change what it trusts.
+
+## A version that isn't one
+
+Some collections' `galaxy.yml` doesn't have a usable version in the
+repository: a placeholder their release fills in, such as
+`version: '{{ REPLACE_VERSION }}'`, or none at all. alai refuses one of
+those, as it can't know what version it is. Give the version in the
+source:
+
+```toml
+[project.sources]
+"chocolatey.chocolatey" = { git = "https://github.com/chocolatey-community/chocolatey-ansible", subdirectory = "chocolatey", rev = "1.5.0", version = "1.5.0" }
+```
+
+It's used in place of `galaxy.yml`'s, in `alai.lock` and in the installed
+collection's `MANIFEST.json`, so requirements other collections have on it
+mean what they say. `version` can be given for a git source and for a
+directory, editable or not, but not for a tarball or a built collection,
+whose version was checked when it was built. `alai add` writes it for a
+git repository given with it after the `#`, joined to `subdirectory` with
+`&`, so quote it for the shell:
+
+```console
+$ alai add 'git+https://github.com/chocolatey-community/chocolatey-ansible@1.5.0#subdirectory=chocolatey&version=1.5.0'
+```
+
+For a directory, add it to the entry by hand. If `galaxy.yml` does have a
+version, the source's is still used, with a warning, as it's probably no
+longer needed.
+
 ## Installing by hand
 
 [`alai collection install`](installing-by-hand.md) takes a directory too,
-copied again every time, or `-e DIR` to link it, and a tarball, by path or
-URL, without changing `alai.toml` or `alai.lock`.
+copied again every time, or `-e DIR` to link it, a tarball, by path or URL,
+and a git repository, as `git+<url>`, without changing `alai.toml` or
+`alai.lock`.
 
 ## What a directory can't be
 

@@ -166,11 +166,20 @@ entry too, once no group lists it; an `{ index = ... }` entry stays, as it
 can apply to what other collections depend on.
 
 `alai add` takes a built collection's tarball the same way, by path, such
-as `dist/corp-net-2.1.0.tar.gz`, or by `https://` URL, and `alai remove`
-removes its entry too.
+as `dist/corp-net-2.1.0.tar.gz`, or by `https://` URL, and a git
+repository as `git+<url>`, such as
+`git+https://github.com/corp/windows.git@v3.0.0`; `alai remove` removes
+their entries too.
 
-How a directory or a tarball is installed, when it's installed again, and
-when to use an index, a directory or an editable one is in
+!!! note "Remove by name"
+
+    `alai remove` takes the collection's name, such as
+    `alai remove corp.win`, never the directory, tarball or URL it was
+    added from. Given one of those, it says which collection
+    `[project.sources]` takes from it.
+
+How a directory, a tarball or a git repository is installed, when it's
+installed again, and when to use each is in
 [Collection sources](collection-sources.md).
 
 ## Locking
