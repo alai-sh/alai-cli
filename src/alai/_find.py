@@ -60,9 +60,9 @@ from ._plugins import (
 )
 from ._semver import Version
 
-DEFAULT_LIMIT = 10
-"""How many matches in collections that aren't installed are listed on a terminal, unless ``--limit`` says otherwise; as
-``cargo search``'s default."""
+DEFAULT_LIMIT = 20
+"""How many matches are listed on a terminal, unless ``--limit`` says otherwise: with the headings, ``… N more`` lines
+and legend, about 26 lines, which fits a terminal window without scrolling."""
 
 _NAME_COLUMN = 60
 """The widest the name column is padded to: 90% of full names fit (2026-10-21), and a longer one, up to 189
@@ -131,10 +131,12 @@ def find(
     # Only a person at a terminal is served by a short list: a pipe or file, a pager or grep or a script, gets them all.
     if limit is None and output_format == "text" and not query.fqcn and sys.stdout.isatty():
         limit = DEFAULT_LIMIT
-    hidden = 0
+    # The limit is on the whole list, so the installed matches, listed first, are the ones kept.
+    totals = (len(mine), len(others))
     if limit:
-        hidden = max(0, len(others) - limit)
-        others = others[:limit]
+        others = others[: max(0, limit - len(mine))]
+        mine = mine[:limit]
+    hidden = sum(totals) - len(mine) - len(others)
 
     if output_format == "json":
         _print_json(mine + others, hidden, installed or {})
@@ -143,7 +145,7 @@ def find(
             alternatives = same_name(item, catalog, versions, settings.cache_dir)
             _Renderer(settings, query, installed).detail(item, alternatives)
     else:
-        _Renderer(settings, query, installed).listing(mine, others, hidden, project=installed is not None)
+        _Renderer(settings, query, installed).listing(mine, others, totals, project=installed is not None)
     return 0
 
 
@@ -273,22 +275,26 @@ class _Renderer:
     def s(self, text: str, *codes: str) -> str:
         return _output.styled(text, *codes, stdout=True)
 
-    def listing(self, mine: list[Found], others: list[Found], hidden: int, *, project: bool) -> None:
+    def listing(self, mine: list[Found], others: list[Found], totals: tuple[int, int], *, project: bool) -> None:
+        """The two sections, each headed by how many it has; ``totals`` counts those ``--limit`` left out too, and a
+        section all of whose matches were left out is still headed, to say there are some."""
         shown = mine + others
         type_width = max(len(f.plugin.type) for f in shown)
         name_width = min(max(len(f.plugin.fqcn) for f in shown), _NAME_COLUMN)
-        if mine:
-            self._section("Installed" if project else "Installed with ansible-core", len(mine))
-            for item in mine:
-                self._row(item, type_width, name_width)
-        if others:
-            if mine:
+        sections = [
+            ("Installed" if project else "Installed with ansible-core", mine, totals[0]),
+            ("Not installed", others, totals[1]),
+        ]
+        sections = [s for s in sections if s[2]]
+        for i, (title, items, total) in enumerate(sections):
+            if i:
                 print()
-            self._section("Not installed", len(others) + hidden)
-            for item in others:
+            self._section(title, total)
+            for item in items:
                 self._row(item, type_width, name_width)
-        if hidden:
-            print(self.s(f"   … {hidden} more, --limit 0 to show all", DIM))
+            if hidden := total - len(items):
+                hint = ", --limit 0 to show all" if i == len(sections) - 1 else ""
+                print(self.s(f"   … {hidden} more{hint}", DIM))
         if self.terminal and _output.verbosity >= 0:
             self._legend(shown)
 

@@ -74,7 +74,7 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         "--limit",
         metavar="N",
         type=_count,
-        help="list at most N matches from collections that aren't installed, 0 for all; 10 on a terminal, all when "
+        help="list at most N matches, installed ones first, 0 for all; 20 on a terminal, all when "
         + "the output is piped or --output-format is json",
     )
     _ = find.add_argument(

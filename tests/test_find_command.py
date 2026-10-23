@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 from index_data import make_index, plugin
 
+from alai import _find
 from alai._cli import main
 from alai._common import EXIT_ERROR, EXIT_NOT_FOUND
 from alai._find import as_sentence, markup, plain, sentence
@@ -117,7 +118,7 @@ class TestListing:
         assert out(capsys)[-1] == "· not installed  ↪ redirects to a collection that isn't installed"
 
     def test_partial_match(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        assert find("copy", "--limit", "3") == 0
+        assert find("copy", "--limit", "5") == 0
 
         lines = out(capsys)
         assert lines[:3] == [
@@ -134,16 +135,39 @@ class TestListing:
         ]
         assert lines[4] == section("Not installed (13)")
 
+    def test_limit_counts_installed_first(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        assert find("copy", "--limit", "1") == 0
+
+        assert out(capsys) == [
+            section("Installed (2)"),
+            " ✓ module  ansible.builtin.copy  Copy files to remote locations",
+            "   … 1 more",
+            "",
+            section("Not installed (13)"),
+            "   … 13 more, --limit 0 to show all",
+        ]
+
+    def test_limit_with_installed_only(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        assert find("copy", "--installed", "--limit", "1") == 0
+
+        assert out(capsys)[1:] == [
+            " ✓ module  ansible.builtin.copy  Copy files to remote locations",
+            "   … 1 more, --limit 0 to show all",
+        ]
+
     def test_default_limit_on_a_terminal(
         self, project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+        # Lower than the 13 matches, so some are left out.
+        monkeypatch.setattr(_find, "DEFAULT_LIMIT", 10)
 
         assert find("-q", "--color", "never", "copy", "-x") == 0
 
         lines = out(capsys)
-        assert sum(1 for line in lines if line.startswith(" · ")) == 10
-        assert lines[-1] == "   … 2 more, --limit 0 to show all"
+        # ansible.builtin.copy is installed, and one of the 10.
+        assert sum(1 for line in lines if line.startswith(" · ")) == 9
+        assert lines[-1] == "   … 3 more, --limit 0 to show all"
 
     def test_no_default_limit_when_piped(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         assert find("copy", "-x") == 0
@@ -539,7 +563,7 @@ class TestJson:
         assert len(json.loads(capsys.readouterr().out)["plugins"]) == 13
 
     def test_limit(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        assert find("copy", "-x", "--output-format", "json", "--limit", "2") == 0
+        assert find("copy", "-x", "--output-format", "json", "--limit", "3") == 0
 
         result = json.loads(capsys.readouterr().out)
         assert (len(result["plugins"]), result["omitted"]) == (3, 10)

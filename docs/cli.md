@@ -332,7 +332,7 @@ $ alai find [OPTIONS] QUERY
 | `-x`, `--exact` | Match whole names only, not names that contain QUERY |
 | `--installed` | Only plugins in installed collections and ansible.builtin |
 | `--include-removed` | List removed plugins that match part of a name too; ones named exactly always are |
-| `--limit N` | List at most N matches from collections that aren't installed, 0 for all; 10 on a terminal, all when the output is piped or `--output-format` is json |
+| `--limit N` | List at most N matches, installed ones first, 0 for all; 20 on a terminal, all when the output is piped or `--output-format` is json |
 | `--output-format {text,json}` | Text, the default, or json for scripts |
 
 ### Settings
