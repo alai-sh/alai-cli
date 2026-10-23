@@ -68,10 +68,20 @@ searches locally is the reason the index has one.
   without a lock. Outside any project, only `ansible.builtin` counts, and
   a dim status line says so. **`ansible.builtin` is always installed**, as
   it's part of ansible-core.
-- **`--limit N`**, 10 by default for text on a terminal, unlimited for
-  JSON (a script silently getting 10 would be a trap) and for text that
-  isn't going to a terminal, `0` for all. It applies to the Not installed
-  section only; installed matches are always listed. Piped output is
+- **`--limit N`**, 20 by default for text on a terminal, unlimited for
+  JSON (a script silently getting 20 would be a trap) and for text that
+  isn't going to a terminal, `0` for all. It applies to every match,
+  installed ones first, so a broad word such as `user` with many
+  collections installed doesn't fill the terminal with the Installed
+  section (asked for 2026-10-23). The default is twice `cargo search`'s
+  10, as installed matches now count towards it and would otherwise
+  crowd out the ones not installed, which "which collection has X" is
+  mostly about; 20 rows with the headings, `… N more` lines and legend
+  are about 26 lines, which fits a terminal window without scrolling
+  (2026-10-23). It isn't sized to the terminal's height, so the same
+  command lists the same matches in any window. A section's heading counts all its
+  matches, a section cut short ends with `… N more`, and one with every
+  match left out is still headed, to say there are some. Piped output is
   unlimited (asked for 2026-10-21, wanting a pager to get everything):
   whether a pager is reading can't be told portably (on Linux, only by
   finding the pipe's reader in `/proc`), but a pipe or file can, with

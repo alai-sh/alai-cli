@@ -82,7 +82,7 @@ $ alai find -x ipmath --output-format json \
     | jq -r '.collections | to_entries[] | select(.value.installed) | .key'
 ```
 
-Piped, alai lists every match rather than the first 10, and
+Piped, alai lists every match rather than the first 20, and
 `--color always` keeps the colours `less -R` shows.
 
 ## What's listed first
@@ -108,8 +108,8 @@ index. Within each, matches are listed in this order:
    used to rank them lower, not to hide them.
 7. By name.
 
-On a terminal, only the first 10 matches that aren't installed are
-listed; `--limit N` changes that, and `--limit 0` lists them all. When the
+On a terminal, only the first 20 matches are listed, installed ones
+first; `--limit N` changes that, and `--limit 0` lists them all. When the
 output goes to a pipe or a file, such as `alai find user | less` or
 `| grep`, they're all listed unless `--limit` is given. `--installed` lists only the
 installed ones.
