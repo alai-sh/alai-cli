@@ -16,9 +16,7 @@ import sys
 from . import _output
 from ._args import HelpFormatter, add_global_args, verbose_count
 from ._commands import add, collection, config, env, find, lock, remove, run, shell_completion, sync
-from ._common import Error
-
-EXIT_ERROR = 2
+from ._common import EXIT_ERROR, Error
 
 
 def main(argv: _c.Sequence[str] | None = None) -> int:

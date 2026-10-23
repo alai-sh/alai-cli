@@ -6,18 +6,16 @@ and installing. The design is in ``design/install.md``."""
 
 from __future__ import annotations
 
-import argparse
 import collections.abc as _c
 import contextlib
-import hashlib
 import os
 import pathlib
 import time
 import typing as _t
 
 from . import _output
-from ._common import ConfigError
-from ._config import Index, Settings
+from ._common import ConfigError, sha256_file
+from ._config import Index, RawManifest, Settings
 from ._install import (
     Linker,
     Plan,
@@ -46,82 +44,54 @@ from ._output import change, error, home_path, shown_path, summary
 from ._progress import Live, Task
 
 if _t.TYPE_CHECKING:
+    from ._project import Upgrade
     from ._semver import Version
 
 DEFAULT_GROUPS = ("dev",)
 """Groups installed unless asked otherwise, as uv installs its ``dev`` dependency group."""
 
 
-def selected_groups(args: argparse.Namespace, manifest: Manifest) -> tuple[bool, list[str]]:
-    """Whether the project's own collections are installed, and which groups, as uv chooses them: the default groups
-    that exist, plus ``--group``, or every group with ``--all-groups``, or only ``--only-group``'s, less ``--no-group``.
-    """
-    known = manifest.groups
-
-    def check(flag: str, names: _c.Iterable[str], *, defaults_ok: bool = False) -> None:
-        # --no-group dev and --no-dev are fine without a dev group, so a CI job can always pass them.
-        for name in sorted(set(names)):
-            if name not in known and not (defaults_ok and name in DEFAULT_GROUPS):
-                have = ", ".join(f"'{g}'" for g in sorted(known))
-                raise ConfigError(f"{flag}: alai.toml has no group '{name}'" + (f" (it has {have})" if have else ""))
-
-    check("--group", args.group)
-    check("--only-group", args.only_group)
-    check("--only-dev", ["dev"] if args.only_dev else [])
-    check("--no-group", args.no_group, defaults_ok=True)
-    excluded = {*args.no_group, *(["dev"] if args.no_dev else [])}
-    only = {*args.only_group, *(["dev"] if args.only_dev else [])}
-    if only:
-        if args.group or args.all_groups:
-            raise ConfigError("--only-group and --only-dev can't be used with --group or --all-groups")
-        return False, sorted(only - excluded)
-    if args.all_groups:
-        chosen = set(known)
-    else:
-        chosen: set[str] = set() if args.no_default_groups else {g for g in DEFAULT_GROUPS if g in known}
-        chosen |= set(args.group)
-    return True, sorted(chosen - excluded)
-
-
 def sync_project(
-    args: argparse.Namespace,
     settings: Settings,
-    why: str,
+    raw: RawManifest,
+    manifest: Manifest,
     *,
+    project: bool,
+    groups: _c.Sequence[str],
+    upgrade: Upgrade,
+    locked: bool,
+    frozen: bool,
     exact: bool,
     reinstall: bool | set[str] = False,
     brief: bool = False,
-) -> tuple[Manifest, list[str]] | None:
-    """Lock the project if needed and install what the options select, as ``alai sync`` does; ``why`` says, in the
-    error, why the command needs an ``alai.toml``. ``reinstall`` is as for ``install_locked``. With ``brief``, as ``uv run`` syncs, only the phases that changed
-    something are reported, and each collection's line only with ``-v``.
+) -> list[str] | None:
+    """Lock the project if needed and install the project's collections, unless not ``project``, and ``groups``, as
+    ``alai sync`` does: ``raw`` and ``manifest`` are the project as ``load_project`` gives them. ``upgrade`` is what
+    to lock again, and ``locked`` and ``frozen`` the flags of those names; ``reinstall`` is as for
+    ``install_locked``. With ``brief``, as ``uv run`` syncs, only the phases that changed something are reported, and
+    each collection's line only with ``-v``.
 
-    The manifest and the names of the collections installed, the project's own included, or None when ``--locked``
-    or ``--frozen`` failed, which has been reported.
+    The names of the collections installed, the project's own included, or None when ``locked`` or ``frozen`` failed,
+    which has been reported.
     """
     from ._lock import lock_path, read_lock, stale, write_lock
-    from ._project import load_project, lock_unchanged, report_changes, resolve_project, upgrade_from_args
+    from ._project import lock_unchanged, report_changes, resolve_project
 
     started = time.monotonic()
-    raw, manifest = load_project(settings, why)
-    project, groups = selected_groups(args, manifest)
-    upgrade = upgrade_from_args(args)
-    if upgrade and args.frozen:
-        raise ConfigError("--upgrade, --upgrade-collection and --upgrade-group resolve, which --frozen doesn't")
     path = lock_path(settings.project.root)
     existing = read_lock(path)
 
-    if (args.locked or args.frozen) and existing is None:
-        flag = "--locked" if args.locked else "--frozen"
+    if (locked or frozen) and existing is None:
+        flag = "--locked" if locked else "--frozen"
         error(f"there's no {shown_path(path)}, and {flag} was given; run alai lock")
         return None
-    if args.frozen and existing is not None:
+    if frozen and existing is not None:
         lock = existing
-    elif upgrade or args.locked or existing is None or stale(existing, manifest, {i.url for i in settings.indexes}):
+    elif upgrade or locked or existing is None or stale(existing, manifest, {i.url for i in settings.indexes}):
         lock, resolution = resolve_project(settings, manifest, raw, existing, upgrade=upgrade)
         if not brief:
             summary("Resolved", len(lock.collections), time.monotonic() - started, dim=True)
-        if args.locked:
+        if locked:
             if not lock_unchanged(existing, manifest, lock):
                 report_changes(existing, manifest, lock, resolution, inputs=True)
                 error(f"{shown_path(path)} is out of date, and --locked was given; run alai lock")
@@ -138,7 +108,7 @@ def sync_project(
     if root is not None and manifest.root is None:
         raise ConfigError(f"{shown_path(path)} locks {root.name} as the project's own, but there's no galaxy.yml")
     install_locked(settings, wanted, exact=exact, reinstall=reinstall, brief=brief, root=root)
-    return manifest, [c.name for c in wanted] + ([root.name] if root is not None else [])
+    return [c.name for c in wanted] + ([root.name] if root is not None else [])
 
 
 def install_locked(
@@ -229,7 +199,7 @@ def install_locked(
         elif isinstance(source, ArchiveSource):
             where = f" (from {home_path(source_dir(settings, source.path))})"
         elif isinstance(source, (ArchiveUrlSource, GitCommitSource)):
-            where = f" (from {source.url if isinstance(source, ArchiveUrlSource) else source})"
+            where = f" (from {source})"
         else:
             where = ""
         lines.append(("~" if name in same else "+", name, f"=={by_name[name].version}{where}"))
@@ -351,8 +321,7 @@ def _file_sha256(path: str) -> str | None:
     """A small file's sha256, or None when it can't be read, such as a ``meta/runtime.yml`` the collection doesn't
     have."""
     try:
-        with open(path, "rb") as f:
-            return hashlib.sha256(f.read()).hexdigest()
+        return sha256_file(path)
     except OSError:
         return None
 
@@ -407,15 +376,12 @@ def _fetch(collections: list[LockedCollection], settings: Settings) -> _Sources:
     if not missing:
         return _Sources(paths, 0)
 
-    from . import __version__
-    from ._fetch import Fetcher
+    from ._fetch import open_fetcher
     from ._index import IndexClient, artifact_url
     from ._project import source_dir
 
     configured = {i.url: i for i in settings.indexes}
-    with Fetcher(
-        user_agent=f"alai/{__version__}", offline=settings.offline, system_certs=settings.system_certs
-    ) as fetcher:
+    with open_fetcher(settings) as fetcher:
         clients: dict[str, IndexClient] = {}
         artifacts: list[Artifact] = []
         for collection in missing:
@@ -459,14 +425,14 @@ def _fetch_commits(collections: list[LockedCollection], settings: Settings) -> _
         return _Sources({}, 0)
     missing = {(s.url, s.commit) for s in commits.values() if cached(settings.cache_dir, s.url, s.commit) is None}
     with Live(Task("Fetching git repositories...", total=len(missing))) if missing else contextlib.nullcontext():
-        files = update_all(
+        fetched = update_all(
             settings.cache_dir,
             [(s.url, s.rev, s.commit, name) for name, s in commits.items()],
             offline=settings.offline,
         )
     paths: dict[str, str] = {}
     for name, source in commits.items():
-        root = files[source.url, source.commit]
+        _, root = fetched[name]
         paths[name] = os.path.join(root, *source.subdirectory.split("/")) if source.subdirectory is not None else root
     return _Sources(paths, len(missing))
 

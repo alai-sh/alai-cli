@@ -21,18 +21,6 @@ from index_server import IndexServer, serve
 from alai import _fetch, _output
 from alai._fetch import Fetcher, FetchError, proxy_for, tls_context
 
-_PROXY_VARS = ("http_proxy", "https_proxy", "all_proxy", "no_proxy")
-
-
-@pytest.fixture(autouse=True)
-def no_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep the host's proxy and TLS settings out, or requests to 127.0.0.1 would go through them."""
-    for name in _PROXY_VARS:
-        monkeypatch.delenv(name, raising=False)
-        monkeypatch.delenv(name.upper(), raising=False)
-    for name in ("SSL_CERT_FILE", "SSL_CERT_DIR", "SSLKEYLOGFILE"):
-        monkeypatch.delenv(name, raising=False)
-
 
 @pytest.fixture(autouse=True)
 def no_backoff(monkeypatch: pytest.MonkeyPatch) -> None:

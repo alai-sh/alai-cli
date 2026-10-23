@@ -23,13 +23,6 @@ from alai._fetch import Fetcher
 from alai._semver import Version
 
 
-@pytest.fixture(autouse=True)
-def no_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in ("http_proxy", "https_proxy", "all_proxy", "no_proxy"):
-        monkeypatch.delenv(name, raising=False)
-        monkeypatch.delenv(name.upper(), raising=False)
-
-
 @pytest.fixture
 def fetcher() -> _c.Iterator[Fetcher]:
     with Fetcher(user_agent="alai-test/1") as f:
@@ -152,9 +145,11 @@ class TestGet:
         item = artifact(tmp_path)
         extract = _artifacts.extract
 
-        def first(tarball: str, dest: str, name: str, version: Version, *, limit: int) -> None:
-            extract(tarball, cache.path(item.cksum), name, version, limit=limit)
-            extract(tarball, dest, name, version, limit=limit)
+        def first(
+            tarball: str, dest: str, shown: str, *, expected: tuple[str, Version] | None, limit: int
+        ) -> tuple[str, Version]:
+            _ = extract(tarball, cache.path(item.cksum), shown, expected=expected, limit=limit)
+            return extract(tarball, dest, shown, expected=expected, limit=limit)
 
         monkeypatch.setattr(_artifacts, "extract", first)
 
@@ -194,12 +189,6 @@ class TestDownloadErrors:
     def test_bad_cksum(self, cache: ArtifactCache, cksum: str) -> None:
         with pytest.raises(ArtifactError, match="isn't a SHA-256 checksum"):
             _ = cache.path(cksum)
-
-
-def file_member(name: str) -> tarfile.TarInfo:
-    info = tarfile.TarInfo(name)
-    info.size = 1
-    return info
 
 
 def listed_file(name: str, sha256: str | None = "0" * 64) -> dict[str, object]:
@@ -285,56 +274,19 @@ class TestAppended:
         assert (path / "MANIFEST.json").read_bytes() == manifest()
 
 
-class TestExtractMembers:
-    """How members are read where reading the tarball once, front to back, makes it matter: what a link points to can
-    come after it, and a later member of a name replaces an earlier one."""
+class TestExtractErrors:
+    """What the cache does with a tarball the extractor refuses; what it refuses is test_extract_safety's."""
 
-    def test_hardlink_is_a_copy(self, tmp_path: Path, cache: ArtifactCache) -> None:
-        link = tarfile.TarInfo("b.txt")
-        link.type = tarfile.LNKTYPE
-        link.linkname = "a.txt"
-        listed = [listed_file("a.txt", sha256(b"hello")), listed_file("b.txt", sha256(b"hello"))]
+    def test_corrupt(self, tmp_path: Path, cache: ArtifactCache) -> None:
+        item = artifact(tmp_path)
+        path = Path(item.url.removeprefix("file://"))
+        data = path.read_bytes()[:200]
+        _ = path.write_bytes(data)
+        cksum = hashlib.sha256(data).hexdigest()
 
-        path = Path(cache.get(artifact(tmp_path, files={"a.txt": b"hello"}, extra=[link], listed=listed)))
-
-        assert (path / "b.txt").read_bytes() == b"hello"
-        assert not (path / "b.txt").is_symlink()
-        assert (path / "b.txt").stat().st_ino != (path / "a.txt").stat().st_ino
-
-    def test_symlink_before_its_target(self, tmp_path: Path, cache: ArtifactCache) -> None:
-        # Stored in name order, so the link comes first: its checksum is of a file not yet extracted.
-        path = Path(cache.get(artifact(tmp_path, files={"a": Link("z.txt"), "z.txt": b"z"})))
-
-        assert (path / "a").readlink() == Path("z.txt")
-        assert (path / "a").read_bytes() == b"z"
-
-    def test_symlink_checksum_checked(self, tmp_path: Path, cache: ArtifactCache) -> None:
-        listed = [listed_file("a", sha256(b"other")), listed_file("z.txt", sha256(b"z"))]
-
-        with pytest.raises(ArtifactError, match="a in the artifact doesn't match its checksum"):
-            _ = cache.get(artifact(tmp_path, files={"a": Link("z.txt"), "z.txt": b"z"}, listed=listed))
-
-    def test_symlink_to_a_directory_listed_as_a_file(self, tmp_path: Path, cache: ArtifactCache) -> None:
-        dirs = [{"name": "d", "ftype": "dir", "chksum_type": None, "chksum_sha256": None}]
-        listed = [*dirs, listed_file("d/x", sha256(b"x")), listed_file("l")]
-
-        with pytest.raises(ArtifactError, match="l in the artifact can't be read"):
-            _ = cache.get(artifact(tmp_path, files={"d/x": b"x", "l": Link("d")}, listed=listed))
-
-    def test_repeated_name_last_wins(self, tmp_path: Path, cache: ArtifactCache) -> None:
-        listed = [listed_file("README.md", sha256(b"x"))]
-
-        path = Path(cache.get(artifact(tmp_path, extra=[file_member("README.md")], listed=listed)))
-
-        assert (path / "README.md").read_bytes() == b"x"
-
-    def test_long_name(self, tmp_path: Path, cache: ArtifactCache) -> None:
-        # Longer than ustar's 100 bytes, so tarfile stores it in a pax header.
-        name = "plugins/" + "m" * 150 + ".py"
-
-        path = Path(cache.get(artifact(tmp_path, files={name: b"x"})))
-
-        assert (path / name).read_bytes() == b"x"
+        with pytest.raises(ArtifactError, match=r"ns\.coll 1\.0\.0: can't extract the artifact"):
+            _ = cache.get(Artifact(item.name, item.version, url=item.url, cksum=cksum, size=len(data)))
+        assert leftovers(cache) == []
 
     def test_not_gzipped(self, tmp_path: Path, cache: ArtifactCache) -> None:
         gzipped = artifact(tmp_path)
@@ -347,79 +299,3 @@ class TestExtractMembers:
 
         with pytest.raises(ArtifactError, match=r"ns\.coll 1\.0\.0: can't extract the artifact"):
             _ = cache.get(item)
-
-
-class TestExtractErrors:
-    @pytest.mark.parametrize(
-        ("kwargs", "message"),
-        [
-            (
-                {"manifest": {"collection_info": {"namespace": "ns", "name": "other", "version": "1.0.0"}}},
-                r"MANIFEST\.json is for ns\.other 1\.0\.0",
-            ),
-            (
-                {"manifest": {"collection_info": {"namespace": "ns", "name": "coll", "version": "2.0.0"}}},
-                r"MANIFEST\.json is for ns\.coll 2\.0\.0",
-            ),
-            ({"manifest": {}}, r"MANIFEST\.json is for None\.None None"),
-            ({"listed": [listed_file("missing.txt")]}, r"doesn't contain missing\.txt, which FILES\.json lists"),
-            ({"listed": [listed_file("README.md")]}, r"README\.md in the artifact doesn't match its checksum"),
-            ({"listed": [listed_file("README.md", None)]}, r"FILES\.json has no checksum for README\.md"),
-            ({"listed": [{"name": "README.md", "ftype": "fifo"}]}, "FILES.json has an unreadable entry"),
-            ({"listed": [{"name": "README.md", "ftype": "dir"}]}, r"README\.md in the artifact isn't a directory"),
-            ({"listed": [listed_file("../escape")]}, r"a path outside the collection: \.\./escape"),
-            ({"listed": [listed_file("/abs")]}, "a path outside the collection: /abs"),
-            ({"listed": [listed_file("a/./b")]}, r"a path outside the collection: a/\./b"),
-            (
-                {"files": {"README.md": b"x", "x": Link("../outside")}, "listed": [listed_file("x")]},
-                r"x in the artifact links outside the collection, to \.\./outside",
-            ),
-            (
-                {"files": {"README.md": b"x", "x": Link("/etc/passwd")}, "listed": [listed_file("x")]},
-                "links outside the collection, to /etc/passwd",
-            ),
-        ],
-    )
-    def test_refused(self, tmp_path: Path, cache: ArtifactCache, kwargs: dict[str, object], message: str) -> None:
-        with pytest.raises(ArtifactError, match=message):
-            _ = cache.get(artifact(tmp_path, **kwargs))
-        assert leftovers(cache) == []
-
-    def test_chained_links_refused(self, tmp_path: Path, cache: ArtifactCache) -> None:
-        # Each link stays inside by name (a -> ., s -> a/.. is .), but on disk s is the collection's parent.
-        dirs = [{"name": n, "ftype": "dir", "chksum_type": None, "chksum_sha256": None} for n in ("a", "s")]
-        item = artifact(
-            tmp_path,
-            files={"a": Link("."), "s": Link("a/.."), "x.txt": b"x"},
-            listed=[*dirs, listed_file("s/x.txt")],
-            extra=[file_member("s/x.txt")],
-        )
-
-        with pytest.raises(ArtifactError, match=r"s/x\.txt in the artifact leads outside the collection"):
-            _ = cache.get(item)
-        assert not (Path(cache.root) / "x.txt").exists()
-
-    def test_link_made_to_lead_out_later(self, tmp_path: Path, cache: ArtifactCache) -> None:
-        # s -> a/.. is inside while a doesn't exist; a -> . made afterwards turns it into the parent.
-        dirs = [{"name": n, "ftype": "dir", "chksum_type": None, "chksum_sha256": None} for n in ("s", "a")]
-
-        with pytest.raises(ArtifactError, match="s in the artifact leads outside the collection"):
-            _ = cache.get(artifact(tmp_path, files={"s": Link("a/.."), "a": Link(".")}, listed=dirs))
-
-    def test_device_refused(self, tmp_path: Path, cache: ArtifactCache) -> None:
-        device = tarfile.TarInfo("dev")
-        device.type = tarfile.CHRTYPE
-
-        with pytest.raises(ArtifactError, match="dev in the artifact isn't a file"):
-            _ = cache.get(artifact(tmp_path, extra=[device], listed=[listed_file("dev")]))
-
-    def test_corrupt(self, tmp_path: Path, cache: ArtifactCache) -> None:
-        item = artifact(tmp_path)
-        path = Path(item.url.removeprefix("file://"))
-        data = path.read_bytes()[:200]
-        _ = path.write_bytes(data)
-        cksum = hashlib.sha256(data).hexdigest()
-
-        with pytest.raises(ArtifactError, match=r"ns\.coll 1\.0\.0: can't extract the artifact"):
-            _ = cache.get(Artifact(item.name, item.version, url=item.url, cksum=cksum, size=len(data)))
-        assert leftovers(cache) == []

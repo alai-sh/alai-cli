@@ -6,27 +6,13 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from helpers import write_file
 
 from alai._common import ConfigError
 from alai._config import LinkMode, Overrides, find_project, load_settings
 from alai._manifest import IndexPin, Manifest, Requirement, collection_name, load_manifest
 from alai._pep440 import Version as AnsibleVersion
 from alai._semver import Version, VersionReq
-
-
-@pytest.fixture
-def environ(tmp_path: Path) -> dict[str, str]:
-    home = tmp_path / "home"
-    home.mkdir()
-    xdg_dirs = tmp_path / "xdg"
-    xdg_dirs.mkdir()
-    return {"HOME": str(home), "XDG_CONFIG_DIRS": str(xdg_dirs)}
-
-
-def write(path: Path, content: str = "") -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content)
-    return path
 
 
 def manifest(cwd: Path) -> Manifest:
@@ -81,7 +67,7 @@ class TestRequirement:
 
 class TestManifest:
     def test_full(self, tmp_path: Path) -> None:
-        path = write(
+        path = write_file(
             tmp_path / "alai.toml",
             """\
 [project]
@@ -134,17 +120,17 @@ ignore_requires_ansible = ["some.collection"]
         assert result.overrides["ansible.netcommon"].contains(Version("6.0.0"))
 
     def test_empty(self, tmp_path: Path) -> None:
-        path = write(tmp_path / "alai.toml", 'link_mode = "copy"\n')
+        path = write_file(tmp_path / "alai.toml", 'link_mode = "copy"\n')
 
         assert manifest(tmp_path) == Manifest(str(path))
 
     def test_no_project_file(self, tmp_path: Path) -> None:
-        write(tmp_path / "ansible.cfg")
+        write_file(tmp_path / "ansible.cfg")
 
         assert load_manifest(find_project(str(tmp_path))) is None
 
     def test_ignore_requires_ansible_deduplicated(self, tmp_path: Path) -> None:
-        write(tmp_path / "alai.toml", '[project.overrides]\nignore_requires_ansible = ["a.b", "c.d", "a.b"]\n')
+        write_file(tmp_path / "alai.toml", '[project.overrides]\nignore_requires_ansible = ["a.b", "c.d", "a.b"]\n')
 
         assert manifest(tmp_path).ignore_requires_ansible == ("a.b", "c.d")
 
@@ -168,7 +154,7 @@ class TestTypes:
         ],
     )
     def test_invalid(self, tmp_path: Path, environ: dict[str, str], content: str, match: str) -> None:
-        write(tmp_path / "alai.toml", content)
+        write_file(tmp_path / "alai.toml", content)
 
         for load in (lambda: load_settings(cwd=tmp_path, environ=environ), lambda: manifest(tmp_path)):
             with pytest.raises(ConfigError, match=match) as e:
@@ -189,7 +175,7 @@ class TestTypes:
         ],
     )
     def test_suggests_manifest_keys(self, tmp_path: Path, environ: dict[str, str], content: str, match: str) -> None:
-        write(tmp_path / "alai.toml", content)
+        write_file(tmp_path / "alai.toml", content)
 
         with pytest.raises(ConfigError, match=match):
             load_settings(cwd=tmp_path, environ=environ)
@@ -222,7 +208,7 @@ class TestValues:
         ],
     )
     def test_invalid(self, tmp_path: Path, environ: dict[str, str], content: str, match: str) -> None:
-        write(tmp_path / "alai.toml", content)
+        write_file(tmp_path / "alai.toml", content)
 
         _ = load_settings(cwd=tmp_path, environ=environ)
         with pytest.raises(ConfigError, match=match) as e:
@@ -235,7 +221,7 @@ class TestManifestAndConfig:
 
     def test_no_config(self, tmp_path: Path, environ: dict[str, str]) -> None:
         # --no-config doesn't read the project file, so even a wrong type there goes unnoticed until it's used.
-        write(tmp_path / "alai.toml", 'link_mode = "copy"\n[project]\ncollections = "a.b"\n')
+        write_file(tmp_path / "alai.toml", 'link_mode = "copy"\n[project]\ncollections = "a.b"\n')
 
         settings = load_settings(Overrides(no_config=True), cwd=tmp_path, environ=environ)
 
@@ -244,8 +230,8 @@ class TestManifestAndConfig:
             _ = load_manifest(settings.project)
 
     def test_config_file_elsewhere(self, tmp_path: Path, environ: dict[str, str]) -> None:
-        write(tmp_path / "alai.toml", '[project]\ncollections = ["a.b"]\n')
-        write(tmp_path / "ci.toml", 'link_mode = "copy"\n')
+        write_file(tmp_path / "alai.toml", '[project]\ncollections = ["a.b"]\n')
+        write_file(tmp_path / "ci.toml", 'link_mode = "copy"\n')
 
         settings = load_settings(Overrides(config_file="ci.toml"), cwd=tmp_path, environ=environ)
 
@@ -263,7 +249,7 @@ class TestManifestAndConfig:
         ],
     )
     def test_not_in_config_file(self, tmp_path: Path, environ: dict[str, str], content: str, match: str) -> None:
-        write(tmp_path / "ci.toml", content)
+        write_file(tmp_path / "ci.toml", content)
 
         with pytest.raises(ConfigError, match=match) as e:
             load_settings(Overrides(config_file="ci.toml"), cwd=tmp_path, environ=environ)
@@ -271,7 +257,7 @@ class TestManifestAndConfig:
 
     @pytest.mark.parametrize("table", ["[project.groups.test]", '[project.overrides]\n"a.b" = ">=1"'])
     def test_not_in_user_file(self, tmp_path: Path, environ: dict[str, str], table: str) -> None:
-        write(Path(environ["HOME"]) / ".config" / "alai" / "alai.toml", table)
+        write_file(Path(environ["HOME"]) / ".config" / "alai" / "alai.toml", table)
 
         with pytest.raises(ConfigError, match=r"is only allowed in the project's alai\.toml"):
             load_settings(cwd=tmp_path, environ=environ)
@@ -289,14 +275,14 @@ class TestProjectSubTables:
         ],
     )
     def test_top_level_is_unknown(self, tmp_path: Path, environ: dict[str, str], content: str, match: str) -> None:
-        write(tmp_path / "alai.toml", content)
+        write_file(tmp_path / "alai.toml", content)
 
         with pytest.raises(ConfigError, match=match):
             load_settings(cwd=tmp_path, environ=environ)
 
     def test_sub_tables_without_project_header(self, tmp_path: Path) -> None:
         # TOML defines [project] implicitly from its sub-tables.
-        write(
+        write_file(
             tmp_path / "alai.toml", '[project.groups.test]\ncollections = ["a.b"]\n[project.overrides]\n"c.d" = "*"\n'
         )
 
@@ -315,7 +301,7 @@ class TestSources:
         ],
     )
     def test_types(self, tmp_path: Path, environ: dict[str, str], content: str, match: str) -> None:
-        write(tmp_path / "alai.toml", content)
+        write_file(tmp_path / "alai.toml", content)
 
         for load in (lambda: load_settings(cwd=tmp_path, environ=environ), lambda: manifest(tmp_path)):
             with pytest.raises(ConfigError, match=match):
@@ -365,7 +351,7 @@ class TestSources:
         ],
     )
     def test_values(self, tmp_path: Path, environ: dict[str, str], content: str, match: str) -> None:
-        write(tmp_path / "alai.toml", content)
+        write_file(tmp_path / "alai.toml", content)
 
         _ = load_settings(cwd=tmp_path, environ=environ)
         with pytest.raises(ConfigError, match=match):

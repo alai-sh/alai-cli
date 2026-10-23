@@ -187,22 +187,23 @@ def update(
 
 
 def update_all(
-    cache_dir: str, wanted: _c.Iterable[tuple[str, str | None, str, str]], *, offline: bool
-) -> dict[tuple[str, str], str]:
-    """Each ``(url, rev, commit, name)``'s files, by ``(url, commit)``, fetching those that aren't cached in parallel,
-    as uv fetches repositories; ``name`` is the collection it's for, several of which can share a commit.
+    cache_dir: str, wanted: _c.Iterable[tuple[str, str | None, str | None, str]], *, offline: bool
+) -> dict[str, tuple[str, str]]:
+    """Each ``(url, rev, commit, name)``'s commit and files, by ``name``, as ``update`` gives them, resolving and
+    fetching what isn't cached in parallel, as uv fetches repositories: ``name`` is the collection it's for, and
+    those that share a commit, or a ``rev`` still to resolve, share one ``update``.
 
     Every one is attempted; if any fails, the first in order is raised once the rest have finished.
     """
-    unique: dict[tuple[str, str], tuple[str | None, list[str]]] = {}
+    unique: dict[tuple[str, str | None], tuple[str | None, str | None, list[str]]] = {}
     for url, rev, commit, name in wanted:
-        unique.setdefault((url, commit), (rev, []))[1].append(name)
+        unique.setdefault((url, commit if commit is not None else rev), (rev, commit, []))[2].append(name)
     with concurrent.futures.ThreadPoolExecutor(_MAX_FETCHES, thread_name_prefix="alai-git") as pool:
         futures = {
-            key: pool.submit(update, cache_dir, key[0], rev, key[1], offline=offline, names=sorted(names))
-            for key, (rev, names) in sorted(unique.items())
+            key: pool.submit(update, cache_dir, key[0], rev, commit, offline=offline, names=sorted(names))
+            for key, (rev, commit, names) in sorted(unique.items(), key=lambda item: (item[0][0], item[0][1] or ""))
         }
-    return {key: future.result()[1] for key, future in futures.items()}
+    return {name: future.result() for key, future in futures.items() for name in unique[key][2]}
 
 
 class _Sharing:

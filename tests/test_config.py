@@ -6,6 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from helpers import write_file
 
 from alai import _config
 from alai._common import ConfigError
@@ -21,27 +22,6 @@ from alai._config import (
     find_project,
     load_settings,
 )
-
-
-@pytest.fixture
-def home(tmp_path: Path) -> Path:
-    path = tmp_path / "home"
-    path.mkdir()
-    return path
-
-
-@pytest.fixture
-def environ(home: Path, tmp_path: Path) -> dict[str, str]:
-    # Point the system config at an empty directory so the host's /etc/xdg is never read.
-    xdg_dirs = tmp_path / "xdg"
-    xdg_dirs.mkdir()
-    return {"HOME": str(home), "XDG_CONFIG_DIRS": str(xdg_dirs)}
-
-
-def write(path: Path, content: str = "") -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content)
-    return path
 
 
 def load(cwd: Path, environ: dict[str, str], overrides: Overrides | None = None) -> Settings:
@@ -65,7 +45,7 @@ class TestFindProject:
 
     @pytest.mark.parametrize("marker", ["alai.toml", "ansible.cfg"])
     def test_marker_in_parent(self, tmp_path: Path, marker: str) -> None:
-        write(tmp_path / "repo" / marker)
+        write_file(tmp_path / "repo" / marker)
         start = tmp_path / "repo" / "roles" / "foo"
         start.mkdir(parents=True)
 
@@ -91,8 +71,8 @@ class TestFindProject:
         assert find_project(tmp_path / "repo").marker is None
 
     def test_strong_marker_beats_nearer_weak(self, tmp_path: Path) -> None:
-        config = write(tmp_path / "repo" / "alai.toml")
-        write(tmp_path / "repo" / "playbooks" / "ansible.cfg")
+        config = write_file(tmp_path / "repo" / "alai.toml")
+        write_file(tmp_path / "repo" / "playbooks" / "ansible.cfg")
 
         project = find_project(tmp_path / "repo" / "playbooks")
 
@@ -100,7 +80,7 @@ class TestFindProject:
         assert project.config_file == str(config)
 
     def test_ansible_cfg_beats_nearer_collections(self, tmp_path: Path) -> None:
-        write(tmp_path / "repo" / "ansible.cfg")
+        write_file(tmp_path / "repo" / "ansible.cfg")
         (tmp_path / "repo" / "playbooks" / "collections" / "ansible_collections").mkdir(parents=True)
 
         project = find_project(tmp_path / "repo" / "playbooks")
@@ -109,8 +89,8 @@ class TestFindProject:
         assert project.marker == "ansible.cfg"
 
     def test_nearest_weak_marker_wins(self, tmp_path: Path) -> None:
-        write(tmp_path / "repo" / "ansible.cfg")
-        write(tmp_path / "repo" / "sub" / "ansible.cfg")
+        write_file(tmp_path / "repo" / "ansible.cfg")
+        write_file(tmp_path / "repo" / "sub" / "ansible.cfg")
 
         assert find_project(tmp_path / "repo" / "sub").root == str(tmp_path / "repo" / "sub")
 
@@ -139,7 +119,7 @@ class TestDefaults:
 
 class TestConfigFiles:
     def test_project_file(self, tmp_path: Path, environ: dict[str, str]) -> None:
-        config = write(
+        config = write_file(
             tmp_path / "repo" / "alai.toml", 'link_mode = "copy"\n[project]\ncollections_dir = "ansible/collections"\n'
         )
         (tmp_path / "repo" / "sub").mkdir()
@@ -152,7 +132,7 @@ class TestConfigFiles:
         assert settings.link_mode == LinkMode.COPY
 
     def test_user_file(self, tmp_path: Path, home: Path, environ: dict[str, str]) -> None:
-        config = write(home / ".config" / "alai" / "alai.toml", 'cache_dir = "~/my-cache"\n')
+        config = write_file(home / ".config" / "alai" / "alai.toml", 'cache_dir = "~/my-cache"\n')
 
         settings = load(tmp_path, environ)
 
@@ -160,22 +140,22 @@ class TestConfigFiles:
         assert settings.cache_dir == str(home / "my-cache")
 
     def test_xdg_config_home(self, tmp_path: Path, environ: dict[str, str]) -> None:
-        config = write(tmp_path / "cfg" / "alai" / "alai.toml", 'link_mode = "copy"\n')
+        config = write_file(tmp_path / "cfg" / "alai" / "alai.toml", 'link_mode = "copy"\n')
         environ["XDG_CONFIG_HOME"] = str(tmp_path / "cfg")
 
         assert load(tmp_path, environ).config_files == (str(config),)
 
     def test_system_file_first_xdg_dir(self, tmp_path: Path, environ: dict[str, str]) -> None:
-        second = write(tmp_path / "xdg2" / "alai" / "alai.toml")
-        write(tmp_path / "xdg3" / "alai" / "alai.toml")
+        second = write_file(tmp_path / "xdg2" / "alai" / "alai.toml")
+        write_file(tmp_path / "xdg3" / "alai" / "alai.toml")
         environ["XDG_CONFIG_DIRS"] = f"relative:{tmp_path / 'xdg1'}:{tmp_path / 'xdg2'}:{tmp_path / 'xdg3'}"
 
         assert load(tmp_path, environ).config_files == (str(second),)
 
     def test_precedence(self, tmp_path: Path, home: Path, environ: dict[str, str]) -> None:
-        project = write(tmp_path / "alai.toml", 'link_mode = "copy"\n')
-        user = write(home / ".config" / "alai" / "alai.toml", 'link_mode = "hardlink"\ncache_dir = "/user"\n')
-        system = write(tmp_path / "xdg" / "alai" / "alai.toml", 'link_mode = "symlink"\ncache_dir = "/system"\n')
+        project = write_file(tmp_path / "alai.toml", 'link_mode = "copy"\n')
+        user = write_file(home / ".config" / "alai" / "alai.toml", 'link_mode = "hardlink"\ncache_dir = "/user"\n')
+        system = write_file(tmp_path / "xdg" / "alai" / "alai.toml", 'link_mode = "symlink"\ncache_dir = "/system"\n')
 
         settings = load(tmp_path, environ)
 
@@ -184,7 +164,7 @@ class TestConfigFiles:
         assert settings.cache_dir == "/user"
 
     def test_env_beats_files_and_cli_beats_env(self, tmp_path: Path, environ: dict[str, str]) -> None:
-        write(tmp_path / "alai.toml", 'link_mode = "copy"\n')
+        write_file(tmp_path / "alai.toml", 'link_mode = "copy"\n')
         environ["ALAI_LINK_MODE"] = "hardlink"
 
         assert load(tmp_path, environ).link_mode == LinkMode.HARDLINK
@@ -192,25 +172,25 @@ class TestConfigFiles:
         assert load(tmp_path, environ, Overrides(link_mode="auto")).link_mode == LinkMode.AUTO
 
     def test_empty_env_is_unset(self, tmp_path: Path, environ: dict[str, str]) -> None:
-        write(tmp_path / "alai.toml", 'link_mode = "copy"\n')
+        write_file(tmp_path / "alai.toml", 'link_mode = "copy"\n')
         environ["ALAI_LINK_MODE"] = ""
 
         assert load(tmp_path, environ).link_mode == LinkMode.COPY
 
     def test_empty_flag_is_unset(self, tmp_path: Path, environ: dict[str, str]) -> None:
-        write(tmp_path / "alai.toml", 'link_mode = "copy"\n')
+        write_file(tmp_path / "alai.toml", 'link_mode = "copy"\n')
 
         assert load(tmp_path, environ, Overrides(link_mode="")).link_mode == LinkMode.COPY
 
     def test_user_file_read_once_from_its_own_dir(self, home: Path, environ: dict[str, str]) -> None:
-        config = write(home / ".config" / "alai" / "alai.toml")
+        config = write_file(home / ".config" / "alai" / "alai.toml")
 
         assert load(config.parent, environ).config_files == (str(config),)
 
     @pytest.mark.parametrize("value", ["1", "true", "YES", "on"])
     def test_no_config(self, tmp_path: Path, home: Path, environ: dict[str, str], value: str) -> None:
-        write(tmp_path / "alai.toml", 'link_mode = "copy"\n')
-        write(home / ".config" / "alai" / "alai.toml", 'link_mode = "copy"\n')
+        write_file(tmp_path / "alai.toml", 'link_mode = "copy"\n')
+        write_file(home / ".config" / "alai" / "alai.toml", 'link_mode = "copy"\n')
         environ["ALAI_NO_CONFIG"] = value
 
         settings = load(tmp_path, environ)
@@ -221,7 +201,7 @@ class TestConfigFiles:
         assert settings.project.root == str(tmp_path)
 
     def test_no_config_false(self, tmp_path: Path, environ: dict[str, str]) -> None:
-        write(tmp_path / "alai.toml")
+        write_file(tmp_path / "alai.toml")
         environ["ALAI_NO_CONFIG"] = "off"
 
         assert len(load(tmp_path, environ).config_files) == 1
@@ -233,9 +213,9 @@ class TestConfigFiles:
             load(tmp_path, environ)
 
     def test_config_file_replaces_discovery(self, tmp_path: Path, home: Path, environ: dict[str, str]) -> None:
-        write(tmp_path / "alai.toml", 'link_mode = "copy"\n')
-        write(home / ".config" / "alai" / "alai.toml", 'cache_dir = "/user"\n')
-        explicit = write(tmp_path / "other" / "ci.toml", 'link_mode = "hardlink"\n')
+        write_file(tmp_path / "alai.toml", 'link_mode = "copy"\n')
+        write_file(home / ".config" / "alai" / "alai.toml", 'cache_dir = "/user"\n')
+        explicit = write_file(tmp_path / "other" / "ci.toml", 'link_mode = "hardlink"\n')
 
         settings = load(tmp_path, environ, Overrides(config_file="other/ci.toml"))
 
@@ -246,7 +226,7 @@ class TestConfigFiles:
     @pytest.mark.parametrize("name", ["ci.toml", "alai.toml"])
     def test_config_file_settings_only(self, tmp_path: Path, environ: dict[str, str], name: str) -> None:
         # Even the project's own alai.toml given as --config-file: the flag takes settings, not a project.
-        write(tmp_path / name, '[project]\ncollections_dir = "c"\n')
+        write_file(tmp_path / name, '[project]\ncollections_dir = "c"\n')
 
         with pytest.raises(
             ConfigError, match=r"\[project\] is only allowed in the project's alai\.toml; --config-file"
@@ -260,7 +240,7 @@ class TestConfigFiles:
 
 class TestProjectOverride:
     def test_project_override(self, tmp_path: Path, environ: dict[str, str]) -> None:
-        write(tmp_path / "repo" / "alai.toml")
+        write_file(tmp_path / "repo" / "alai.toml")
         (tmp_path / "repo" / "sub").mkdir()
         (tmp_path / "elsewhere").mkdir()
 
@@ -281,13 +261,13 @@ class TestProjectOverride:
 
 class TestValidation:
     def test_tool_table_ignored(self, tmp_path: Path, home: Path, environ: dict[str, str]) -> None:
-        write(tmp_path / "alai.toml", 'link_mode = "copy"\n[tool.my-ci]\nanything = [1, "x"]\n')
-        write(home / ".config" / "alai" / "alai.toml", "[tool.other]\nkey = true\n")
+        write_file(tmp_path / "alai.toml", 'link_mode = "copy"\n[tool.my-ci]\nanything = [1, "x"]\n')
+        write_file(home / ".config" / "alai" / "alai.toml", "[tool.other]\nkey = true\n")
 
         assert load(tmp_path, environ).link_mode == LinkMode.COPY
 
     def test_tool_not_table(self, tmp_path: Path, environ: dict[str, str]) -> None:
-        write(tmp_path / "alai.toml", 'tool = "x"\n')
+        write_file(tmp_path / "alai.toml", 'tool = "x"\n')
 
         with pytest.raises(ConfigError, match=r"'tool' must be a table"):
             load(tmp_path, environ)
@@ -321,7 +301,7 @@ class TestValidation:
         ],
     )
     def test_invalid_project_file(self, tmp_path: Path, environ: dict[str, str], content: str, match: str) -> None:
-        write(tmp_path / "alai.toml", content)
+        write_file(tmp_path / "alai.toml", content)
 
         with pytest.raises(ConfigError, match=match) as e:
             load(tmp_path, environ)
@@ -330,7 +310,7 @@ class TestValidation:
     @pytest.mark.parametrize("level", ["user", "system"])
     def test_project_table_project_only(self, tmp_path: Path, home: Path, environ: dict[str, str], level: str) -> None:
         base = home / ".config" if level == "user" else tmp_path / "xdg"
-        write(base / "alai" / "alai.toml", '[project]\ncollections_dir = "/shared"\n')
+        write_file(base / "alai" / "alai.toml", '[project]\ncollections_dir = "/shared"\n')
 
         with pytest.raises(ConfigError, match=r"\[project\] is only allowed in the project's alai\.toml$"):
             load(tmp_path, environ)
@@ -349,7 +329,7 @@ class TestBoolean:
         assert load(tmp_path, environ).system_certs is True
 
     def test_file(self, tmp_path: Path, environ: dict[str, str]) -> None:
-        config = write(tmp_path / "alai.toml", "system_certs = false\n")
+        config = write_file(tmp_path / "alai.toml", "system_certs = false\n")
 
         settings = load(tmp_path, environ)
 
@@ -358,7 +338,7 @@ class TestBoolean:
 
     @pytest.mark.parametrize(("value", "expected"), [("0", False), ("off", False), ("YES", True), ("1", True)])
     def test_env(self, tmp_path: Path, environ: dict[str, str], value: str, expected: bool) -> None:
-        write(tmp_path / "alai.toml", f"system_certs = {str(not expected).lower()}\n")
+        write_file(tmp_path / "alai.toml", f"system_certs = {str(not expected).lower()}\n")
         environ["ALAI_SYSTEM_CERTS"] = value
 
         assert load(tmp_path, environ).system_certs is expected
@@ -380,7 +360,7 @@ class TestBoolean:
 
     @pytest.mark.parametrize("value", ['"false"', "0", "[true]"])
     def test_file_needs_toml_boolean(self, tmp_path: Path, environ: dict[str, str], value: str) -> None:
-        write(tmp_path / "alai.toml", f"system_certs = {value}\n")
+        write_file(tmp_path / "alai.toml", f"system_certs = {value}\n")
 
         with pytest.raises(ConfigError, match="'system_certs' must be true or false"):
             load(tmp_path, environ)
@@ -391,12 +371,12 @@ class TestPaths:
     def test_collections_dir_strips_ansible_collections(
         self, tmp_path: Path, environ: dict[str, str], value: str
     ) -> None:
-        write(tmp_path / "alai.toml", f'[project]\ncollections_dir = "{value}"\n')
+        write_file(tmp_path / "alai.toml", f'[project]\ncollections_dir = "{value}"\n')
 
         assert load(tmp_path, environ).collections_dir == str(tmp_path / "collections")
 
     def test_env_and_cli_paths_relative_to_cwd(self, tmp_path: Path, environ: dict[str, str]) -> None:
-        write(tmp_path / "alai.toml")
+        write_file(tmp_path / "alai.toml")
         cwd = tmp_path / "sub"
         cwd.mkdir()
         environ["ALAI_COLLECTIONS_DIR"] = "env-collections"
@@ -413,18 +393,18 @@ class TestPaths:
         assert load(tmp_path, environ).cache_dir == str(home)
 
     def test_absolute(self, tmp_path: Path, environ: dict[str, str]) -> None:
-        write(tmp_path / "alai.toml", f'cache_dir = "{tmp_path / "abs"}"\n')
+        write_file(tmp_path / "alai.toml", f'cache_dir = "{tmp_path / "abs"}"\n')
 
         assert load(tmp_path, environ).cache_dir == str(tmp_path / "abs")
 
 
 class TestIndexes:
     def test_order_and_merge(self, tmp_path: Path, home: Path, environ: dict[str, str]) -> None:
-        write(
+        write_file(
             tmp_path / "alai.toml",
             '[[index]]\nname = "proj"\nurl = "https://proj"\n[[index]]\nname = "shared"\nurl = "https://proj-shared/"\n',
         )
-        write(
+        write_file(
             home / ".config" / "alai" / "alai.toml",
             '[[index]]\nname = "shared"\nurl = "https://user-shared/"\n[[index]]\nname = "user"\nurl = "file:///idx"\n',
         )
@@ -439,12 +419,12 @@ class TestIndexes:
         assert by_name["shared"].source == str(tmp_path / "alai.toml")
 
     def test_default_from_file_replaces_builtin(self, tmp_path: Path, home: Path, environ: dict[str, str]) -> None:
-        write(
+        write_file(
             tmp_path / "alai.toml",
             '[[index]]\nname = "mirror"\nurl = "https://mirror/"\ndefault = true\n'
             + '[[index]]\nname = "extra"\nurl = "https://extra/"\n',
         )
-        write(
+        write_file(
             home / ".config" / "alai" / "alai.toml",
             '[[index]]\nname = "user-default"\nurl = "https://ud/"\ndefault = true\n',
         )
@@ -472,7 +452,7 @@ class TestIndexes:
         assert [(i.name, i.url) for i in settings.indexes] == [expected]
 
     def test_default_index_cli_beats_file(self, tmp_path: Path, environ: dict[str, str]) -> None:
-        write(tmp_path / "alai.toml", '[[index]]\nname = "mirror"\nurl = "https://mirror/"\ndefault = true\n')
+        write_file(tmp_path / "alai.toml", '[[index]]\nname = "mirror"\nurl = "https://mirror/"\ndefault = true\n')
 
         settings = load(tmp_path, environ, Overrides(default_index="https://cli-default/"))
 
@@ -481,13 +461,13 @@ class TestIndexes:
     def test_alai_must_be_the_default(self, tmp_path: Path, environ: dict[str, str]) -> None:
         # The name always means the default index, so taking it without replacing the default is an error, rather
         # than dropping the built-in index without saying so.
-        write(tmp_path / "alai.toml", '[[index]]\nname = "alai"\nurl = "https://pinned/"\n')
+        write_file(tmp_path / "alai.toml", '[[index]]\nname = "alai"\nurl = "https://pinned/"\n')
 
         with pytest.raises(ConfigError, match=r"'alai' is the default index's name; set default = true"):
             load(tmp_path, environ)
 
     def test_alai_as_the_default(self, tmp_path: Path, environ: dict[str, str]) -> None:
-        write(tmp_path / "alai.toml", '[[index]]\nname = "alai"\nurl = "https://mirror/"\ndefault = true\n')
+        write_file(tmp_path / "alai.toml", '[[index]]\nname = "alai"\nurl = "https://mirror/"\ndefault = true\n')
 
         settings = load(tmp_path, environ)
 
@@ -519,8 +499,8 @@ def test_overrides_unknown_setting() -> None:
 
 
 def test_sources_and_overridden(tmp_path: Path, home: Path, environ: dict[str, str]) -> None:
-    project = write(tmp_path / "alai.toml", 'link_mode = "copy"\n')
-    user = write(home / ".config" / "alai" / "alai.toml", 'link_mode = "hardlink"\ncache_dir = "/user"\n')
+    project = write_file(tmp_path / "alai.toml", 'link_mode = "copy"\n')
+    user = write_file(home / ".config" / "alai" / "alai.toml", 'link_mode = "hardlink"\ncache_dir = "/user"\n')
     environ["ALAI_LINK_MODE"] = "symlink"
 
     settings = load(tmp_path, environ, Overrides(link_mode="clone"))
@@ -542,10 +522,10 @@ def test_sources_and_overridden(tmp_path: Path, home: Path, environ: dict[str, s
 
 
 def test_searched(tmp_path: Path, home: Path, environ: dict[str, str]) -> None:
-    project = write(tmp_path / "alai.toml")
+    project = write_file(tmp_path / "alai.toml")
     xdg = tmp_path / "xdg"
     environ["XDG_CONFIG_DIRS"] = f"{xdg / 'a'}:{xdg / 'b'}"
-    system = write(xdg / "b" / "alai" / "alai.toml")
+    system = write_file(xdg / "b" / "alai" / "alai.toml")
 
     settings = load(tmp_path, environ)
 

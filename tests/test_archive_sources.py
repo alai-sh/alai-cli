@@ -7,16 +7,17 @@ artifact is."""
 from __future__ import annotations
 
 import collections.abc as _c
-import json
 import os
 import shutil
 from pathlib import Path
 
 import pytest
 from artifact_data import Link, build_artifact
+from helpers import install_record, installed_at, lines, write_sources
 from index_server import IndexServer, serve
 
-from alai._cli import EXIT_ERROR, main
+from alai._cli import main
+from alai._common import EXIT_ERROR
 from alai._lock import ArchiveSource, ArchiveUrlSource, read_lock, render_lock
 from alai._native import toml_loads
 
@@ -39,25 +40,6 @@ def tarball(
     return build_artifact(path, name, version, files, manifest={"collection_info": info})
 
 
-def toml(project: Path, sources: str, collections: str = '"ns.src"') -> None:
-    _ = (project / "alai.toml").write_text(
-        f"[project]\ncollections = [{collections}]\n\n[project.sources]\n{sources}\n"
-    )
-
-
-def installed_at(project: Path, name: str = "ns.src") -> Path:
-    return project / "collections" / "ansible_collections" / Path(*name.split("."))
-
-
-def record(project: Path, name: str = "ns.src") -> dict[str, object] | None:
-    path = project / "collections" / "ansible_collections" / ".alai" / f"{name}.json"
-    return json.loads(path.read_text()) if path.exists() else None
-
-
-def lines(err: str) -> list[str]:
-    return [line.rsplit(" in ", 1)[0] if not line.startswith(" ") else line for line in err.splitlines()]
-
-
 @pytest.fixture
 def server(tmp_path: Path) -> _c.Iterator[IndexServer]:
     (tmp_path / "site").mkdir()
@@ -73,7 +55,7 @@ class TestPath:
         cksum, size = tarball(
             project.parent / "dist" / "ns-src-1.0.0.tar.gz", dependencies={"a.a": ">=2.0.0"}, requires_ansible=">=2.16"
         )
-        toml(project, '"ns.src" = { path = "../dist/ns-src-1.0.0.tar.gz" }')
+        write_sources(project, '"ns.src" = { path = "../dist/ns-src-1.0.0.tar.gz" }')
 
         assert main(["lock", "-q"]) == 0
 
@@ -100,7 +82,7 @@ class TestPath:
     def test_sync(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         path = project.parent / "ns-src-1.0.0.tar.gz"
         cksum, _ = tarball(path)
-        toml(project, '"ns.src" = { path = "../ns-src-1.0.0.tar.gz" }')
+        write_sources(project, '"ns.src" = { path = "../ns-src-1.0.0.tar.gz" }')
 
         assert main(["sync"]) == 0
 
@@ -110,27 +92,27 @@ class TestPath:
             "Installed 1 collection",
             f" + ns.src==1.0.0 (from {path})",
         ]
-        assert (installed_at(project) / "README.md").read_text() == "readme\n"
-        assert record(project) == {"source": {"path": str(path)}, "cksum": cksum}
+        assert (installed_at(project / "collections", "ns.src") / "README.md").read_text() == "readme\n"
+        assert install_record(project / "collections", "ns.src") == {"source": {"path": str(path)}, "cksum": cksum}
 
         assert main(["sync"]) == 0
         assert lines(capsys.readouterr().err) == ["Resolved 1 collection", "Checked 1 collection"]
 
     def test_frozen_from_the_file(self, project: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         _ = tarball(project.parent / "ns-src-1.0.0.tar.gz")
-        toml(project, '"ns.src" = { path = "../ns-src-1.0.0.tar.gz" }')
+        write_sources(project, '"ns.src" = { path = "../ns-src-1.0.0.tar.gz" }')
         _ = main(["lock", "-q"])
         shutil.rmtree(tmp_path / "cache")
 
         assert main(["sync", "--frozen"]) == 0
 
         assert lines(capsys.readouterr().err)[0] == "Installed 1 collection"
-        assert (installed_at(project) / "MANIFEST.json").exists()
+        assert (installed_at(project / "collections", "ns.src") / "MANIFEST.json").exists()
 
     def test_changed_needs_upgrade(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         path = project.parent / "ns-src-1.0.0.tar.gz"
         _ = tarball(path)
-        toml(project, '"ns.src" = { path = "../ns-src-1.0.0.tar.gz" }')
+        write_sources(project, '"ns.src" = { path = "../ns-src-1.0.0.tar.gz" }')
         _ = main(["sync", "-q"])
         new, _ = tarball(path, readme=b"rebuilt\n")
 
@@ -144,13 +126,13 @@ class TestPath:
         assert main(["sync", "-P", "ns.src"]) == 0
 
         assert lines(capsys.readouterr().err)[-1] == f" ~ ns.src==1.0.0 (from {path})"
-        assert (installed_at(project) / "README.md").read_text() == "rebuilt\n"
+        assert (installed_at(project / "collections", "ns.src") / "README.md").read_text() == "rebuilt\n"
         lock = read_lock(str(project / "alai.lock"))
         assert lock is not None and lock.collections[0].cksum == new
 
     def test_wrong_collection(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         _ = tarball(project.parent / "other.tar.gz", "ns.other")
-        toml(project, '"ns.src" = { path = "../other.tar.gz" }')
+        write_sources(project, '"ns.src" = { path = "../other.tar.gz" }')
 
         assert main(["lock"]) == EXIT_ERROR
 
@@ -158,7 +140,7 @@ class TestPath:
 
     def test_not_editable(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         _ = tarball(project.parent / "ns-src-1.0.0.tar.gz")
-        toml(project, '"ns.src" = { path = "../ns-src-1.0.0.tar.gz", editable = true }')
+        write_sources(project, '"ns.src" = { path = "../ns-src-1.0.0.tar.gz", editable = true }')
 
         assert main(["lock"]) == EXIT_ERROR
 
@@ -166,7 +148,7 @@ class TestPath:
 
     def test_not_a_tarball(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         _ = (project.parent / "notes.tar.gz").write_text("not a tarball\n")
-        toml(project, '"ns.src" = { path = "../notes.tar.gz" }')
+        write_sources(project, '"ns.src" = { path = "../notes.tar.gz" }')
 
         assert main(["lock"]) == EXIT_ERROR
 
@@ -178,7 +160,7 @@ class TestPath:
         _ = main(["sync", "-q"])
         path = project.parent / "c-c-1.0.0.tar.gz"
         _ = tarball(path, "c.c")
-        toml(project, '"c.c" = { path = "../c-c-1.0.0.tar.gz" }', '"c.c"')
+        write_sources(project, '"c.c" = { path = "../c-c-1.0.0.tar.gz" }', '"c.c"')
 
         assert main(["sync"]) == 0
 
@@ -189,7 +171,7 @@ class TestUrl:
     def test_lock_downloads_once(self, project: Path, server: IndexServer, capsys: pytest.CaptureFixture[str]) -> None:
         cksum, size = tarball(Path(server.root) / "ns-src-1.0.0.tar.gz", dependencies={"c.c": "*"})
         url = f"{server.url}ns-src-1.0.0.tar.gz"
-        toml(project, f'"ns.src" = {{ url = "{url}" }}')
+        write_sources(project, f'"ns.src" = {{ url = "{url}" }}')
 
         assert main(["sync"]) == 0
 
@@ -198,7 +180,7 @@ class TestUrl:
         entry = next(c for c in data["collection"] if c["name"] == "ns.src")
         assert entry["source"] == {"url": url} and entry["cksum"] == cksum and entry["size"] == size
         assert entry["requirements"] == ["c.c"]
-        assert record(project) == {"source": {"url": url}, "cksum": cksum}
+        assert install_record(project / "collections", "ns.src") == {"source": {"url": url}, "cksum": cksum}
         assert downloads(server) == 1
 
         # Locked again from the lock's entry, as uv does: what's behind a URL isn't expected to change.
@@ -216,7 +198,7 @@ class TestUrl:
         # Locked larger than it becomes, so the download is checked against the checksum, not cut off by the size.
         _ = tarball(path, readme=bytes(range(256)) * 16)
         url = f"{server.url}ns-src-1.0.0.tar.gz"
-        toml(project, f'"ns.src" = {{ url = "{url}" }}')
+        write_sources(project, f'"ns.src" = {{ url = "{url}" }}')
         _ = main(["lock", "-q"])
         shutil.rmtree(tmp_path / "cache")
         new, _ = tarball(path, readme=b"rebuilt\n")
@@ -225,13 +207,13 @@ class TestUrl:
         assert f"doesn't match the lock: it has SHA-256 {new}" in capsys.readouterr().err
 
         assert main(["sync", "-q", "-P", "ns.src"]) == 0
-        assert (installed_at(project) / "README.md").read_text() == "rebuilt\n"
+        assert (installed_at(project / "collections", "ns.src") / "README.md").read_text() == "rebuilt\n"
 
     def test_downloaded_in_parallel(self, project: Path, server: IndexServer) -> None:
         for name in ("ns.one", "ns.two"):
             _ = tarball(Path(server.root) / f"{name}.tar.gz", name)
             server.delays[f"/{name}.tar.gz"] = 0.3
-        toml(
+        write_sources(
             project,
             f'"ns.one" = {{ url = "{server.url}ns.one.tar.gz" }}\n"ns.two" = {{ url = "{server.url}ns.two.tar.gz" }}',
             '"ns.one", "ns.two"',
@@ -249,7 +231,7 @@ class TestUrl:
         self, project: Path, server: IndexServer, capsys: pytest.CaptureFixture[str]
     ) -> None:
         _ = tarball(Path(server.root) / "b.tar.gz", "ns.bbb")
-        toml(
+        write_sources(
             project,
             f'"ns.aaa" = {{ url = "{server.url}a.tar.gz" }}\n"ns.bbb" = {{ url = "{server.url}b.tar.gz" }}\n'
             + f'"ns.ccc" = {{ url = "{server.url}c.tar.gz" }}',
@@ -263,7 +245,7 @@ class TestUrl:
 
     def test_wrong_collection(self, project: Path, server: IndexServer, capsys: pytest.CaptureFixture[str]) -> None:
         _ = tarball(Path(server.root) / "x.tar.gz", "ns.other")
-        toml(project, f'"ns.src" = {{ url = "{server.url}x.tar.gz" }}')
+        write_sources(project, f'"ns.src" = {{ url = "{server.url}x.tar.gz" }}')
 
         assert main(["lock"]) == EXIT_ERROR
 
@@ -271,14 +253,14 @@ class TestUrl:
 
     def test_not_gzip(self, project: Path, server: IndexServer, capsys: pytest.CaptureFixture[str]) -> None:
         _ = (Path(server.root) / "page.tar.gz").write_text("<html>sign in</html>\n")
-        toml(project, f'"ns.src" = {{ url = "{server.url}page.tar.gz" }}')
+        write_sources(project, f'"ns.src" = {{ url = "{server.url}page.tar.gz" }}')
 
         assert main(["lock"]) == EXIT_ERROR
 
         assert "page.tar.gz: not a gzip file, so not a collection tarball" in capsys.readouterr().err
 
     def test_not_found(self, project: Path, server: IndexServer, capsys: pytest.CaptureFixture[str]) -> None:
-        toml(project, f'"ns.src" = {{ url = "{server.url}missing.tar.gz" }}')
+        write_sources(project, f'"ns.src" = {{ url = "{server.url}missing.tar.gz" }}')
 
         assert main(["lock"]) == EXIT_ERROR
 
@@ -287,7 +269,7 @@ class TestUrl:
     def test_lock_reads_back(self, project: Path, server: IndexServer) -> None:
         _ = tarball(Path(server.root) / "ns-src-1.0.0.tar.gz")
         url = f"{server.url}ns-src-1.0.0.tar.gz"
-        toml(project, f'"ns.src" = {{ url = "{url}" }}')
+        write_sources(project, f'"ns.src" = {{ url = "{url}" }}')
         _ = main(["lock", "-q"])
 
         lock = read_lock(str(project / "alai.lock"))
@@ -309,7 +291,7 @@ class TestAddRemove:
             '[project]\ncollections = [\n    "c.c",\n    "ns.src",\n]\n\n'
             + '[project.sources]\n"ns.src" = { path = "dist/ns-src-1.0.0.tar.gz" }\n'
         )
-        assert (installed_at(project) / "MANIFEST.json").exists()
+        assert (installed_at(project / "collections", "ns.src") / "MANIFEST.json").exists()
 
     def test_add_file_url(self, project: Path) -> None:
         path = project.parent / "ns-src-1.0.0.tar.gz"
@@ -343,12 +325,12 @@ class TestAddRemove:
         )
         # Downloaded once, for its name, and that copy locked and installed.
         assert downloads(server) == 1
-        assert (installed_at(project) / "MANIFEST.json").exists()
+        assert (installed_at(project / "collections", "ns.src") / "MANIFEST.json").exists()
 
         assert main(["remove", "-q", "ns.src"]) == 0
 
         assert (project / "alai.toml").read_text() == "[project]\ncollections = []\n\n[project.sources]\n"
-        assert not installed_at(project).exists()
+        assert not installed_at(project / "collections", "ns.src").exists()
 
     def test_add_editable(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         _ = tarball(project.parent / "ns-src-1.0.0.tar.gz")

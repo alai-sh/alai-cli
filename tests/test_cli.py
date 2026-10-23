@@ -13,9 +13,10 @@ from pathlib import Path
 import pytest
 
 from alai import _config, _output
-from alai._args import terminal_width
-from alai._cli import EXIT_ERROR, main
+from alai._cli import main
 from alai._commands.shell_completion import SHELLS
+from alai._common import EXIT_ERROR
+from alai._output import terminal_width
 
 
 @pytest.fixture(autouse=True)

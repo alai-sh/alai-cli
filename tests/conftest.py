@@ -13,6 +13,16 @@ from alai import _output
 
 
 @pytest.fixture(autouse=True)
+def no_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the host's proxy and TLS settings out, or requests to 127.0.0.1 would go through them."""
+    for name in ("http_proxy", "https_proxy", "all_proxy", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.upper(), raising=False)
+    for name in ("SSL_CERT_FILE", "SSL_CERT_DIR", "SSLKEYLOGFILE"):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def no_color(monkeypatch: pytest.MonkeyPatch) -> None:
     """Plain output, whatever NO_COLOR or FORCE_COLOR the environment running the tests sets; colour tests ask."""
     monkeypatch.setattr(_output, "color", "never")
@@ -24,6 +34,22 @@ COLLECTIONS: dict[str, list[dict[str, object]]] = {
     "c.c": [v("1.0.0")],
     "d.d": [v("1.0.0")],
 }
+
+
+@pytest.fixture
+def home(tmp_path: Path) -> Path:
+    path = tmp_path / "home"
+    path.mkdir()
+    return path
+
+
+@pytest.fixture
+def environ(home: Path, tmp_path: Path) -> dict[str, str]:
+    """An environment with a home directory and, so the host's /etc/xdg is never read, an empty system config
+    directory, for ``load_settings``."""
+    xdg_dirs = tmp_path / "xdg"
+    xdg_dirs.mkdir()
+    return {"HOME": str(home), "XDG_CONFIG_DIRS": str(xdg_dirs)}
 
 
 @pytest.fixture

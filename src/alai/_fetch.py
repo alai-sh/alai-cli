@@ -25,7 +25,8 @@ import urllib.request
 
 import urllib3
 
-from ._common import Error
+from ._common import Error, file_url_to_path
+from ._config import Settings
 from ._output import debug, trace, warn
 
 MAX_CONNECTIONS = 16
@@ -177,10 +178,8 @@ class Fetcher:
         try:
             if response.status in _NOT_FOUND:
                 raise FetchError(f"{url}: not found (HTTP {response.status})")
-            if response.status == 401:
-                raise FetchError(f"{url}: credentials required (HTTP 401)")
             if response.status != 200:
-                raise FetchError(f"{url}: HTTP {response.status}{f' {response.reason}' if response.reason else ''}")
+                raise _status_error(url, response)
             try:
                 yield from response.stream(_CHUNK)
             except urllib3.exceptions.HTTPError as e:
@@ -222,9 +221,7 @@ class Fetcher:
             if cached and cache_path:
                 _remove(cache_path)
             return None
-        if response.status == 401:
-            raise FetchError(f"{url}: credentials required (HTTP 401)")
-        raise FetchError(f"{url}: HTTP {response.status}{f' {response.reason}' if response.reason else ''}")
+        raise _status_error(url, response)
 
     def _request(
         self, url: str, headers: dict[str, str], *, preload_content: bool = True
@@ -272,6 +269,13 @@ class Fetcher:
                     proxy_ssl_context=self._tls,
                 )
             return manager
+
+
+def open_fetcher(settings: Settings) -> Fetcher:
+    """A ``Fetcher`` as alai's commands make one: identified as alai, offline and verifying as ``settings`` say."""
+    from . import __version__
+
+    return Fetcher(user_agent=f"alai/{__version__}", offline=settings.offline, system_certs=settings.system_certs)
 
 
 def tls_context(*, system_certs: bool) -> ssl.SSLContext | None:
@@ -324,11 +328,18 @@ def proxy_for(url: str) -> str | None:
     return proxy if "://" in proxy else f"http://{proxy}"
 
 
+def _status_error(url: str, response: urllib3.BaseHTTPResponse) -> FetchError:
+    """A response that's neither what was asked for nor not found."""
+    if response.status == 401:
+        return FetchError(f"{url}: credentials required (HTTP 401)")
+    return FetchError(f"{url}: HTTP {response.status}{f' {response.reason}' if response.reason else ''}")
+
+
 def _file_path(url: str) -> str:
-    parts = urllib.parse.urlsplit(url)
-    if parts.netloc not in ("", "localhost"):
-        raise FetchError(f"{url}: a file URL can't name another host")
-    return urllib.request.url2pathname(parts.path)
+    try:
+        return file_url_to_path(url)
+    except ValueError as e:
+        raise FetchError(f"{url}: {e}") from None
 
 
 def _read_file(url: str) -> bytes | None:

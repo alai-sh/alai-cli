@@ -15,8 +15,7 @@ import re
 import sys
 
 from . import _output
-from ._args import terminal_width
-from ._common import Error
+from ._common import EXIT_NOT_FOUND, Error
 from ._config import Settings
 from ._install import Installed, installed
 from ._output import (
@@ -33,6 +32,7 @@ from ._output import (
     debug,
     home_path,
     status,
+    terminal_width,
     warn,
 )
 from ._plugins import (
@@ -60,8 +60,6 @@ from ._plugins import (
 )
 from ._semver import Version
 
-EXIT_NOT_FOUND = 1
-"""Nothing matched, as ``uv pip show`` exits 1 for a package it can't find."""
 DEFAULT_LIMIT = 10
 """How many matches in collections that aren't installed are listed on a terminal, unless ``--limit`` says otherwise; as
 ``cargo search``'s default."""
@@ -182,17 +180,14 @@ def _warning_text(routing: dict[str, object] | None) -> str | None:
 
 def load_catalog(settings: Settings) -> Catalog:
     """The plugin index of every configured index that has one, fetched or revalidated."""
-    from . import __version__
-    from ._fetch import Fetcher
+    from ._fetch import open_fetcher
     from ._index import IndexClient
     from ._progress import Live, Task
 
     indexes: list[PluginIndex] = []
     copies: dict[str, Copy] = {}
     with (
-        Fetcher(
-            user_agent=f"alai/{__version__}", offline=settings.offline, system_certs=settings.system_certs
-        ) as fetcher,
+        open_fetcher(settings) as fetcher,
         Live(Task("Fetching plugin indexes...", total=len(settings.indexes))) as task,
     ):
         for index in settings.indexes:
@@ -215,7 +210,7 @@ def load_catalog(settings: Settings) -> Catalog:
 def installed_collections(settings: Settings) -> dict[str, Installed] | None:
     """The project's installed collections, or None if there's no project: with no collections directory, only
     ``ansible.builtin`` is installed."""
-    if settings.project.marker is None and settings.sources.get("collections_dir", "default") == "default":
+    if settings.project.marker is None and not settings.collections_dir_set:
         return None
     return installed(settings.collections_dir)
 

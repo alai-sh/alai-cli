@@ -20,7 +20,12 @@ Tested against `uv add` and `uv remove` (uv 0.13) on 2026-10-20, with a
   when it doesn't exist and installs that group with the default ones
   (`uv add --group test` installed it though `test` isn't a default
   group); `remove` leaves an emptied group as `collections = []`, as uv
-  leaves `test = []`.
+  leaves `test = []`. `remove --group` syncs the default groups alone, so
+  the exact sync uninstalls what's left of the group too (uv 0.13.5,
+  2026-10-23: after `uv add --group test six idna`, `uv remove --group test
+  idna` uninstalled six as well, with `six>=1.17.0` still in the group).
+  What to ask users about it is in
+  [user-questions.md](user-questions.md#what-remove---group-leaves-installed).
 - **Then lock and sync**: the edit is resolved first, keeping the locked
   versions that fit, and `alai.toml` and `alai.lock` are only written once
   that succeeds, so a requirement nothing satisfies leaves both untouched
@@ -98,14 +103,30 @@ Tested against `uv add` and `uv remove` (uv 0.13) on 2026-10-20, with a
     relative to the project root; an absolute path stayed absolute. alai
     does both.
   - Adding the same directory again replaces the entry: `uv add ../lib3`
-    after `--editable` dropped `editable = true`. uv 0.13.0 has no `-e` on
-    `uv add`, only `--editable`, so alai has only `--editable` there.
+    after `--editable` dropped `editable = true`.
+  - **`--editable DIR`, per directory, where `uv add` has a flag** (decided
+    with the user, 2026-10-23). `uv add --editable` applies to every requirement
+    on the line, whatever its position, as its other modifiers (`--group`,
+    `--rev`) do: `uv add --editable ./pkg six` and `uv add ./pkg --editable
+    six` both fail with "`six` did not resolve to a local directory, but the
+    `--editable` flag was provided" (uv 0.13.5). alai takes `--editable DIR`,
+    which can be repeated, as `pip install -e` and `uv pip install -e` do
+    (`uv pip install -e ./pkg six` installed pkg editable and six normally),
+    so one line can add a checkout to work on beside ordinary requirements,
+    and `alai add` and `alai collection install` read the option the same
+    way. As with those, `--editable lib2` takes `lib2` as the directory.
+    Only the long spelling, as `uv add` has no `-e` (uv 0.13.5); `-e` is
+    `alai collection install`'s, as it's `uv pip install`'s.
   - What's a directory: one with a `/`, `.`, `..`, or a leading `~` (`uv
     pip install lib2` looked for the package `lib2`, `lib2/` installed the
-    directory); with `--editable`, every argument is one, as `uv pip
-    install -e lib2` installed the directory `lib2`. A collection name never
-    has a `/`, so `community.general` is always the name, as ansible-galaxy
-    reads it even beside a directory of that name.
+    directory). A collection name never has a `/`, so `community.general`
+    is always the name, as ansible-galaxy reads it even beside a directory
+    of that name.
+  - An absolute path is written normalised, as uv writes it: `uv add
+    /x/libabs/` and `uv add /x/libabs/../libabs` both wrote `path =
+    "/x/libabs"` (uv 0.13.5, 2026-10-23), so a directory has one spelling
+    in `alai.toml`, `alai.lock` and the install record; a relative one is
+    written relative to the project root, normalised the same way.
   - `uv remove lib3` removed its source too. alai removes a `{ path = ...
     }` entry once nothing in `project.collections` or any group lists the
     collection; an `{ index = ... }` entry stays, as it also applies to what

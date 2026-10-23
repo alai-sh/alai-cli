@@ -10,12 +10,11 @@ import bisect
 import collections.abc as _c
 import contextlib
 import os
-import re
 import secrets
 import time
 
-from ._common import NAME_RE, ConfigError
-from ._config import Settings, raw_manifest, read_toml_document
+from ._common import NAME_RE, ConfigError, read_toml_document
+from ._config import Settings, raw_manifest
 from ._lock import Lock, lock_path, read_lock, write_lock
 from ._manifest import (
     GitSource,
@@ -24,22 +23,17 @@ from ._manifest import (
     SourceCollection,
     UrlSource,
     collection_name,
-    file_url_path,
     given_source,
-    is_git,
-    is_path,
-    is_url,
-    parse_git,
+    is_source,
     source_key,
 )
 from ._native import TomlDocument, TomlEditError
 from ._output import error, home_path, shown_path, summary
 from ._project import (
     Upgrade,
-    fetch_git_source,
-    fetch_url_source,
+    given_requirement,
     lock_unchanged,
-    read_path_source,
+    read_given_source,
     report_changes,
     resolve_project,
     with_root,
@@ -57,22 +51,93 @@ def add(
     locked: bool = False,
     upgrade: Upgrade | None = None,
     reinstall: bool | set[str] = False,
-    editable: bool = False,
+    editable: _c.Sequence[str] = (),
 ) -> bool:
-    """Add ``requirements`` to the project's collections, or ``group``'s; see ``_add``. False when ``locked`` and
-    ``alai.lock`` is missing or would change, having written nothing."""
-    _no_upgrade_frozen(upgrade, frozen=frozen)
+    """Add ``requirements`` to the project's collections, or ``group``'s. False when ``locked`` and ``alai.lock`` is
+    missing or would change, having written nothing.
+
+    A collection already there is left as it is when given by name alone, and its requirement replaced when given
+    with one. A name alone is written with the lowest version it can have, ``>=`` the version locked for it, once
+    resolving has found one; with ``frozen`` nothing is resolved, so it's written as given. A directory is the
+    collection whose source it holds: its name is added alone, and ``[project.sources]`` takes it from there,
+    replacing any entry it had, as ``uv add ../lib`` does; one in ``editable`` is taken as editable, as ``pip install
+    -e`` takes each. A tarball, by path or URL, is the same, as ``uv add ../lib-1.0.tar.gz`` and ``uv add
+    https://.../lib-1.0.tar.gz`` are, and so is a git repository, ``git+<url>[@<rev>][#subdirectory=<dir>]``, as
+    ``uv add git+...`` writes one.
+    """
     with _editing(settings, group, "add"):
-        return _add(
+        config, doc = _read(settings, group)
+        path = _array_path(group)
+        parsed: list[Requirement] = []
+        sources: dict[str, PathSource | UrlSource | GitSource] = {}
+        fetched: dict[str, SourceCollection] = {}
+        for given, edit in [*((r, False) for r in requirements), *((d, True) for d in editable)]:
+            # -e takes a directory, so a bare name there is one, as pip install -e lib2 installs the directory lib2.
+            if not edit and not is_source(given):
+                parsed.append(given_requirement(given))
+                continue
+            collection, source = read_given_source(settings, given, editable=edit, relative_to=settings.project.root)
+            parsed.append(Requirement.parse(collection.name))
+            sources[collection.name] = source
+            if isinstance(source, (UrlSource, GitSource)):
+                fetched[collection.name] = collection
+        bare: list[str] = []
+        for requirement in parsed:
+            current = doc.values(path)
+            if current is None:
+                doc.create(path, [requirement.text])
+            else:
+                names = [_name_of(v) for v in current]
+                if requirement.name in names:
+                    if requirement.req.clauses:
+                        doc.replace(path, names.index(requirement.name), requirement.text)
+                    continue
+                doc.insert(path, _position(names, requirement.name), requirement.text)
+            # One from a directory stays bare, as uv writes a path dependency: there's only ever its one version.
+            if not requirement.req.clauses and requirement.name not in sources:
+                bare.append(requirement.name)
+        for name, source in sources.items():
+            table: dict[str, str | bool]
+            if isinstance(source, GitSource):
+                # uv's order: the repository, then the directory in it, then the revision; then alai's version.
+                table = {"git": source.url}
+                if source.subdirectory is not None:
+                    table["subdirectory"] = source.subdirectory
+                if source.rev is not None:
+                    table["rev"] = source.rev
+                if source.version is not None:
+                    table["version"] = source.version.text
+            elif isinstance(source, UrlSource):
+                table = {"url": source.url}
+            else:
+                table = {"path": source.path}
+                if source.editable:
+                    table["editable"] = True
+            doc.set_table(("project", "sources", name), table)
+        if frozen:
+            _write(config, str(doc))
+            return True
+
+        def bound(doc: TomlDocument, lock: Lock) -> None:
+            # Each name added alone gets >= its locked version, as uv writes one.
+            for name in bare:
+                current = doc.values(path) or []
+                names = [_name_of(v) for v in current]
+                locked = lock.get(name)
+                if locked is not None and name in names:
+                    doc.replace(path, names.index(name), f"{name}>={locked.version}")
+
+        return _lock_and_sync(
             settings,
-            requirements,
+            config,
+            doc,
+            bound,
             group=group,
             sync=sync,
-            frozen=frozen,
             locked=locked,
             upgrade=upgrade,
             reinstall=reinstall,
-            editable=editable,
+            fetched=fetched,
         )
 
 
@@ -89,23 +154,34 @@ def remove(
 ) -> bool:
     """Remove the collections ``names`` from the project's collections, or ``group``'s. False when ``locked`` and
     ``alai.lock`` is missing or would change, having written nothing."""
-    _no_upgrade_frozen(upgrade, frozen=frozen)
     with _editing(settings, group, "remove"):
-        return _remove(
+        config, doc = _read(settings, group)
+        path = _array_path(group)
+        for given in names:
+            try:
+                name = collection_name(given)
+            except ValueError as e:
+                raise ConfigError(_by_source(settings, doc, given) or str(e)) from None
+            current = doc.values(path) or []
+            found = [_name_of(v) for v in current]
+            if name not in found:
+                raise ConfigError(_not_there(doc, name, group))
+            doc.remove(path, found.index(name))
+            _drop_path_source(doc, name)
+        if frozen:
+            _write(config, str(doc))
+            return True
+        return _lock_and_sync(
             settings,
-            names,
-            group=group,
+            config,
+            doc,
+            lambda _doc, _lock: None,
+            group=None,
             sync=sync,
-            frozen=frozen,
             locked=locked,
             upgrade=upgrade,
             reinstall=reinstall,
         )
-
-
-def _no_upgrade_frozen(upgrade: Upgrade | None, *, frozen: bool) -> None:
-    if upgrade and frozen:
-        raise ConfigError("--upgrade, --upgrade-collection and --upgrade-group resolve, which --frozen doesn't")
 
 
 @contextlib.contextmanager
@@ -118,142 +194,6 @@ def _editing(settings: Settings, group: str | None, verb: str) -> _c.Generator[N
         raise ConfigError(
             f"can't edit {settings.project.config_file} for you ({e}); {verb} the collections in {where} by hand"
         ) from None
-
-
-def _add(
-    settings: Settings,
-    requirements: _c.Sequence[str],
-    *,
-    group: str | None,
-    sync: bool,
-    frozen: bool,
-    locked: bool = False,
-    upgrade: Upgrade | None = None,
-    reinstall: bool | set[str] = False,
-    editable: bool = False,
-) -> bool:
-    """Add ``requirements`` to the project's collections, or ``group``'s.
-
-    A collection already there is left as it is when given by name alone, and its requirement replaced when given
-    with one. A name alone is written with the lowest version it can have, ``>=`` the version locked for it, once
-    resolving has found one; with ``frozen`` nothing is resolved, so it's written as given. A directory, or with
-    ``editable`` every requirement, is the collection whose source it holds: its name is added alone, and
-    ``[project.sources]`` takes it from there, replacing any entry it had, as ``uv add ../lib`` does. A tarball, by
-    path or URL, is the same, as ``uv add ../lib-1.0.tar.gz`` and ``uv add https://.../lib-1.0.tar.gz`` are, and so is
-    a git repository, ``git+<url>[@<rev>][#subdirectory=<dir>]``, as ``uv add git+...`` writes one.
-    """
-    config, doc = _read(settings, group)
-    path = _array_path(group)
-    parsed: list[Requirement] = []
-    sources: dict[str, PathSource | UrlSource | GitSource] = {}
-    fetched: dict[str, SourceCollection] = {}
-    for given in requirements:
-        if editable or is_git(given) or is_url(given) or is_path(given):
-            collection, source = _path_source(settings, given, editable=editable)
-            parsed.append(Requirement.parse(collection.name))
-            sources[collection.name] = source
-            if isinstance(source, (UrlSource, GitSource)):
-                fetched[collection.name] = collection
-        else:
-            parsed.append(_requirement(given))
-    bare: list[str] = []
-    for requirement in parsed:
-        current = doc.values(path)
-        if current is None:
-            doc.create(path, [requirement.text])
-        else:
-            names = [_name_of(v) for v in current]
-            if requirement.name in names:
-                if requirement.req.clauses:
-                    doc.replace(path, names.index(requirement.name), requirement.text)
-                continue
-            doc.insert(path, _position(names, requirement.name), requirement.text)
-        # One from a directory stays bare, as uv writes a path dependency: there's only ever its one version.
-        if not requirement.req.clauses and requirement.name not in sources:
-            bare.append(requirement.name)
-    for name, source in sources.items():
-        table: dict[str, str | bool]
-        if isinstance(source, GitSource):
-            # uv's order: the repository, then the directory in it, then the revision; then alai's version.
-            table = {"git": source.url}
-            if source.subdirectory is not None:
-                table["subdirectory"] = source.subdirectory
-            if source.rev is not None:
-                table["rev"] = source.rev
-            if source.version is not None:
-                table["version"] = source.version.text
-        elif isinstance(source, UrlSource):
-            table = {"url": source.url}
-        else:
-            table = {"path": source.path}
-            if source.editable:
-                table["editable"] = True
-        doc.set_table(("project", "sources", name), table)
-    if frozen:
-        _write(config, str(doc))
-        return True
-
-    def bound(doc: TomlDocument, lock: Lock) -> None:
-        # Each name added alone gets >= its locked version, as uv writes one.
-        for name in bare:
-            current = doc.values(path) or []
-            names = [_name_of(v) for v in current]
-            locked = lock.get(name)
-            if locked is not None and name in names:
-                doc.replace(path, names.index(name), f"{name}>={locked.version}")
-
-    return _lock_and_sync(
-        settings,
-        config,
-        doc,
-        bound,
-        group=group,
-        sync=sync,
-        locked=locked,
-        upgrade=upgrade,
-        reinstall=reinstall,
-        fetched=fetched,
-    )
-
-
-def _remove(
-    settings: Settings,
-    names: _c.Sequence[str],
-    *,
-    group: str | None,
-    sync: bool,
-    frozen: bool,
-    locked: bool = False,
-    upgrade: Upgrade | None = None,
-    reinstall: bool | set[str] = False,
-) -> bool:
-    config, doc = _read(settings, group)
-    path = _array_path(group)
-    for given in names:
-        try:
-            name = collection_name(given)
-        except ValueError as e:
-            raise ConfigError(_by_source(settings, doc, given) or str(e)) from None
-        current = doc.values(path) or []
-        found = [_name_of(v) for v in current]
-        if name not in found:
-            raise ConfigError(_not_there(doc, name, group))
-        doc.remove(path, found.index(name))
-        _drop_path_source(doc, name)
-    if frozen:
-        _write(config, str(doc))
-        return True
-    return _lock_and_sync(
-        settings,
-        config,
-        doc,
-        lambda _doc, _lock: None,
-        group=None,
-        sync=sync,
-        locked=locked,
-        upgrade=upgrade,
-        reinstall=reinstall,
-    )
 
 
 def _lock_and_sync(
@@ -287,7 +227,8 @@ def _lock_and_sync(
         return False
     lock, resolution = resolve_project(settings, manifest, raw, existing, upgrade=upgrade)
     finish(doc, lock)
-    raw, manifest = with_root(settings, raw_manifest(doc.data(), config))
+    # Parsed again for what finish changed, with the sources as they were just read rather than read again.
+    raw, manifest = with_root(settings, raw_manifest(doc.data(), config), local=manifest.local)
     lock = Lock(raw, lock.collections, lock.root)
     summary("Resolved", len(lock.collections), time.monotonic() - started, dim=True)
     if locked and not lock_unchanged(existing, manifest, lock):
@@ -307,32 +248,6 @@ def _lock_and_sync(
             root=lock.root,
         )
     return True
-
-
-def _path_source(
-    settings: Settings, given: str, *, editable: bool
-) -> tuple[SourceCollection, PathSource | UrlSource | GitSource]:
-    """The collection in the directory, tarball or git repository ``given`` and the source taking it from there: a
-    path written relative to the project root, as uv writes one given from a subdirectory, unless it was given as an
-    absolute path. An ``http`` or ``https`` URL is downloaded, and a repository fetched, to read its name; a ``file``
-    URL is its absolute path, as uv writes one."""
-    if is_git(given):
-        if editable:
-            raise ConfigError(f"{given} is a git repository, which can't be editable: give a checkout to link to")
-        git = parse_git(given)
-        return fetch_git_source(settings, git), git
-    if is_url(given) and not given.lower().startswith("file:"):
-        if editable:
-            raise ConfigError(f"{given} is a tarball, which can't be editable: give a directory to link to")
-        source = UrlSource(given)
-        return fetch_url_source(settings, source), source
-    if is_url(given):
-        given = file_url_path(given)
-    expanded = os.path.expanduser(given)
-    where = os.path.abspath(expanded)
-    written = expanded if os.path.isabs(expanded) else os.path.relpath(where, settings.project.root)
-    source = PathSource(written, editable=editable)
-    return read_path_source(settings, None, source), source
 
 
 def _by_source(settings: Settings, doc: TomlDocument, given: str) -> str | None:
@@ -407,15 +322,6 @@ def _array_path(group: str | None) -> tuple[str, ...]:
             + "letter or digit"
         )
     return ("project", "groups", group, "collections")
-
-
-def _requirement(text: str) -> Requirement:
-    # Written as uv writes one: without the spaces a requirement may be typed with.
-    compact = re.sub(r"\s+", "", text)
-    try:
-        return Requirement.parse(compact)
-    except ValueError as e:
-        raise ConfigError(str(e)) from None
 
 
 def _name_of(requirement: str) -> str:

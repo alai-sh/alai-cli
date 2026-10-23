@@ -11,11 +11,11 @@ import sys
 from pathlib import Path
 
 import pytest
-from test_git_sources import Repo
-from test_path_sources import source
+from helpers import Repo, collection_source
 
 from alai import _output
-from alai._cli import EXIT_ERROR, main
+from alai._cli import main
+from alai._common import EXIT_ERROR
 from alai._list import Row, _Renderer
 
 # The index (conftest's COLLECTIONS): a.a 1.0.0 and 2.0.0 (which needs b.b>=1.0.0), b.b 1.0.0 and 1.1.0, c.c and d.d.
@@ -169,7 +169,7 @@ class TestCompared:
 
 class TestSources:
     def test_directory(self, project: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        _ = source(tmp_path / "src")
+        _ = collection_source(tmp_path / "src")
         write(
             project,
             f'[project]\ncollections = ["ns.src"]\n\n[project.sources]\n"ns.src" = {{ path = "{tmp_path / "src"}" }}\n',
@@ -181,21 +181,21 @@ class TestSources:
         assert out == [f" ✓ ns.src  1.0.0  {tmp_path / 'src'}"]
 
     def test_directory_changed_since(self, project: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        _ = source(tmp_path / "src")
+        _ = collection_source(tmp_path / "src")
         write(
             project,
             f'[project]\ncollections = ["ns.src"]\n\n[project.sources]\n"ns.src" = {{ path = "{tmp_path / "src"}" }}\n',
         )
         sync()
-        _ = source(tmp_path / "src", extra="description: changed\n")
+        _ = collection_source(tmp_path / "src", extra="description: changed\n")
 
         out, _ = listing(capsys)
 
         assert out == [f" ≠ ns.src  1.0.0  its source has changed since it was installed; {tmp_path / 'src'}"]
 
     def test_other_directory(self, project: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        _ = source(tmp_path / "src")
-        _ = source(tmp_path / "other")
+        _ = collection_source(tmp_path / "src")
+        _ = collection_source(tmp_path / "other")
         write(
             project,
             f'[project]\ncollections = ["ns.src"]\n\n[project.sources]\n"ns.src" = {{ path = "{tmp_path / "src"}" }}\n',
@@ -210,7 +210,7 @@ class TestSources:
     def test_index_in_place_of_directory(
         self, project: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        _ = source(tmp_path / "src", name="c.c", version="2.0.0")
+        _ = collection_source(tmp_path / "src", name="c.c", version="2.0.0")
         write(
             project,
             f'[project]\ncollections = ["c.c"]\n\n[project.sources]\n"c.c" = {{ path = "{tmp_path / "src"}" }}\n',
@@ -227,7 +227,7 @@ class TestSources:
     ) -> None:
         write(project, '[project]\ncollections = ["c.c"]\n')
         sync()
-        _ = source(tmp_path / "src", name="c.c")
+        _ = collection_source(tmp_path / "src", name="c.c")
         assert main(["collection", "install", str(tmp_path / "src")]) == 0
 
         out, _ = listing(capsys)
@@ -235,7 +235,7 @@ class TestSources:
         assert out == [f" ≠ c.c  1.0.0  alai.lock has it from index 'alai'; {tmp_path / 'src'}"]
 
     def test_editable(self, project: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        _ = source(tmp_path / "src")
+        _ = collection_source(tmp_path / "src")
         write(
             project,
             f'[project]\ncollections = ["ns.src"]\n\n[project.sources]\n"ns.src" = {{ path = "{tmp_path / "src"}", editable = true }}\n',
@@ -249,20 +249,20 @@ class TestSources:
     def test_editable_version_from_its_source(
         self, project: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        _ = source(tmp_path / "src")
+        _ = collection_source(tmp_path / "src")
         write(
             project,
             f'[project]\ncollections = ["ns.src"]\n\n[project.sources]\n"ns.src" = {{ path = "{tmp_path / "src"}", editable = true }}\n',
         )
         sync()
-        _ = source(tmp_path / "src", version="1.1.0")
+        _ = collection_source(tmp_path / "src", version="1.1.0")
 
         out, _ = listing(capsys)
 
         assert out == [f" ≠ ns.src  1.1.0  alai.lock has 1.0.0; {tmp_path / 'src'} editable"]
 
     def test_copy_in_place_of_editable(self, project: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        _ = source(tmp_path / "src")
+        _ = collection_source(tmp_path / "src")
         write(
             project,
             f'[project]\ncollections = ["ns.src"]\n\n[project.sources]\n"ns.src" = {{ path = "{tmp_path / "src"}", editable = true }}\n',
@@ -277,7 +277,7 @@ class TestSources:
 
     def test_shortens_home(self, project: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         home = Path(os.environ["HOME"])
-        _ = source(home / "src")
+        _ = collection_source(home / "src")
         write(
             project,
             f'[project]\ncollections = ["ns.src"]\n\n[project.sources]\n"ns.src" = {{ path = "{home / "src"}" }}\n',
@@ -305,7 +305,7 @@ class TestSources:
         assert out == [f" ≠ ns.src  1.0.0  alai.lock has it at {first[:7]}; git+{repo.url}@{second[:7]}"]
 
     def test_project_collection(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        _ = source(project, name="my.own", dependencies={"c.c": "*"})
+        _ = collection_source(project, name="my.own", dependencies={"c.c": "*"})
         write(project, "")
         sync()
 
@@ -316,7 +316,7 @@ class TestSources:
 
 class TestJson:
     def test_compared(self, project: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        _ = source(tmp_path / "src")
+        _ = collection_source(tmp_path / "src")
         write(
             project,
             f'[project]\ncollections = ["a.a", "ns.src"]\n\n[project.sources]\n"ns.src" = {{ path = "{tmp_path / "src"}", editable = true }}\n',

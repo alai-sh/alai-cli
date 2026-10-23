@@ -7,10 +7,17 @@ from __future__ import annotations
 
 import argparse
 
-from .._args import HelpFormatter, add_global_args, add_settings_args, settings_from_args
-from .._common import ConfigError
-from .lock import add_upgrade_args
-from .sync import add_reinstall_args, reinstall_from_args
+from .._args import (
+    HelpFormatter,
+    add_global_args,
+    add_reinstall_args,
+    add_settings_args,
+    add_upgrade_args,
+    reinstall_from_args,
+    settings_from_args,
+    upgrade_from_args,
+    usage_error,
+)
 
 
 def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -106,15 +113,13 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
 
 def run_install(args: argparse.Namespace) -> int:
     from .._collection import install
-    from .._project import upgrade_from_args
 
     if not args.requirements and not args.editable:
-        parser: argparse.ArgumentParser = args.parser
-        parser.error("the following arguments are required: REQUIREMENT or --editable")
+        usage_error(args, "the following arguments are required: REQUIREMENT or --editable")
     reinstall = reinstall_from_args(args)
     if reinstall and args.keep_unversioned:
         # Keeping a collection as it is and reinstalling it ask for opposite things.
-        raise ConfigError("--keep-unversioned can't be used with --reinstall or --reinstall-collection")
+        usage_error(args, "--keep-unversioned can't be used with --reinstall or --reinstall-collection")
     install(
         settings_from_args(args),
         args.requirements,

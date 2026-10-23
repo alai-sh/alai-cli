@@ -992,6 +992,21 @@ own:
   relayed; passing on the terminal's size; and a question waiting its
   turn can outlast sshd's `LoginGraceTime` (120 s by default). Shelved
   for its own branch (decided with the user, 2026-10-22).
+- **Reading a tarball source's metadata without extracting it.** Every
+  command that loads the project reads its path sources (`read_local`),
+  so `stale()` can compare a tarball's checksum with the lock's; hashing
+  it is needed for that, but `read_path_source` then also extracts it into
+  the artifact cache to read its `MANIFEST.json`, so a first `alai env` or
+  `alai run --no-sync` on a machine extracts every tarball source. Reading
+  `MANIFEST.json` from the tar stream, as ansible-galaxy's
+  `_get_meta_from_tar` does, would avoid that at the cost of a second
+  reader to keep safe; once per checksum, it isn't worth one yet (decided
+  with the user, 2026-10-23).
+- **`alai sync --check`**, as `uv sync --check` (uv 0.13.5, 2026-10-23:
+  "Check if the Python environment is synchronized with the project",
+  exiting 1 when it isn't, without changing anything): what
+  `alai env`'s warning works out, as an exit status for CI. Today
+  `alai sync --check` is an argparse error.
 - **uv's GitHub fast path**, reading `galaxy.yml` and `meta/runtime.yml`
   through GitHub's API to lock without running git
   ([lockfile.md](lockfile.md#git-repositories)).

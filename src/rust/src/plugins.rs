@@ -14,7 +14,8 @@ use serde_json::Value;
 
 use crate::json::{is_blank, object, to_python};
 
-/// The highest line `v` this alai reads, as `alai._plugins.LINE_VERSION`.
+/// The highest line `v` this alai reads. Signed, unlike the index reader's, as a line with a `v` of 0 or less is
+/// still read: a plugin index is a search aid, so only one from the future is skipped.
 const LINE_VERSION: i64 = 1;
 
 /// A line's `type`, `name`, `collection`, `since`, `until`, `short_description` and `routing`, the strings `None` when
