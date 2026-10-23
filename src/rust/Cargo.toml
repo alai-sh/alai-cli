@@ -17,6 +17,9 @@ crate-type = ["cdylib"]
 flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 # The FICLONE ioctl and macOS's clonefile, which std has no wrapper for.
 libc = "0.2"
+# Substring search over plugins.jsonl, with SIMD where the CPU has it, as Python's bytes.find. Already built for
+# serde_json, which depends on it.
+memchr = "2"
 # The version resolver (see design/resolver.md). 0.4 needs Rust 1.92, which sets the workspace's rust-version.
 pubgrub = "0.4"
 # The stable ABIs, so three wheels per platform cover every CPython from 3.10: built for 3.10 to 3.14, one abi3 wheel for

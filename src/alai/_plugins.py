@@ -4,8 +4,8 @@
 """Reading and searching an index's plugin index, ``plugins.jsonl``, for ``alai find``: matching names, following
 routing as ansible-core does, and ranking what's found.
 
-The format is ``plugins.md`` in galaxy-sync's ``docs/index-spec/``. The file is ~100k lines, and parsing all of it
-costs over half a second, so a search scans the raw bytes for the query and parses only the lines that contain it.
+The format is ``plugins.md`` in galaxy-sync's ``docs/index-spec/``. The file is ~100k lines, so a search scans the
+raw bytes for the query and parses only the lines that contain it, both in the extension (``_native.plugin_lines``).
 What needs every line, which collections look like copies of others, is worked out once per change to the file and
 cached. The design is in ``design/find.md``.
 """
@@ -22,13 +22,14 @@ import re
 import tempfile
 import typing as _t
 
-from . import _ansible_package
+from . import _ansible_package, _native
 from ._common import Record
 from ._output import debug, trace
 from ._semver import Version
 
-LINE_VERSION = 1
-"""The highest plugin index line ``v`` this alai reads."""
+if _t.TYPE_CHECKING:
+    from ._native import _PluginLine
+
 BUILTIN = "ansible.builtin"
 """ansible-core's own plugins, which are always installed where Ansible is."""
 LEGACY = "ansible.legacy"
@@ -38,7 +39,6 @@ see the directories, so it's ``ansible.builtin`` here."""
 
 _SUMMARY_VERSION = 1
 _GLOB_CHARS = "*?["
-_NAME_RE = re.compile(rb'"name"\s*:\s*"([^"\\]*)"')
 _COPY_SHARE = 0.5
 """The share of a collection's plugins named as in one ``ansible`` package collection that makes it a probable copy."""
 _COPY_MIN = 3
@@ -48,7 +48,7 @@ _COPY_MIN = 3
 class Plugin(Record):
     """One line of the plugin index."""
 
-    __slots__ = ("collection", "index", "name", "raw", "routing", "short_description", "since", "type", "until")
+    __slots__ = ("collection", "index", "line", "name", "routing", "short_description", "since", "type", "until")
 
     def __init__(
         self,
@@ -61,7 +61,7 @@ class Plugin(Record):
         short_description: str | None = None,
         routing: dict[str, object] | None = None,
         index: str = "",
-        raw: dict[str, object] | None = None,
+        line: bytes = b"",
     ) -> None:
         self.type = type
         self.name = name
@@ -73,8 +73,14 @@ class Plugin(Record):
         """The plugin's ``plugin_routing`` entry from the collection's ``meta/runtime.yml``, as the index copied it."""
         self.index = index
         """The name of the index it came from."""
-        self.raw = raw or {}
-        """The line as read, for JSON output, which passes on what the index says, unknown fields included."""
+        self.line = line
+        """The line it was read from, or empty."""
+
+    @property
+    def raw(self) -> dict[str, object]:
+        """The line as JSON, for JSON output, which passes on what the index says, unknown fields included. Parsed
+        when asked for, as only what's shown needs it."""
+        return _t.cast("dict[str, object]", json.loads(self.line)) if self.line else {}
 
     @property
     def fqcn(self) -> str:
@@ -101,32 +107,24 @@ class Plugin(Record):
 def parse_line(line: bytes, index: str = "") -> Plugin | None:
     """One line as a plugin, or None if it can't be read or needs a newer alai: a plugin index is a search aid, so a
     bad line is skipped rather than an error."""
-    try:
-        obj = json.loads(line)
-    except ValueError:
-        return None
-    if not isinstance(obj, dict):
-        return None
-    fields = _t.cast("dict[str, object]", obj)
-    v = fields.get("v")
-    type_, name, collection = fields.get("type"), fields.get("name"), fields.get("collection")
-    if not isinstance(v, int) or isinstance(v, bool) or v > LINE_VERSION:
-        return None
-    if not isinstance(type_, str) or not isinstance(name, str) or not isinstance(collection, str):
-        return None
-    if collection.count(".") != 1:
-        return None
-    return Plugin(
-        type_,
-        name,
-        collection,
-        since=_text(fields.get("since")),
-        until=_text(fields.get("until")),
-        short_description=_text(fields.get("short_description")),
-        routing=_table(fields.get("routing")),
-        index=index,
-        raw=fields,
-    )
+    return next(iter(_plugins(_native.plugin_lines(line, []), index)), None)
+
+
+def _plugins(lines: list[_PluginLine], index: str) -> list[Plugin]:
+    return [
+        Plugin(
+            type_,
+            name,
+            collection,
+            since=since,
+            until=until,
+            short_description=description,
+            routing=routing,
+            index=index,
+            line=line,
+        )
+        for type_, name, collection, since, until, description, routing, line in lines
+    ]
 
 
 class Query:
@@ -178,30 +176,12 @@ class PluginIndex:
         self.index = index
         self.data = data
 
-    def lines_with(self, tokens: _c.Sequence[bytes] = ()) -> _c.Iterator[bytes]:
-        """Every line containing all of ``tokens``, each once; every line if there are none. The first is searched for,
-        so it should be the rarest."""
-        if not tokens:
-            yield from (line for line in self.data.split(b"\n") if line.strip())
-            return
-        data, start = self.data, 0
-        first, rest = tokens[0], tokens[1:]
-        while (found := data.find(first, start)) >= 0:
-            begin = data.rfind(b"\n", 0, found) + 1
-            end = data.find(b"\n", found)
-            end = len(data) if end < 0 else end
-            line = data[begin:end]
-            if all(t in line for t in rest):
-                yield line
-            start = end + 1
+    def with_tokens(self, tokens: _c.Sequence[bytes] = ()) -> list[Plugin]:
+        """Every plugin whose line contains all of ``tokens``; every plugin if there are none."""
+        return _plugins(_native.plugin_lines(self.data, list(tokens)), self.index)
 
     def search(self, query: Query) -> list[Plugin]:
-        found: list[Plugin] = []
-        for line in self.lines_with(query.tokens()):
-            plugin = parse_line(line, self.index)
-            if plugin is not None and query.matches(plugin):
-                found.append(plugin)
-        return found
+        return [plugin for plugin in self.with_tokens(query.tokens()) if query.matches(plugin)]
 
     def get(self, type_: str, fqcn: str) -> Plugin | None:
         """The plugin of type ``type_`` named ``fqcn``, or None."""
@@ -211,28 +191,17 @@ class PluginIndex:
                 return plugin
         return None
 
-    def lines_named(self, names: _c.Collection[str]) -> _c.Iterator[bytes]:
-        """Every line whose ``name`` field may be one of ``names``, found in one pass over the file."""
-        if not names:
-            return
-        pattern = re.compile(rb'"name"\s*:\s*"(?:' + b"|".join(re.escape(n.encode()) for n in names) + rb')"')
-        data, start = self.data, 0
-        while (match := pattern.search(data, start)) is not None:
-            begin = data.rfind(b"\n", 0, match.start()) + 1
-            end = data.find(b"\n", match.end())
-            end = len(data) if end < 0 else end
-            yield data[begin:end]
-            start = end + 1
+    def named(self, names: _c.Collection[str]) -> list[Plugin]:
+        """Every plugin whose line has a ``name`` field that may be one of ``names``, found in one pass over the
+        file."""
+        return _plugins(_native.plugin_lines_named(self.data, set(names)), self.index) if names else []
 
     def names(self) -> set[str]:
         """Every plugin's short name, for suggestions, read without parsing each line."""
-        return {m.group(1).decode() for m in _NAME_RE.finditer(self.data)}
+        return _native.plugin_names(self.data)
 
-    def plugins(self) -> _c.Iterator[Plugin]:
-        for line in self.lines_with():
-            plugin = parse_line(line, self.index)
-            if plugin is not None:
-                yield plugin
+    def plugins(self) -> list[Plugin]:
+        return self.with_tokens()
 
 
 class Copy(Record):
@@ -274,9 +243,8 @@ class Catalog:
             return
         names = {fqcn.rsplit(".", 1)[-1] for _, fqcn in wanted}
         for index in self.indexes:
-            for line in index.lines_named(names):
-                plugin = parse_line(line, index.index)
-                if plugin is not None and plugin.key in wanted and self._got.get(plugin.key) is None:
+            for plugin in index.named(names):
+                if plugin.key in wanted and self._got.get(plugin.key) is None:
                     self._got[plugin.key] = plugin
         for key in wanted:
             _ = self._got.setdefault(key, None)
@@ -598,10 +566,17 @@ def _still_has(plugin: Plugin, installed: _c.Mapping[str, Version | None] | None
 def _version(text: str | None) -> Version | None:
     if text is None:
         return None
-    try:
-        return Version(text)
-    except ValueError:
-        return None
+    if text not in _VERSIONS:
+        try:
+            _VERSIONS[text] = Version(text)
+        except ValueError:
+            _VERSIONS[text] = None
+    return _VERSIONS[text]
+
+
+# Parsed once per distinct text: a broad search assesses tens of thousands of plugins (73,263 for 'a', 2026-10-23), whose
+# 'since' and 'until' are a few hundred versions, and a Version is never changed, so it's shared.
+_VERSIONS: dict[str, Version | None] = {}
 
 
 def _text(value: object) -> str | None:

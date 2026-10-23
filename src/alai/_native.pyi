@@ -38,6 +38,36 @@ def extract_collection(
     checksum reads; 0 is no limit.
     """
 
+_IndexFields = tuple[str, int, bool, str, str, bool | str, bool, list[tuple[str, str]], str | None]
+"""An index line's ``cksum``, ``size``, ``yanked``, ``origin``, ``published``, ``deprecated``, ``upstream_conflict``,
+each of ``deps`` as ``(name, req)``, and ``requires_ansible``, each of its JSON type."""
+
+def parse_index_lines(data: bytes, name: str, /) -> tuple[list[tuple[int, str | None, _IndexFields | str]], int]:
+    """Read collection ``name``'s index file, ``alai._index.parse_index_file``'s JSON and type checks: each line that
+    isn't blank, by number from 1, with its ``vers`` if it got that far and its fields, or why it can't be read; and how
+    many lines were skipped because their ``v`` needs a newer alai.
+
+    The checks are in the order, and with the words, of ``_index._parse_line``'s before them, but for the version
+    itself, which the caller parses first when there's a ``vers``, so its message wins as it did. A line is blank as
+    ``bytes.strip`` sees it, and a UTF-8 byte order mark is skipped, as ``json.loads`` skips one.
+    """
+
+_PluginLine = tuple[str, str, str, str | None, str | None, str | None, dict[str, object] | None, bytes]
+"""A plugin index line's ``type``, ``name``, ``collection``, ``since``, ``until``, ``short_description`` (each None
+where it isn't a string) and ``routing`` (None where it isn't an object, its keys sorted), and the line itself."""
+
+def plugin_lines(data: bytes, tokens: list[bytes], /) -> list[_PluginLine]:
+    """Every readable line of the plugin index ``data`` that contains all of ``tokens``, or every one if there are
+    none. A line is readable if it's a JSON object with an integer ``v`` no higher than 1, and ``type``, ``name`` and
+    ``collection`` strings, the collection with one dot."""
+
+def plugin_lines_named(data: bytes, names: set[str], /) -> list[_PluginLine]:
+    """Every readable line, as ``plugin_lines`` reads them, with a ``"name": "..."`` whose value is one of ``names``,
+    each once."""
+
+def plugin_names(data: bytes, /) -> set[str]:
+    """Every value of a ``"name"`` key in ``data`` without an escape in it, found without parsing the lines."""
+
 def link_tree(source: str | os.PathLike[str], dest: str | os.PathLike[str], mode: str, /) -> None:
     """Recreate the directory ``source`` as the new directory ``dest``: directories with their modes and symlinks as
     they are, each file ``clone``d, ``hardlink``ed, ``copy``d with its mode, or ``symlink``ed to its absolute path. An

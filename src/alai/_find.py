@@ -197,7 +197,7 @@ def load_catalog(settings: Settings) -> Catalog:
     ):
         for index in settings.indexes:
             task.show(index.name)
-            client = IndexClient(index, fetcher, settings.cache_dir, prefetch=False)
+            client = IndexClient(index, fetcher, settings.cache_dir, prefetch="plugins")
             data = client.plugins()
             url = client.config().plugins_url
             if data is not None and url is not None:
