@@ -118,8 +118,7 @@ class TestLock:
         assert main(["lock"]) == EXIT_ERROR
 
         err = capsys.readouterr().err
-        assert "ns.src 1.0.0, from ../src, doesn't meet:" in err
-        assert "ns.src>=2 (from the project)" in err
+        assert "only ns.src==1.0.0, from ../src, is available and the project depends on ns.src>=2.0.0" in err
 
     def test_galaxy_change_is_stale(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         src = source(project.parent / "src")
@@ -230,8 +229,8 @@ class TestRequiresAnsible:
         assert main(["lock"]) == EXIT_ERROR
 
         assert (
-            "ns.src 1.0.0, from ../src, is left out (needing a newer ansible-core than the project's >=2.17), which "
-            + "the project needs"
+            "Because ns.src==1.0.0 needs a newer ansible-core than the project's >=2.17 and the project depends on "
+            "ns.src, we can conclude that the project's requirements are unsatisfiable."
         ) in capsys.readouterr().err
 
     def test_ignored(self, project: Path) -> None:

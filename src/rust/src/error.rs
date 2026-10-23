@@ -1,8 +1,8 @@
 // Copyright: (c) 2026, Jordan Borean (@jborean93) <jborean93@gmail.com>
 // MIT License (see LICENSE or https://opensource.org/licenses/MIT)
 
-//! The errors the native code raises: `ExtractError` for an artifact that can't be extracted safely, and `OSError`
-//! for the filesystem's own.
+//! The errors the native code raises: `ExtractError` for an artifact that can't be extracted safely, `NoSolution` for
+//! requirements that can't all be met, and `OSError` for the filesystem's own.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -16,6 +16,12 @@ create_exception!(
     ExtractError,
     PyException,
     "A tarball can't be read, or an entry can't be extracted safely."
+);
+create_exception!(
+    alai._native,
+    NoSolution,
+    PyException,
+    "The requirements can't all be met; the message explains why."
 );
 
 pub(crate) enum Error {

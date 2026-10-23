@@ -148,9 +148,11 @@ class TestFailures:
             _ = resolve(manifest(toml), indexes.clients)
 
         assert str(e.value) == (
-            "no version of a.a meets every requirement on it:\n"
-            "  a.a>=2 (from the project)\n"
-            "  a.a<2.0.0 (from b.b 1.0.0)"
+            "no solution found when resolving collections:\n"
+            "  Because b.b==1.0.0 depends on a.a<2.0.0 and the project depends on a.a>=2.0.0, we can conclude that "
+            "b.b==1.0.0 cannot be used.\n"
+            "  And because the project depends on b.b, we can conclude that the project's requirements are "
+            "unsatisfiable."
         )
 
     def test_not_in_any_index(self, indexes: Indexes) -> None:
@@ -165,7 +167,10 @@ class TestFailures:
     def test_dependency_no_index_has(self, indexes: Indexes) -> None:
         indexes.add("alai", {"a.a": [v("1.0.0", {"c.c": ">=1.0.0"})]})
 
-        with pytest.raises(ResolutionError, match=r"^no configured index has c\.c, which a\.a 1\.0\.0 needs$"):
+        with pytest.raises(
+            ResolutionError,
+            match=r"Because no configured index has c\.c and a\.a==1\.0\.0 depends on c\.c>=1\.0\.0, we can conclude that a\.a==1\.0\.0 cannot be used\.",
+        ):
             _ = resolve(manifest(PROJECT), indexes.clients)
 
     def test_listed_but_missing(self, indexes: Indexes, tmp_path: Path) -> None:
@@ -173,7 +178,9 @@ class TestFailures:
         indexes.add("alai", {"a.a": [v("1.0.0", {"c.c": "*"})], "c.c": [v("1.0.0")]})
         (tmp_path / "alai" / "index" / "c" / "c.jsonl").unlink()
 
-        with pytest.raises(ResolutionError, match=r"^index 'alai' doesn't have c\.c, which a\.a 1\.0\.0 needs$"):
+        with pytest.raises(
+            ResolutionError, match=r"Because index 'alai' doesn't have c\.c and a\.a==1\.0\.0 depends on c\.c, "
+        ):
             _ = resolve(manifest(PROJECT), indexes.clients)
 
     def test_reasons_versions_were_left_out(self, indexes: Indexes) -> None:
@@ -183,23 +190,151 @@ class TestFailures:
         with pytest.raises(ResolutionError) as e:
             _ = resolve(manifest(toml), indexes.clients)
 
-        assert str(e.value).endswith(
-            "  versions left out: 1 needing a newer ansible-core than the project's >=2.17, 1 yanked"
+        assert str(e.value) == (
+            "no solution found when resolving collections:\n"
+            "  Because a.a==1.0.0 is yanked and a.a==2.0.0 needs a newer ansible-core than the project's >=2.17, we "
+            "can conclude that a.a cannot be used.\n"
+            "  And because the project depends on a.a, we can conclude that the project's requirements are "
+            "unsatisfiable."
         )
 
-    def test_too_deep(self, indexes: Indexes, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(_resolve, "_MAX_ROUNDS", 1)
-        indexes.add("alai", {"a.a": [v("1.0.0", {"b.b": "*"})], "b.b": [v("1.0.0")]})
+    def test_transitive_cause_named(self, indexes: Indexes) -> None:
+        # The project pins c.c; a.a needs it newer only through b.b. Both steps are in the explanation.
+        indexes.add(
+            "alai",
+            {
+                "a.a": [v("1.0.0", {"b.b": ">=2.0.0"})],
+                "b.b": [v("1.0.0", {"c.c": ">=1.0.0"}), v("2.0.0", {"c.c": ">=2.0.0"})],
+                "c.c": [v("1.0.0"), v("2.0.0")],
+            },
+        )
+        toml = '[project]\ncollections = ["a.a", "c.c<2"]\n'
 
-        with pytest.raises(ResolutionError, match="gave up after 1 rounds"):
-            _ = resolve(manifest(PROJECT), indexes.clients)
+        with pytest.raises(ResolutionError) as e:
+            _ = resolve(manifest(toml), indexes.clients)
+
+        assert str(e.value) == (
+            "no solution found when resolving collections:\n"
+            "  Because b.b==2.0.0 depends on c.c>=2.0.0 and a.a==1.0.0 depends on b.b>=2.0.0, we can conclude that "
+            "a.a==1.0.0 depends on c.c>=2.0.0.\n"
+            "  And because the project depends on a.a and the project depends on c.c<2.0.0, we can conclude that the "
+            "project's requirements are unsatisfiable."
+        )
+
+    def test_group_named(self, indexes: Indexes) -> None:
+        indexes.add("alai", {"a.a": [v("1.0.0"), v("2.0.0")], "t.t": [v("1.0.0", {"a.a": "<2.0.0"})]})
+        toml = '[project]\ncollections = ["a.a>=2"]\n[project.groups.test]\ncollections = ["t.t"]\n'
+
+        with pytest.raises(ResolutionError) as e:
+            _ = resolve(manifest(toml), indexes.clients)
+
+        assert str(e.value).startswith(
+            "no solution found when resolving collections:\n"
+            "  Because t.t==1.0.0 depends on a.a<2.0.0 and group 'test' depends on t.t, we can conclude that group 'test' "
+            "depends on a.a<2.0.0.\n"
+        )
+        assert str(e.value).endswith(
+            "the project has group 'test', we can conclude that the project's requirements are unsatisfiable."
+        )
+
+    def test_many_versions_as_ranges(self, indexes: Indexes) -> None:
+        # Up to three versions are named; more are given as ranges cut to what exists, as uv gives them.
+        indexes.add("alai", {"a.a": [v(f"{i}.0.0") for i in range(1, 12)]})
+
+        with pytest.raises(ResolutionError) as e:
+            _ = resolve(manifest('[project]\ncollections = ["a.a>=20"]\n'), indexes.clients)
+
+        assert str(e.value) == (
+            "no solution found when resolving collections:\n"
+            "  Because only a.a<=11.0.0 is available and the project depends on a.a>=20.0.0, we can conclude that "
+            "the project's requirements are unsatisfiable."
+        )
+
+    def test_available_cut_to_what_exists(self, indexes: Indexes) -> None:
+        # A range's bounds are moved in to the versions there are: not `a.a<5.0.0, a.a>=9.0.0`.
+        indexes.add("alai", {"a.a": [v(f"{i}.0.0") for i in (1, 2, 3, 4, 9, 10, 11)]})
+
+        with pytest.raises(ResolutionError) as e:
+            _ = resolve(manifest('[project]\ncollections = ["a.a>=5,<9"]\n'), indexes.clients)
+
+        assert str(e.value) == (
+            "no solution found when resolving collections:\n"
+            "  Because only the following versions of a.a are available: a.a<=4.0.0, a.a>=9.0.0 and the project depends "
+            "on a.a>=5.0.0,<9.0.0, we can conclude that the project's requirements are unsatisfiable."
+        )
+
+    def test_pin_to_a_version_that_does_not_exist(self, indexes: Indexes) -> None:
+        indexes.add("alai", {"a.a": [v("1.0.0"), v("1.1.0"), v("1.2.0"), v("2.0.0")]})
+
+        with pytest.raises(ResolutionError) as e:
+            _ = resolve(manifest('[project]\ncollections = ["a.a==1.3.0"]\n'), indexes.clients)
+
+        assert str(e.value) == (
+            "no solution found when resolving collections:\n"
+            "  Because there is no version of a.a==1.3.0 and the project depends on a.a==1.3.0, we can conclude that "
+            "the project's requirements are unsatisfiable."
+        )
+
+    def test_not_equal_shown_as_written(self, indexes: Indexes) -> None:
+        indexes.add("alai", {"a.a": [v("1.0.0"), v("1.1.0"), v("1.2.0")], "b.b": [v("1.0.0", {"a.a": "==1.1.0"})]})
+
+        with pytest.raises(ResolutionError) as e:
+            _ = resolve(manifest('[project]\ncollections = ["b.b", "a.a!=1.1.0"]\n'), indexes.clients)
+
+        assert str(e.value).endswith(
+            "  And because the project depends on a.a!=1.1.0, we can conclude that the project's requirements are "
+            "unsatisfiable."
+        )
+
+    def test_versions_left_out_for_one_reason_are_one_sentence(self, indexes: Indexes) -> None:
+        # Every 5.x and later needs a newer ansible-core, reached through a dependency: one fact about them all,
+        # not one sentence per version.
+        indexes.add(
+            "alai",
+            {
+                "a.a": [v("1.0.0", {"b.b": ">=5.0.0"})],
+                "b.b": [v("4.0.0"), *(v(f"{i}.0.0", ra=">=2.20") for i in range(5, 12))],
+            },
+        )
+        toml = '[project]\nrequires_ansible = ">=2.17"\ncollections = ["a.a"]\n'
+
+        with pytest.raises(ResolutionError) as e:
+            _ = resolve(manifest(toml), indexes.clients)
+
+        assert str(e.value) == (
+            "no solution found when resolving collections:\n"
+            "  Because every version of b.b>=5.0.0 needs a newer ansible-core than the project's >=2.17 and a.a==1.0.0 "
+            "depends on b.b>=5.0.0, we can conclude that a.a==1.0.0 cannot be used.\n"
+            "  And because the project depends on a.a, we can conclude that the project's requirements are "
+            "unsatisfiable."
+        )
+
+    def test_incompatible_pair(self, indexes: Indexes) -> None:
+        # Two collections whose dependencies can't both hold, named in order and joined with `and`.
+        indexes.add(
+            "alai",
+            {
+                "a.a": [v("1.0.0", {"c.c": ">=2.0.0"})],
+                "b.b": [v("1.0.0", {"c.c": "<2.0.0"}), v("2.0.0", {"c.c": "<2.0.0"})],
+                "c.c": [v("1.0.0"), v("2.0.0")],
+            },
+        )
+
+        with pytest.raises(ResolutionError) as e:
+            _ = resolve(manifest('[project]\ncollections = ["a.a", "b.b"]\n'), indexes.clients)
+
+        assert str(e.value).startswith(
+            "no solution found when resolving collections:\n"
+            "  Because a.a==1.0.0 depends on c.c>=2.0.0 and b.b depends on c.c<2.0.0, we can conclude that a.a==1.0.0 "
+            "and b.b are incompatible.\n"
+        )
 
 
 def test_bare_dependency_version_shown_exact(indexes: Indexes) -> None:
     # An index allows a bare version for an exact one; messages show it as a manifest would.
     indexes.add("alai", {"a.a": [v("1.0.0", {"b.b": "1.0.0"})], "b.b": [v("2.0.0")]})
 
-    with pytest.raises(ResolutionError, match=r"b\.b==1\.0\.0 \(from a\.a 1\.0\.0\)"):
+    with pytest.raises(ResolutionError, match=r"a\.a==1\.0\.0 depends on b\.b==1\.0\.0"):
         _ = resolve(manifest(PROJECT), indexes.clients)
 
 
@@ -221,7 +356,9 @@ class TestCandidates:
     def test_yanked_left_out_of_a_range(self, indexes: Indexes) -> None:
         indexes.add("alai", {"a.a": [v("1.0.0"), v("2.0.0", yanked=True)]})
 
-        with pytest.raises(ResolutionError, match="versions left out: 1 yanked"):
+        with pytest.raises(
+            ResolutionError, match=r"Because a\.a==2\.0\.0 is yanked and the project depends on a\.a>=1\.5\.0, "
+        ):
             _ = resolve(manifest('[project]\ncollections = ["a.a>=1.5"]\n'), indexes.clients)
 
     @pytest.mark.parametrize(
@@ -245,7 +382,10 @@ class TestCandidates:
         # Only the user's pins count, so a dependency can't pull in a yanked version.
         indexes.add("alai", {"a.a": [v("1.0.0"), v("2.0.0", yanked=True)], "b.b": [v("1.0.0", {"a.a": "==2.0.0"})]})
 
-        with pytest.raises(ResolutionError, match="versions left out: 1 yanked"):
+        with pytest.raises(
+            ResolutionError,
+            match=r"Because a\.a==2\.0\.0 is yanked and b\.b==1\.0\.0 depends on a\.a>=2\.0\.0, we can conclude that b\.b==1\.0\.0 cannot be used",
+        ):
             _ = resolve(manifest('[project]\ncollections = ["b.b"]\n'), indexes.clients)
 
     def test_pre_release_skipped(self, indexes: Indexes) -> None:
@@ -392,7 +532,10 @@ class TestRequiresAnsible:
     def test_ansible_version_left_out_reason(self, indexes: Indexes) -> None:
         indexes.add("alai", {"a.a": [v("1.0.0", ra="<2.17")]})
 
-        with pytest.raises(ResolutionError, match=r"versions left out: 1 not supporting ansible-core 2\.19\.0$"):
+        with pytest.raises(
+            ResolutionError,
+            match=r"Because a\.a==1\.0\.0 doesn't support ansible-core 2\.19\.0 and the project depends on a\.a, ",
+        ):
             _ = resolve(manifest(PROJECT), indexes.clients, ansible_version=AnsibleVersion("2.19.0"))
 
     def test_ansible_version_outside_the_project_range(self, indexes: Indexes) -> None:
@@ -458,7 +601,7 @@ class TestOverrides:
         with pytest.raises(ResolutionError) as e:
             _ = resolve(manifest(toml), indexes.clients)
 
-        assert "  b.b>=2 ([project.overrides], replacing b.b<2.0.0) (from a.a 1.0.0)" in str(e.value)
+        assert "a.a==1.0.0 depends on b.b>=2.0.0 ([project.overrides])" in str(e.value)
 
 
 class TestIndexes:
@@ -531,7 +674,9 @@ class TestIndexes:
         # that's what keeps a public index from shadowing a private name (dependency confusion).
         indexes.add("first", {"a.a": [v("1.0.0")]}).add("second", {"a.a": [v("2.0.0")]})
 
-        with pytest.raises(ResolutionError, match=r"no version of a\.a meets"):
+        with pytest.raises(
+            ResolutionError, match=r"only a\.a==1\.0\.0 is available and the project depends on a\.a>=2\.0\.0"
+        ):
             _ = resolve(manifest('[project]\ncollections = ["a.a>=2"]\n'), indexes.clients)
 
 
@@ -653,9 +798,7 @@ class TestReasons:
 
         result = resolve(manifest(toml), indexes.clients, locked=lock_of(indexes, {"a.a": "2.0.0"}))
 
-        assert result.reasons == {
-            "a.a": "a.a 2.0.0 is left out (needing a newer ansible-core than the project's >=2.17)"
-        }
+        assert result.reasons == {"a.a": "a.a 2.0.0 needs a newer ansible-core than the project's >=2.17"}
 
     def test_dependency_conflict(self, indexes: Indexes) -> None:
         # A bundle pinning everything exactly: pinning one of its collections lower moves the bundle back, and with it

@@ -33,8 +33,6 @@ dependencies = [
     "tomli >= 1.1.0; python_version < '3.11'",
     # galaxy.yml and meta/runtime.yml, read with the same parser ansible-core uses.
     "pyyaml >= 6.0",
-    # Dependency resolution, as pip and ansible-galaxy use; the floor is the release tested.
-    "resolvelib >= 1.2",
     # The OS trust store for TLS; the floor is the release tested.
     "truststore >= 0.10",
     "urllib3 >= 2.0",

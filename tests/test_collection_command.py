@@ -213,7 +213,10 @@ class TestInstall:
     def test_no_version_fits(self, cdir: Path, capsys: pytest.CaptureFixture[str]) -> None:
         assert install("a.a>=3") == EXIT_ERROR
 
-        assert "a.a>=3 (from the command line)" in capsys.readouterr().err
+        assert (
+            "you require a.a>=3.0.0, we can conclude that your requirements are unsatisfiable"
+            in capsys.readouterr().err
+        )
         assert not cdir.exists()
 
     def test_invalid(self, cdir: Path, capsys: pytest.CaptureFixture[str]) -> None:

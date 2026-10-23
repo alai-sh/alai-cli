@@ -399,7 +399,7 @@ class TestSync:
         assert main(["lock"]) == EXIT_ERROR
 
         err = capsys.readouterr().err
-        assert "b.b 0.5.0, the project's own collection, doesn't meet:\n  b.b>=1.0.0 (from a.a 2.0.0)" in err
+        assert "only b.b==0.5.0, the project's own collection, is available and a.a==2.0.0 depends on b.b>=1.0.0" in err
 
     def test_add_refused_without_a_group(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         galaxy(project)

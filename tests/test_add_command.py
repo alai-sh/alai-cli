@@ -109,7 +109,7 @@ class TestAdd:
 
         assert main(["add", "a.a>=3"]) == EXIT_ERROR
 
-        assert "no version of a.a meets every requirement" in capsys.readouterr().err
+        assert "no solution found when resolving collections" in capsys.readouterr().err
         assert toml(project) == TOML
         assert not (project / "alai.lock").exists()
 

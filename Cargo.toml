@@ -10,9 +10,9 @@ resolver = "3"
 # through maturin. A pre-release is written as SemVer (0.1.0-alpha.1), which maturin turns into PEP 440 (0.1.0a1).
 version = "0.0.1"
 edition = "2024"
-# The highest of the dependencies': sha2 0.11.1 needs 1.88, pyo3 0.30 1.85. sha2 0.10 would allow 1.83, as cryptography
-# uses with pyo3 0.29, but has the AArch64 round-constant loads 0.11.1 fixed, unfixed there (RustCrypto/hashes#920).
-rust-version = "1.88"
+# The highest of the dependencies': pubgrub 0.4 needs 1.92, sha2 0.11.1 1.88, pyo3 0.30 1.85.
+# (RustCrypto/hashes#920).
+rust-version = "1.92"
 license = "MIT"
 
 # Only the workspace root's profiles apply.

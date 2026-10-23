@@ -3,8 +3,10 @@
 
 """Resolving a project's requirements to one version of each collection.
 
-The rules are in ``design/resolver.md``. resolvelib does the search; it's only used here, behind ``resolve``, so another
-resolver can replace it without touching anything else.
+The rules are in ``design/resolver.md``. This builds the table the search runs over: every collection the project's
+requirements can reach, each version with its dependencies and, where a rule rules a version out (yanked, unreadable
+metadata, needing a newer ansible-core), why. PubGrub, in the native extension, chooses from the table in one call, or
+proves there's no choice and explains why.
 """
 
 from __future__ import annotations
@@ -13,10 +15,7 @@ import collections.abc as _c
 import difflib
 import typing as _t
 
-import resolvelib
-import resolvelib.resolvers
-
-from . import _semver
+from . import _native, _semver
 from ._common import Error, Record
 from ._index import CollectionVersion, IndexClient, IndexFile
 from ._lock import GitCommitSource, IndexSource, Lock, LockedCollection, locked_source
@@ -24,8 +23,9 @@ from ._manifest import GitSource, IndexPin, Manifest, PathSource, Requirement, S
 from ._pep440 import SpecifierSet, Version
 from ._semver import VersionReq
 
-_MAX_ROUNDS = 5000
-"""How many rounds resolvelib may take, each pinning one collection or backtracking from one."""
+if _t.TYPE_CHECKING:
+    from ._native import _Clauses, _Entry
+
 _LOCAL = ""
 """The index name of a collection read from a directory, a tarball or a commit: the project's own, when its root is one,
 or a path, URL or git source. No configured index can be called this, so it's never fetched, and its one version is what
@@ -54,25 +54,33 @@ class Resolution(Record):
 
 
 class _Requirement(Record):
-    __slots__ = ("first_party", "index", "name", "parent", "req", "text")
+    """A requirement on a collection and what asked for it, for the roots and for explaining the result."""
+
+    __slots__ = ("group", "name", "parent", "parent_name", "req", "text")
 
     def __init__(
-        self, name: str, req: VersionReq, *, index: str | None, parent: str, text: str, first_party: bool
+        self,
+        name: str,
+        req: VersionReq,
+        *,
+        parent: str,
+        text: str,
+        group: str | None = None,
+        parent_name: str | None = None,
     ) -> None:
         self.name = name
         self.req = req
-        self.first_party = first_party
-        """Written by the user: the project's or a group's requirement, or an override. Only these can pin a yanked
-        version."""
-        self.index = index
-        """The name of the index it comes from, or None if no configured index has it."""
         self.parent = parent
         """What asked for it, for messages: ``the project``, ``group 'test'`` or ``community.general 10.7.2``."""
+        self.parent_name = parent_name
+        """The collection that asked for it, or None for the project or a group."""
+        self.group = group
+        """The group it's listed in, or None for the project's own."""
         self.text = text
         """The requirement as written, with any override applied, for messages."""
 
 
-class _Candidate(Record):
+class _Chosen(Record):
     __slots__ = ("index", "name", "version")
 
     def __init__(self, name: str, version: CollectionVersion, index: str) -> None:
@@ -103,8 +111,8 @@ def resolve(
     ``ansible_version`` is the one ansible-core version to resolve for, when it's known: each version's own
     ``requires_ansible`` must then contain it, upper bounds included, in place of the project's range.
     ``origin`` is what the manifest's own requirements are said to come from, in errors: ``the project``, or ``the
-    command line`` for ones given there. ``report``, for progress, is called with each collection as its versions are looked at, and how many index files
-    have been read so far.
+    command line`` for ones given there. ``report``, for progress, is called with each collection as its versions are
+    looked at, and how many index files have been read so far.
     """
     project = manifest.requires_ansible
     if ansible_version is not None and project is not None and not project.contains(ansible_version):
@@ -114,7 +122,7 @@ def resolve(
         if client.index.name in by_name:
             raise ValueError(f"index '{client.index.name}' is given more than once")
         by_name[client.index.name] = client
-    provider = _Provider(
+    table = _Table(
         manifest,
         by_name,
         _preferences(locked, upgrade),
@@ -123,25 +131,15 @@ def resolve(
         _kept(installed or {}, upgrade),
         origin,
     )
-    roots = provider.roots()
-    resolver: resolvelib.Resolver[_Requirement, _Candidate, str] = resolvelib.Resolver(
-        provider, resolvelib.BaseReporter()
-    )
+    roots = table.roots()
+    table.load(roots)
     try:
-        result = resolver.resolve(roots, max_rounds=_MAX_ROUNDS)
-    except resolvelib.ResolutionImpossible as e:  # pyright: ignore[reportUnknownVariableType]
-        # resolvelib's exception isn't generic in the type checker's eyes; these are the provider's own types.
-        causes = _t.cast(
-            "_c.Collection[resolvelib.resolvers.RequirementInformation[_Requirement, _Candidate]]",
-            e.causes,
-        )
-        raise ResolutionError(provider.explain(causes)) from None
-    except resolvelib.resolvers.ResolutionTooDeep:
-        raise ResolutionError(
-            f"gave up after {_MAX_ROUNDS} rounds of backtracking without finding a resolution"
-        ) from None
+        picked = _native.resolve(*table.arguments(roots))
+    except _native.NoSolution as e:
+        explanation = "\n".join(f"  {line}" if line else "" for line in str(e).splitlines())
+        raise ResolutionError(f"no solution found when resolving collections:\n{explanation}") from None
+    chosen = table.chosen(picked)
 
-    chosen: dict[str, _Candidate] = dict(result.mapping)
     collections: list[LockedCollection] = []
     for c in sorted(chosen.values(), key=lambda c: c.name):
         dependencies = tuple(sorted({name for name, _ in c.version.deps}))
@@ -174,8 +172,8 @@ def resolve(
                     source_version=isinstance(source, (PathSource, GitSource)) and source.version is not None,
                 )
             )
-    reasons = provider.reasons(chosen, result.criteria, locked, upgrade)
-    return Resolution(tuple(collections), tuple(provider.warnings(chosen)), reasons)
+    reasons = table.reasons(chosen, roots, locked, upgrade)
+    return Resolution(tuple(collections), tuple(table.warnings(chosen)), reasons)
 
 
 def admits_lower_bound(collection: SpecifierSet, project: SpecifierSet) -> bool:
@@ -221,7 +219,13 @@ def _preferences(locked: Lock | None, upgrade: bool | _c.Collection[str]) -> dic
     return {c.name: c for c in locked.collections if keep_all or c.name not in upgrade}  # pyright: ignore[reportOperatorIssue]
 
 
-class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
+def _clauses(req: VersionReq) -> _Clauses:
+    return tuple((op, version._key) for op, version in req.clauses)
+
+
+class _Table:
+    """Everything the search needs, gathered from the indexes and the manifest."""
+
     def __init__(
         self,
         manifest: Manifest,
@@ -247,10 +251,24 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
         self._preferred = preferred
         self._ansible_version = ansible_version
         self._files: dict[tuple[str, str], IndexFile | None] = {}
-        self._left_out: dict[str, dict[str, int]] = {}
-        """Per collection, how many versions each filter left out, for explaining a failure."""
+        self._packages: dict[str, tuple[_Entry, ...]] = {}
+        """Every collection the requirements can reach, as the search takes it: each version with its dependencies,
+        and why it can't be chosen if it can't."""
+        self._missing: dict[str, str] = {}
+        """Collections something depends on that have no versions: no configured index has them, or the index's
+        listing says it does but the file isn't there."""
+        self._sources: dict[str, str] = {}
+        """How each collection read from a directory, tarball or commit is described in a failure."""
+        self._preferred_texts: dict[str, str] = {}
+        """The locked or installed version to try first, by collection, where it's still on the index."""
         self._unusable: dict[str, dict[str, str]] = {}
         """Per collection, versions that met every requirement but were skipped for unreadable metadata."""
+        self._pinned_exactly = {
+            r.name
+            for r in (*manifest.collections, *(r for items in manifest.groups.values() for r in items))
+            if any(op == "==" for op, _ in r.req.clauses)
+        } | {name for name, req in manifest.overrides.items() if any(op == "==" for op, _ in req.clauses)}
+        """Collections the user pins with ``==``, which may choose a yanked version, as uv allows."""
         for name, pin in manifest.sources.items():
             if isinstance(pin, IndexPin) and pin.index not in indexes:
                 raise ResolutionError(
@@ -259,126 +277,150 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
                 )
 
     def roots(self) -> list[_Requirement]:
-        """The project's requirements and its groups', each from the index it comes from."""
-        listed: list[tuple[str, str]] = [(r.text, self._origin) for r in self._manifest.collections]
+        """The project's requirements and its groups', checked against the indexes' listings."""
+        listed: list[tuple[str, str | None]] = [(self._origin, None) for _ in self._manifest.collections]
         for group, items in self._manifest.groups.items():
-            listed.extend((r.text, f"group '{group}'") for r in items)
+            listed.extend((f"group '{group}'", group) for _ in items)
         named = [*self._manifest.collections, *(r for items in self._manifest.groups.values() for r in items)]
 
         # Ask every index's listing at once, then each root's index file.
         for client in self._indexes.values():
             _ = client.collections()
         roots: list[_Requirement] = []
-        for requirement, (_, parent) in zip(named, listed, strict=True):
-            index = self._index_for(requirement.name)
-            if index is None:
+        for requirement, (parent, group) in zip(named, listed, strict=True):
+            if self._index_for(requirement.name) is None:
                 known = [n for client in self._indexes.values() for n in client.collections()]
                 names = ", ".join(f"'{i}'" for i in self._indexes)
                 raise ResolutionError(
                     f"no configured index ({names}) has {requirement.name}" + _did_you_mean(requirement.name, known)
                 )
             req, text = self._overridden(requirement.name, requirement.req, requirement.text)
-            roots.append(_Requirement(requirement.name, req, index=index, parent=parent, text=text, first_party=True))
+            roots.append(_Requirement(requirement.name, req, parent=parent, text=text, group=group))
         self._prefetch(r.name for r in roots)
         return roots
 
-    def identify(self, requirement_or_candidate: _Requirement | _Candidate) -> str:
-        return requirement_or_candidate.name
-
-    def get_preference(
-        self,
-        identifier: str,
-        resolutions: _c.Mapping[str, _Candidate],
-        candidates: _c.Mapping[str, _c.Iterator[_Candidate]],
-        information: _c.Mapping[
-            str, _c.Iterator[resolvelib.resolvers.RequirementInformation[_Requirement, _Candidate]]
-        ],
-        backtrack_causes: _c.Sequence[resolvelib.resolvers.RequirementInformation[_Requirement, _Candidate]],
-    ) -> tuple[bool, bool, bool, str]:
-        # What caused backtracking first, then exact pins, then what the project asked for, then by name, so the order
-        # is the same every run.
-        infos = list(information[identifier])
-        causes = {c.requirement.name for c in backtrack_causes} | {
-            c.parent.name for c in backtrack_causes if c.parent is not None
-        }
-        pinned = any(op == "==" for info in infos for op, _ in info.requirement.req.clauses)
-        root = any(info.parent is None for info in infos)
-        return (identifier not in causes, not pinned, not root, identifier)
-
-    def find_matches(
-        self,
-        identifier: str,
-        requirements: _c.Mapping[str, _c.Iterator[_Requirement]],
-        incompatibilities: _c.Mapping[str, _c.Iterator[_Candidate]],
-    ) -> list[_Candidate]:
-        reqs = list(requirements[identifier])
-        if self._report is not None:
-            self._report(identifier, len(self._files))
-        # Every requirement on a name agrees on its index: it's worked out from the name alone.
-        index = reqs[0].index
-        if index == _LOCAL:
-            # The directory is the only version there is, at what its galaxy.yml says, whatever the indexes have.
-            local = self._local[identifier]
-            if not all(r.req.contains(local.version) for r in reqs):
-                return []
-            # Its requires_ansible is checked as an index version's is; the project's own has none here.
-            if (reason := self._left_out_because(identifier, local, allow_yanked=True)) is not None:
-                left_out = self._left_out.setdefault(identifier, {})
-                left_out[reason] = left_out.get(reason, 0) + 1
-                return []
-            return [_Candidate(identifier, local, index)]
-        file = None if index is None else self._file(index, identifier)
-        if index is None or file is None:
-            return []
-        excluded = {c.version.version for c in incompatibilities[identifier]}
-        preferred = self._preferred.get(identifier)
-        if preferred is not None and preferred.source != IndexSource(self._indexes[index].config().root):
-            preferred = None
-        # The locked version, else the installed one: either is kept while it still fits.
-        keep = preferred.version if preferred is not None else self._installed.get(identifier)
-
-        left_out = self._left_out.setdefault(identifier, {})
-        matches: list[CollectionVersion] = []
-        for version in file.versions:
-            if version.version in excluded or not all(r.req.contains(version.version) for r in reqs):
+    def load(self, roots: _c.Iterable[_Requirement]) -> None:
+        """Read the index file of every collection the roots can reach, through any version's dependencies, and
+        make each a package for the search."""
+        queue = [r.name for r in roots]
+        while queue:
+            name = queue.pop()
+            if name in self._packages or name in self._missing:
                 continue
-            # A yanked version is a candidate when it's locked, or pinned with == by the user, as uv allows.
-            allow_yanked = keep == version.version or any(
-                r.first_party and any(op == "==" for op, _ in r.req.clauses) for r in reqs
-            )
-            reason = self._left_out_because(identifier, version, allow_yanked=allow_yanked)
-            if reason is not None:
-                left_out[reason] = left_out.get(reason, 0) + 1
-                continue
-            matches.append(version)
-
-        # Newest first, but every stable version before any pre-release, so a pre-release is only chosen when no
-        # stable version fits: uv's default (if-necessary).
-        matches.sort(key=lambda v: v.version, reverse=True)
-        matches.sort(key=lambda v: v.version.is_prerelease)
-        if keep is not None:
-            # The locked or installed version first, so an unchanged manifest gives an unchanged lock.
-            matches.sort(key=lambda v: v.version != keep)
-        return [_Candidate(identifier, v, index) for v in matches]
-
-    def is_satisfied_by(self, requirement: _Requirement, candidate: _Candidate) -> bool:
-        return requirement.req.contains(candidate.version.version)
-
-    def get_dependencies(self, candidate: _Candidate) -> list[_Requirement]:
-        # The project's own collection has none here: its galaxy.yml's are the project's requirements.
-        dependencies: list[_Requirement] = []
-        for name, req in candidate.version.deps:
-            text = _dependency_text(name, req)
-            overridden = name in self._manifest.overrides
-            req, text = self._overridden(name, req, text)
-            dependencies.append(
-                _Requirement(
-                    name, req, index=self._index_for(name), parent=str(candidate), text=text, first_party=overridden
+            if self._report is not None:
+                self._report(name, len(self._files))
+            index = self._index_for(name)
+            if index == _LOCAL:
+                local = self._local[name]
+                self._packages[name] = (self._entry(name, local, allow_yanked=True),)
+                root = self._manifest.root
+                self._sources[name] = (
+                    "the project's own collection"
+                    if root is not None and name == root.name
+                    else f"from {self._manifest.sources[name]}"
                 )
-            )
-        return dependencies
+                versions: _c.Sequence[CollectionVersion] = (local,)
+            elif index is None:
+                self._missing[name] = f"no configured index has {name}"
+                continue
+            else:
+                file = self._file(index, name)
+                if file is None:
+                    # Its listing says it has it, but the file isn't there: the two are a sync apart.
+                    self._missing[name] = f"index '{index}' doesn't have {name}"
+                    continue
+                keep = self._keep(name, index)
+                pinned = name in self._pinned_exactly
+                self._packages[name] = tuple(
+                    self._entry(name, v, allow_yanked=pinned or keep == v.version) for v in file.versions
+                )
+                if keep is not None and any(v.version == keep for v in file.versions):
+                    self._preferred_texts[name] = keep.text
+                versions = file.versions
+            queue.extend(dep for version in versions for dep, _ in version.deps)
 
-    def warnings(self, chosen: _c.Mapping[str, _Candidate]) -> list[str]:
+    def arguments(
+        self, roots: _c.Sequence[_Requirement]
+    ) -> tuple[
+        dict[str, tuple[_Entry, ...]],
+        tuple[tuple[str, _Clauses], ...],
+        tuple[tuple[str, tuple[tuple[str, _Clauses], ...]], ...],
+        dict[str, str],
+        dict[str, str],
+        dict[str, str],
+        frozenset[str],
+        str,
+        str,
+    ]:
+        """What ``_native.resolve`` takes: the table ``load`` built, the requirements, and the words a failure is
+        explained in."""
+        groups: dict[str, list[tuple[str, _Clauses]]] = {}
+        for r in roots:
+            if r.group is not None:
+                groups.setdefault(r.group, []).append((r.name, _clauses(r.req)))
+        if self._origin == "the command line":
+            # uv's words for `uv pip`, whose requirements are the command line's too.
+            depends, unsatisfiable = "you require", "your requirements are unsatisfiable"
+        else:
+            depends = f"{self._origin} depends on"
+            unsatisfiable = f"{self._origin}'s requirements are unsatisfiable"
+        return (
+            self._packages,
+            tuple((r.name, _clauses(r.req)) for r in roots if r.group is None),
+            tuple((group, tuple(items)) for group, items in groups.items()),
+            self._preferred_texts,
+            self._missing,
+            self._sources,
+            frozenset(self._manifest.overrides),
+            depends,
+            unsatisfiable,
+        )
+
+    def _entry(self, name: str, version: CollectionVersion, *, allow_yanked: bool) -> _Entry:
+        dependencies: list[tuple[str, _Clauses]] = []
+        for dep, req in version.deps:
+            req, _ = self._overridden(dep, req, "")
+            dependencies.append((dep, _clauses(req)))
+        return (
+            version.version.text,
+            version.version._key,
+            version.version.is_prerelease,
+            self._unavailable_because(name, version, allow_yanked=allow_yanked),
+            tuple(dependencies),
+        )
+
+    def _keep(self, name: str, index: str) -> _semver.Version | None:
+        """The locked version, else the installed one: either is kept while it still fits."""
+        preferred = self._preferred.get(name)
+        if preferred is not None and preferred.source == IndexSource(self._indexes[index].config().root):
+            return preferred.version
+        return self._installed.get(name)
+
+    def chosen(self, picked: _c.Mapping[str, str]) -> dict[str, _Chosen]:
+        out: dict[str, _Chosen] = {}
+        for name, text in picked.items():
+            index = self._index_for(name)
+            if index == _LOCAL:
+                out[name] = _Chosen(name, self._local[name], index)
+            elif index is not None and (file := self._files.get((index, name))) is not None:
+                out[name] = _Chosen(name, next(v for v in file.versions if v.version.text == text), index)
+        return out
+
+    def requirements_on(
+        self, chosen: _c.Mapping[str, _Chosen], roots: _c.Iterable[_Requirement]
+    ) -> dict[str, list[_Requirement]]:
+        """Every requirement on each collection in the resolution: the roots, and the chosen versions'
+        dependencies."""
+        on: dict[str, list[_Requirement]] = {}
+        for r in roots:
+            on.setdefault(r.name, []).append(r)
+        for c in chosen.values():
+            for name, req in c.version.deps:
+                req, text = self._overridden(name, req, _dependency_text(name, req))
+                on.setdefault(name, []).append(_Requirement(name, req, parent=str(c), text=text, parent_name=c.name))
+        return on
+
+    def warnings(self, chosen: _c.Mapping[str, _Chosen]) -> list[str]:
         out: list[str] = []
         for (index, name), file in sorted(self._files.items()):
             if file is None:
@@ -416,21 +458,22 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
 
     def reasons(
         self,
-        chosen: _c.Mapping[str, _Candidate],
-        criteria: _c.Mapping[str, resolvelib.resolvers.Criterion[_Requirement, _Candidate]],
+        chosen: _c.Mapping[str, _Chosen],
+        roots: _c.Iterable[_Requirement],
         locked: Lock | None,
         upgrade: bool | _c.Collection[str],
     ) -> dict[str, str]:
         """Why each collection that's new, or whose locked version wasn't kept, is in the resolution as it is.
 
         Worked out once the resolution is known, from the requirements on each collection and the locked version's
-        own metadata. A locked version resolvelib passed over without any of these reasons gets none.
+        own metadata. A locked version passed over without any of these reasons gets none.
         """
+        on = self.requirements_on(chosen, roots)
         out: dict[str, str] = {}
         for name, candidate in sorted(chosen.items()):
             if self._manifest.root is not None and name == self._manifest.root.name:
                 continue
-            reqs = [info.requirement for info in criteria[name].information]
+            reqs = on.get(name, [])
             was = locked.get(name) if locked is not None else None
             if was is None:
                 parents = ", ".join(sorted({r.parent for r in reqs}))
@@ -454,7 +497,7 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
             root = self._indexes[candidate.index].config().root
             if was.version == candidate.version.version and was.source == IndexSource(root):
                 continue
-            reason = self._not_kept(name, was, candidate, reqs, chosen, criteria, upgrade)
+            reason = self._not_kept(name, was, candidate, reqs, chosen, on, upgrade)
             if reason is not None:
                 out[name] = reason
         for was in locked.collections if locked is not None else ():
@@ -466,10 +509,10 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
         self,
         name: str,
         was: LockedCollection,
-        candidate: _Candidate,
+        candidate: _Chosen,
         reqs: _c.Sequence[_Requirement],
-        chosen: _c.Mapping[str, _Candidate],
-        criteria: _c.Mapping[str, resolvelib.resolvers.Criterion[_Requirement, _Candidate]],
+        chosen: _c.Mapping[str, _Chosen],
+        on: _c.Mapping[str, _c.Sequence[_Requirement]],
         upgrade: bool | _c.Collection[str],
     ) -> str | None:
         locked = f"{name} {was.version}"
@@ -484,9 +527,9 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
         version = next((v for v in file.versions if v.version == was.version), None) if file is not None else None
         if version is None:
             return f"{locked} is no longer on index '{candidate.index}'"
-        left_out = self._left_out_because(name, version, allow_yanked=True)
-        if left_out is not None:
-            return f"{locked} is left out ({left_out})"
+        unavailable = self._unavailable_because(name, version, allow_yanked=True)
+        if unavailable is not None:
+            return f"{locked} {unavailable}"
         # A dependency it can't have. Prefer one that conflicts with a requirement from something else, the project
         # or another collection, over one only its replacement asks differently for, which is a consequence, not the
         # cause.
@@ -502,57 +545,13 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
                 continue
             file = self._files.get((other.index, dep))
             versions = file.versions if file is not None else ()
-            for info in criteria[dep].information:
-                if info.parent is not None and info.parent.name == name:
+            for theirs in on.get(dep, ()):
+                if theirs.parent_name == name:
                     continue
-                theirs = info.requirement
                 if not any(req.contains(v.version) and theirs.req.contains(v.version) for v in versions):
                     return f"{locked} needs {text}, which conflicts with {theirs.text} (from {theirs.parent})"
             fallback = fallback or f"{locked} needs {text}, but {other} was chosen"
         return fallback
-
-    def explain(
-        self, causes: _c.Collection[resolvelib.resolvers.RequirementInformation[_Requirement, _Candidate]]
-    ) -> str:
-        """Why resolution failed: each collection no version fits, with every requirement on it and where it came
-        from, and why versions that would have fitted were left out."""
-        by_name: dict[str, list[_Requirement]] = {}
-        for cause in causes:
-            requirement = cause.requirement
-            if requirement not in by_name.setdefault(requirement.name, []):
-                by_name[requirement.name].append(requirement)
-
-        lines: list[str] = []
-        for name, reqs in sorted(by_name.items()):
-            index = reqs[0].index
-            parents = ", ".join(sorted({r.parent for r in reqs}))
-            if index == _LOCAL:
-                local = self._local[name]
-                root = self._manifest.root
-                own = root is not None and name == root.name
-                what = "the project's own collection" if own else f"from {self._manifest.sources[name]}"
-                if left_out := self._left_out.get(name):
-                    reason = next(iter(left_out))
-                    lines.append(
-                        f"{name} {local.version}, {what}, is left out ({reason}), which {', '.join(sorted({r.parent for r in reqs}))} needs"
-                    )
-                    continue
-                lines.append(f"{name} {local.version}, {what}, doesn't meet:")
-                lines.extend(f"  {r.text} (from {r.parent})" for r in reqs)
-                continue
-            if index is None:
-                lines.append(f"no configured index has {name}, which {parents} needs")
-                continue
-            if self._files.get((index, name)) is None:
-                # Its listing says it has it, but the file isn't there: the two are a sync apart.
-                lines.append(f"index '{index}' doesn't have {name}, which {parents} needs")
-                continue
-            lines.append(f"no version of {name} meets every requirement on it:")
-            lines.extend(f"  {r.text} (from {r.parent})" for r in reqs)
-            if left_out := self._left_out.get(name):
-                reasons = ", ".join(f"{count} {reason}" for reason, count in sorted(left_out.items()))
-                lines.append(f"  versions left out: {reasons}")
-        return "\n".join(lines) or "the requirements can't all be met"
 
     def _index_for(self, name: str) -> str | None:
         """Where a collection comes from, whatever asked for it: its ``[project.sources]`` entry, else the first
@@ -579,7 +578,7 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
         if key not in self._files:
             file = self._files[key] = self._indexes[index].versions(name)
             if file is not None:
-                # Every dependency any version names, fetched now rather than when the resolver gets to it.
+                # Every dependency any version names, fetched now rather than when the table gets to it.
                 self._prefetch({dep for version in file.versions for dep, _ in version.deps})
         return self._files[key]
 
@@ -589,13 +588,13 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
             return req, text
         return override, f"{name}{override.text if override.clauses else ''} ([project.overrides], replacing {text})"
 
-    def _left_out_because(self, name: str, version: CollectionVersion, *, allow_yanked: bool) -> str | None:
-        """Why a version that meets every requirement isn't a candidate, or None if it is."""
+    def _unavailable_because(self, name: str, version: CollectionVersion, *, allow_yanked: bool) -> str | None:
+        """Why a version can't be chosen, as a predicate for messages (``is yanked``), or None if it can."""
         if version.problem is not None:
             self._unusable.setdefault(name, {})[version.version.text] = version.problem
-            return "with unreadable metadata"
+            return "has unreadable metadata"
         if version.yanked and not allow_yanked:
-            return "yanked"
+            return "is yanked"
         theirs = version.requires_ansible
         if theirs is None or name in self._manifest.ignore_requires_ansible:
             return None
@@ -603,11 +602,11 @@ class _Provider(resolvelib.AbstractProvider[_Requirement, _Candidate, str]):
             # Resolving for one ansible-core: the version's whole range must contain it, as ansible-galaxy checks the
             # running ansible-core.
             if not theirs.contains(self._ansible_version):
-                return f"not supporting ansible-core {self._ansible_version}"
+                return f"doesn't support ansible-core {self._ansible_version}"
             return None
         project = self._manifest.requires_ansible
         if project is not None and not admits_lower_bound(theirs, project):
-            return f"needing a newer ansible-core than the project's {project}"
+            return f"needs a newer ansible-core than the project's {project}"
         return None
 
 

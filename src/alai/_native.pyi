@@ -5,6 +5,10 @@
 
 import os
 
+class NoSolution(Exception):
+    """``resolve``'s requirements can't all be met: ``str()`` is the explanation, a derivation in uv's words, one
+    sentence per line, with a blank line between its parts."""
+
 class ExtractError(Exception):
     """A tarball can't be read, or its collection can't be extracted safely: ``(kind, entry, detail)``.
 
@@ -38,3 +42,37 @@ def link_tree(source: str | os.PathLike[str], dest: str | os.PathLike[str], mode
     """Recreate the directory ``source`` as the new directory ``dest``: directories with their modes and symlinks as
     they are, each file ``clone``d, ``hardlink``ed, ``copy``d with its mode, or ``symlink``ed to its absolute path. An
     ``OSError`` placing a file names the file in the cache."""
+
+_Key = tuple[int, int, int, int, tuple[tuple[int, int | str], ...]]
+"""``alai._semver.Version._key``: SemVer precedence."""
+_Clauses = tuple[tuple[str, _Key], ...]
+"""A requirement: an operator (``==``, ``!=``, ``>=``, ``<=``, ``>``, ``<``) and a version per clause, all of which must
+hold; none accepts every version."""
+_Entry = tuple[str, _Key, bool, str | None, tuple[tuple[str, _Clauses], ...]]
+"""One version: its text, key, whether it's a pre-release, why it can't be chosen (a predicate, ``is yanked``) or None,
+and its dependencies by name."""
+
+def resolve(
+    packages: dict[str, tuple[_Entry, ...]],
+    roots: tuple[tuple[str, _Clauses], ...],
+    groups: tuple[tuple[str, tuple[tuple[str, _Clauses], ...]], ...],
+    preferred: dict[str, str],
+    missing: dict[str, str],
+    sources: dict[str, str],
+    overrides: frozenset[str],
+    root_depends: str,
+    root_unsat: str,
+    /,
+) -> dict[str, str]:
+    """Choose one version of every collection ``roots`` and ``groups`` need, from ``packages``, and return each by
+    name as its text, or raise ``NoSolution`` with why there's none.
+
+    Of each collection's versions in a range, the highest is chosen, every stable version before any pre-release, but
+    ``preferred``'s (the locked or installed version, by text) first while it fits. A version that can't be chosen
+    is reported by its reason and passed over, so a failure can say ``a.a==2.0.0 is yanked``. A name in ``missing`` has
+    no versions, and the explanation gives its reason (``no configured index has a.a``) instead; a name in ``sources``
+    is read from a directory, tarball or commit, described that way (``from ../col``) when its one version doesn't
+    fit; a name in ``overrides`` has ``[project.overrides]`` added wherever something depends on it. ``root_depends``
+    and ``root_unsat`` are the words for the roots: ``the project depends on`` and ``the project's requirements are
+    unsatisfiable``.
+    """

@@ -448,8 +448,8 @@ fallback (see [Shipping](#shipping)).
   `FILES.json`: 0.91 ms for the largest `FILES.json` (a10.acos_axapi,
   850 KB) into typed structs, against Python's `json.loads` at 2.5 ms;
   other JSON alai parses, the index lines and `plugins.jsonl`, stays in
-  Python for now. It reads gzip only, as every build is gzipped. The crate needs Rust 1.88, the highest of the dependencies'
-  own minimums (`sha2` 0.11 1.88, `pyo3` 0.30 1.85).
+  Python for now. It reads gzip only, as every build is gzipped. The crate needs Rust 1.92, the highest of the dependencies'
+  own minimums (`pubgrub` 0.4 1.92, `sha2` 0.11 1.88, `pyo3` 0.30 1.85).
 - **In development** maturin is alai's build backend, so `uv sync` builds
   the extension into `src/alai/` (an editable install) and every tox
   environment builds a wheel with it; both need `cargo`. uv's
@@ -546,8 +546,9 @@ what's left is installing, by clone ([Cloning](#cloning)).
   choice. So, the conditions:
   - Wheels for the common platforms, glibc and musl, and macOS, so the
     sdist is rarely used.
-  - A declared `rust-version`: 1.88 (decided with the user, 2026-10-22),
-    set by `sha2` 0.11.1; `pyo3` 0.30 needs 1.85. The lowest floor without
+  - A declared `rust-version`: 1.92 since the resolver moved to `pubgrub`
+    0.4 (2026-10-23, [resolver.md](resolver.md)); 1.88 before that (decided
+    with the user, 2026-10-22), set by `sha2` 0.11.1; `pyo3` 0.30 needs 1.85. The lowest floor without
     known problems was 1.83, as `cryptography` declares, with `pyo3` 0.29
     and `sha2` 0.10: every `pyo3` before 0.29 has advisories fixed only from
     0.29 (RUSTSEC-2026-0176, an out-of-bounds read in list and tuple

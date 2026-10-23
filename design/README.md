@@ -62,8 +62,10 @@ repositories ([lockfile.md](lockfile.md#other-sources),
 [install.md](install.md#git-sources)), `alai collection list`
 ([list.md](list.md)), and extracting and installing with a native
 extension, in Rust and required
-([performance.md](performance.md#the-native-extension)), with what's left
-of those in each note's "Not done yet".
+([performance.md](performance.md#the-native-extension)); on 2026-10-23, the
+resolver moved from resolvelib to PubGrub in that extension
+([resolver.md](resolver.md)), with what's left of those in each note's
+"Not done yet".
 
 Shelved: `-r requirements.yml` ([requirements-file.md](requirements-file.md));
 what to ask users about it is in [user-questions.md](user-questions.md).
@@ -76,7 +78,7 @@ those items; change it with them.
 | [configuration.md](configuration.md) | Settings and project discovery decisions, the project manifest, planned error positions, and what isn't read yet |
 | [versions.md](versions.md) | Collection and ansible-core versions and requirement syntax, and how they were checked against ansible-core |
 | [environments.md](environments.md) | `requires_ansible` as a range versus an ansible-core pin, several environments per project, and how one lock covers a range: future work |
-| [resolver.md](resolver.md) | Choosing one version of every collection: resolvelib, where each collection comes from, which versions are candidates, `requires_ansible`, and failures |
+| [resolver.md](resolver.md) | Choosing one version of every collection: PubGrub in the native extension, where each collection comes from, which versions are candidates, `requires_ansible`, failures explained in uv's words, and the measurements against resolvelib that decided it |
 | [manifest-editing.md](manifest-editing.md) | `alai add` and `alai remove`, and the surgical, checked editor they change `alai.toml` with |
 | [requirements-file.md](requirements-file.md) | Reading ansible-galaxy's `requirements.yml` for `-r`: its format, what uv does with sources in `requirements.txt`, the mapping proposed, and open questions. Shelved |
 | [install.md](install.md) | Installing locked collections: downloading artifacts, the extracted-collection cache, extraction as ansible-galaxy does it, what counts as installed, link modes and exact syncing |
