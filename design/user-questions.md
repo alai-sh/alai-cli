@@ -26,6 +26,21 @@ releases that have security advisories.
 **Ask:** is anyone running alai where there's no wheel and no recent Rust,
 and would a distribution's own Rust building it matter to them?
 
+## How `alai add` lays out an array
+
+**Today:** `alai add` and `alai remove` lay the array they change out as
+uv does, one collection per line with a trailing comma, so
+`collections = ["a.a", "b.b"]` becomes four lines on its first edit
+(2026-10-23). The reasoning is in
+[manifest-editing.md](manifest-editing.md#the-editor).
+
+**The alternatives:** keep an array's own layout, adding to a one-line
+array on that line, as alai did before; or spread it over lines only once
+it's too long for one.
+
+**Ask:** does anyone keep short one-line lists in `alai.toml` and mind
+them being spread out?
+
 ## How much a collection may unpack to
 
 **Today:** a collection tarball that unpacks to more than 512 MiB is

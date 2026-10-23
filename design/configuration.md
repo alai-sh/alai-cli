@@ -144,40 +144,31 @@ what's planned on top of it, and the questions still open.
 
 Errors in a config file name the file, and the key path (`project.collections[2]`,
 `index[1]`) for anything past TOML syntax, but only syntax errors carry a line:
-`tomllib` reports positions for those, and returns plain dicts and lists with
-none once a file parses. uv, ruff and Cargo show a line, column and snippet,
-since Rust's `toml` crate keeps spans.
+`_native.toml_loads` reports positions for those, and returns plain dicts
+and lists with none once a file parses. uv, ruff and Cargo show a line,
+column and snippet, from the spans their TOML parser keeps.
 
-The plan, when an error is about to be raised:
+The plan, when an error is about to be raised (revised 2026-10-23, once
+TOML moved to `toml_edit`, whose parsed `Document` keeps the span of every
+key and value; the first plan scanned the text, as `tomllib` keeps none):
 
-- **Locate on the error path only.** Re-read the file's text and scan it for the
-  key path. The file already parsed, so the scanner only sees valid TOML, and
-  nothing costs anything on a successful run.
-- **Match keys, never values.** The text of a value can differ from what
-  `tomllib` returns (escapes, literal and multi-line strings, `1_000` or `0x3e8`),
-  so the position is the key that holds the bad value; the message already
-  shows the parsed value.
-- **`tomllib` decodes the keys.** A key has many spellings (`link_mode`,
-  `"link_mode"`, `"link\u005fmode"`, `project . collections_dir`, dotted keys,
-  `[project]` versus `project = { ... }`, `[[index]]` versus `index = [{ ... }]`).
-  Rather than reimplementing them, the scanner cuts out the text before the
-  first `=` outside quotes, or a header, and parses `<text> = 0` with `tomllib`
-  to get the exact key path. The scanner itself only finds where keys and
-  headers end, tracks the current table and `[[...]]` repeat, and skips
-  strings, comments and multi-line arrays. Array items such as
-  `project.collections[2]` are found by counting top-level items.
-- **No line rather than a wrong one.** Without exactly one match the message
-  keeps today's form, and an array item it can't place falls back to its
-  key's line.
+- **Locate on the error path only.** Re-parse the file's text with spans,
+  in the extension, and look the key path up, so nothing costs anything on
+  a successful run. `toml_edit` has already decoded every spelling of a key
+  (`"link\u005fmode"`, `project . collections_dir`, dotted keys,
+  `[project]` versus `project = { ... }`, `[[index]]` versus
+  `index = [{ ... }]`), so there's no scanner to keep in step with them.
+- **Point at the value, or the key holding it.** A value's span is exact,
+  so a bad array item such as `project.collections[2]` gets its own
+  position; a missing or unknown key gets the table's header.
+- **No line rather than a wrong one.** If the path can't be found the
+  message keeps today's form.
 - **Format `path:line:col: message`**, which terminals and editors make
-  clickable, with columns in characters as `tomllib` counts them. Syntax
-  errors move to the same prefix instead of `(at line 4, column 7)`. Errors
-  from flags and environment variables keep naming the flag or variable.
-- **Tested against `tomllib`**: parse awkward documents, walk every key path
-  `tomllib` returns, and check the locator finds where each is defined, so a
-  spelling the scanner reads differently fails a test.
+  clickable, with columns in characters. Syntax errors move to the same
+  prefix instead of `(at line 4, column 7)`. Errors from flags and
+  environment variables keep naming the flag or variable.
 
-Estimated at ~150 lines plus tests.
+Estimated at ~60 lines plus tests.
 
 ## Project manifest
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import os
 import stat
-import sys
 from pathlib import Path
 
 import pytest
@@ -26,12 +25,8 @@ from alai._lock import (
     write_lock,
 )
 from alai._manifest import parse_manifest
+from alai._native import toml_loads
 from alai._semver import Version
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib
 
 INDEX = IndexSource("https://index.alai.sh/")
 CKSUM_A = "a" * 64
@@ -91,7 +86,7 @@ def example() -> Lock:
 
 
 def reparse(text: str) -> Lock:
-    return parse_lock(tomllib.loads(text), "alai.lock")
+    return parse_lock(toml_loads(text), "alai.lock")
 
 
 def same(a: Lock | None, b: Lock) -> bool:
@@ -355,7 +350,7 @@ class TestFile:
 class TestIsCurrent:
     @staticmethod
     def manifest(toml: str) -> object:
-        return parse_manifest(raw_manifest(tomllib.loads(toml), "alai.toml"))
+        return parse_manifest(raw_manifest(toml_loads(toml), "alai.toml"))
 
     BASE = """\
 [project]

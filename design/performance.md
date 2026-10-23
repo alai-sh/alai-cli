@@ -806,28 +806,49 @@ what's left is installing, by clone ([Cloning](#cloning)).
     (`reportMissingModuleSource`): the built module is only in `src/alai/`
     after a local `uv sync`, and sanity failed on CI without it.
   Every contributor needs `cargo`.
-- **TOML editing could live there too.** `alai add` and `alai remove` edit
-  `alai.toml` with a small checked editor of our own
-  ([manifest-editing.md](manifest-editing.md)) because the mature
-  format-preserving editor, `toml_edit` (cargo's and uv's), is Rust with no
-  maintained Python binding. Exposing it from the same extension would cover
-  edits beyond one requirement array, such as `[project.sources]` entries;
-  worth deciding when the extension is designed.
-### Open: YAML and TOML in the extension
+- **TOML lives there too** ([below](#toml-in-the-extension)).
 
-Open (raised 2026-10-21): whether the extension should parse YAML and TOML
-too, for `galaxy.yml`, `meta/runtime.yml`, `alai.toml` and `alai.lock`.
-PyYAML is used for now, with its C loader where it's built with libyaml,
-and only imported in a collection project.
+### TOML in the extension
 
-TOML 1.1's multi-line inline tables wait on that answer (decided with the
-user, 2026-10-22): `alai.toml` is TOML 1.0, an inline table on one line,
-for now. Today what reads one depends on the Python: checked on
-2026-10-22, a `[project.sources]` entry spread over lines was read by
-tomli 2.5.0 (Python 3.10) and Python 3.15's `tomllib`, refused by 3.11's,
-3.13's and 3.14's ("Invalid initial character for a key part"), and
-refused by `_toml_edit`, so `alai add` couldn't edit the file; uv 0.13.0
-locked the same layout in `[tool.uv.sources]`. Supporting it in Python
-would mean tomli below 3.15 and multi-line inline tables in
-`_toml_edit`'s scanner; a TOML parser in the extension would settle it
-instead. Long git entries are what would want it.
+Decided with the user, 2026-10-23: every TOML file alai reads, writes or
+edits goes through `toml_edit` 0.25 (TOML 1.1), cargo's and uv's, in
+`src/rust/src/toml.rs`:
+
+- **Reading**: `toml_read` (and `TomlDocument.read`, for editing) reads
+  the file with the GIL released and gives what `tomllib.load` gives,
+  datetimes as `datetime` objects, for `alai.toml`, the config files and
+  `alai.lock`. Every caller goes through `_config.read_toml` or
+  `read_toml_document`, so a file that can't be read, isn't UTF-8 (`not
+  UTF-8 (at line 2, column 7)`, placed as a syntax error is) or isn't
+  valid TOML gets the same error wherever it's read. `toml_loads` and
+  `TomlDocument(text)` take text, for the tests.
+  Every Python now reads the same TOML, so `tomli` is gone as a dependency
+  for 3.10, and TOML 1.1's multi-line inline tables can be used in
+  `alai.toml`: before, a `[project.sources]` entry spread over lines was
+  read by tomli 2.5.0 (3.10) and 3.15's `tomllib` but refused by 3.11's to
+  3.14's (checked 2026-10-22), and uv 0.13.0 locked the same layout in
+  `[tool.uv.sources]`. A syntax error keeps `tomllib`'s one-line form,
+  `... (at line 3, column 7)`, the column in characters, with
+  `toml_edit`'s wording. On the 25 KB lock of `sivel.acd` it was 0.36 ms
+  against `tomllib`'s 1.78 ms, giving the same data; importing `_native`
+  costs 1.8 ms, and is only done once a file is read.
+- **Writing `alai.lock`**: `toml_dumps` builds the document from a mapping
+  `render_lock` lays out, with fixed rules for tables, inline tables,
+  dotted keys and wrapped arrays, in place of the emitter in `_lock.py`
+  (decided with the user, 2026-10-23, so there's one TOML writer). It
+  writes every existing lock byte for byte as the emitter did, `sivel.acd`'s
+  in 0.44 ms; only a string with a `"` or `\` in it is written differently,
+  as a literal string where `toml_edit` picks one ([lockfile.md](lockfile.md)).
+- **Editing `alai.toml`**: `TomlDocument`
+  ([manifest-editing.md](manifest-editing.md#the-editor)).
+- **GIL**: parsing releases it; turning the document into Python objects,
+  and the edits, hold it, as they're mostly building or reading them.
+
+### Open: YAML in the extension
+
+Open (raised 2026-10-21): whether the extension should parse YAML too, for
+`galaxy.yml` and `meta/runtime.yml`. PyYAML is used for now, with its C
+loader where it's built with libyaml, and only imported in a collection
+project. An editor that keeps `galaxy.yml`'s formatting, for `alai add` in
+a collection project, would be the reason to
+([collection-development.md](collection-development.md#not-done-yet)).

@@ -12,10 +12,14 @@ from __future__ import annotations
 import collections.abc as _c
 import enum
 import os
-import sys
 
 from ._common import FALSE_WORDS, NAME_RE, TRUE_WORDS, ConfigError, Record, as_table, env_bool
 from ._output import debug
+
+# typing.TYPE_CHECKING without importing typing, which this module, loaded by every command, otherwise doesn't need.
+TYPE_CHECKING = False
+if TYPE_CHECKING:
+    from ._native import TomlDocument
 
 CONFIG_FILE_NAME = "alai.toml"
 DEFAULT_INDEX_NAME = "alai"
@@ -498,19 +502,31 @@ def default_cache_dir(environ: _c.Mapping[str, str]) -> str | None:
 
 
 def read_toml(path: str) -> dict[str, object]:
-    # Imported here so a command run without any config files never pays for it.
-    if sys.version_info >= (3, 11):
-        import tomllib  # pyright: ignore[reportUnreachable]  # checked against the 3.10 floor
-    else:
-        import tomli as tomllib
+    """The TOML file at ``path``: a config file, ``alai.toml`` or ``alai.lock``."""
+    # Imported here so a command run without any config files never loads the extension for it.
+    from ._native import TomlError, toml_read
 
     try:
-        with open(path, "rb") as fd:
-            return tomllib.load(fd)
-    except tomllib.TOMLDecodeError as e:
-        raise ConfigError(f"{path}: invalid TOML: {e}") from None
-    except OSError as e:
-        raise ConfigError(f"{path}: {e.strerror or e}") from None
+        return toml_read(path)
+    except (TomlError, OSError) as e:
+        raise _toml_error(path, e) from None
+
+
+def read_toml_document(path: str) -> TomlDocument:
+    """The TOML file at ``path`` to edit, ``alai.toml`` for ``alai add``, read as ``read_toml`` reads one."""
+    from ._native import TomlDocument, TomlError
+
+    try:
+        return TomlDocument.read(path)
+    except (TomlError, OSError) as e:
+        raise _toml_error(path, e) from None
+
+
+def _toml_error(path: str, e: Exception) -> ConfigError:
+    """A file that can't be read, or isn't UTF-8 or valid TOML, as an error naming it."""
+    if isinstance(e, OSError):
+        return ConfigError(f"can't read {path}: {e.strerror or e}")
+    return ConfigError(f"{path}: invalid TOML: {e}")
 
 
 def _file_layer(table: _c.Mapping[str, object], path: str, level: Level, home: str | None) -> _Layer:

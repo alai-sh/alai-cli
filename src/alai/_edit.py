@@ -12,12 +12,10 @@ import contextlib
 import os
 import re
 import secrets
-import sys
 import time
 
-from . import _toml_edit
 from ._common import NAME_RE, ConfigError
-from ._config import Settings, raw_manifest
+from ._config import Settings, raw_manifest, read_toml_document
 from ._lock import Lock, lock_path, read_lock, write_lock
 from ._manifest import (
     GitSource,
@@ -34,6 +32,7 @@ from ._manifest import (
     parse_git,
     source_key,
 )
+from ._native import TomlDocument, TomlEditError
 from ._output import error, home_path, shown_path, summary
 from ._project import (
     Upgrade,
@@ -46,11 +45,6 @@ from ._project import (
     with_root,
 )
 from ._sync import DEFAULT_GROUPS, install_locked
-
-if sys.version_info >= (3, 11):
-    import tomllib  # pyright: ignore[reportUnreachable]  # checked against the 3.10 floor
-else:
-    import tomli as tomllib
 
 
 def add(
@@ -119,7 +113,7 @@ def _editing(settings: Settings, group: str | None, verb: str) -> _c.Generator[N
     """An edit the editor won't make becomes an error saying so, and what to do instead."""
     try:
         yield
-    except _toml_edit.TomlEditError as e:
+    except TomlEditError as e:
         where = "project.collections" if group is None else f"project.groups.{group}.collections"
         raise ConfigError(
             f"can't edit {settings.project.config_file} for you ({e}); {verb} the collections in {where} by hand"
@@ -148,7 +142,7 @@ def _add(
     path or URL, is the same, as ``uv add ../lib-1.0.tar.gz`` and ``uv add https://.../lib-1.0.tar.gz`` are, and so is
     a git repository, ``git+<url>[@<rev>][#subdirectory=<dir>]``, as ``uv add git+...`` writes one.
     """
-    config, text = _read(settings, group)
+    config, doc = _read(settings, group)
     path = _array_path(group)
     parsed: list[Requirement] = []
     sources: dict[str, PathSource | UrlSource | GitSource] = {}
@@ -164,16 +158,16 @@ def _add(
             parsed.append(_requirement(given))
     bare: list[str] = []
     for requirement in parsed:
-        current = _toml_edit.values(text, path)
+        current = doc.values(path)
         if current is None:
-            text = _toml_edit.create(text, path, [requirement.text])
+            doc.create(path, [requirement.text])
         else:
             names = [_name_of(v) for v in current]
             if requirement.name in names:
                 if requirement.req.clauses:
-                    text = _toml_edit.replace(text, path, names.index(requirement.name), requirement.text)
+                    doc.replace(path, names.index(requirement.name), requirement.text)
                 continue
-            text = _toml_edit.insert(text, path, _position(names, requirement.name), requirement.text)
+            doc.insert(path, _position(names, requirement.name), requirement.text)
         # One from a directory stays bare, as uv writes a path dependency: there's only ever its one version.
         if not requirement.req.clauses and requirement.name not in sources:
             bare.append(requirement.name)
@@ -194,25 +188,24 @@ def _add(
             table = {"path": source.path}
             if source.editable:
                 table["editable"] = True
-        text = _toml_edit.set_table(text, ("project", "sources", name), table)
+        doc.set_table(("project", "sources", name), table)
     if frozen:
-        _write(config, text)
+        _write(config, str(doc))
         return True
 
-    def bound(text: str, lock: Lock) -> str:
+    def bound(doc: TomlDocument, lock: Lock) -> None:
         # Each name added alone gets >= its locked version, as uv writes one.
         for name in bare:
-            current = _toml_edit.values(text, path) or []
+            current = doc.values(path) or []
             names = [_name_of(v) for v in current]
             locked = lock.get(name)
             if locked is not None and name in names:
-                text = _toml_edit.replace(text, path, names.index(name), f"{name}>={locked.version}")
-        return text
+                doc.replace(path, names.index(name), f"{name}>={locked.version}")
 
     return _lock_and_sync(
         settings,
         config,
-        text,
+        doc,
         bound,
         group=group,
         sync=sync,
@@ -234,27 +227,27 @@ def _remove(
     upgrade: Upgrade | None = None,
     reinstall: bool | set[str] = False,
 ) -> bool:
-    config, text = _read(settings, group)
+    config, doc = _read(settings, group)
     path = _array_path(group)
     for given in names:
         try:
             name = collection_name(given)
         except ValueError as e:
-            raise ConfigError(_by_source(settings, text, given) or str(e)) from None
-        current = _toml_edit.values(text, path) or []
+            raise ConfigError(_by_source(settings, doc, given) or str(e)) from None
+        current = doc.values(path) or []
         found = [_name_of(v) for v in current]
         if name not in found:
-            raise ConfigError(_not_there(text, name, group))
-        text = _toml_edit.remove(text, path, found.index(name))
-        text = _drop_path_source(text, name)
+            raise ConfigError(_not_there(doc, name, group))
+        doc.remove(path, found.index(name))
+        _drop_path_source(doc, name)
     if frozen:
-        _write(config, text)
+        _write(config, str(doc))
         return True
     return _lock_and_sync(
         settings,
         config,
-        text,
-        lambda text, _: text,
+        doc,
+        lambda _doc, _lock: None,
         group=None,
         sync=sync,
         locked=locked,
@@ -266,8 +259,8 @@ def _remove(
 def _lock_and_sync(
     settings: Settings,
     config: str,
-    text: str,
-    finish: _c.Callable[[str, Lock], str],
+    doc: TomlDocument,
+    finish: _c.Callable[[TomlDocument, Lock], None],
     *,
     group: str | None,
     sync: bool,
@@ -276,7 +269,7 @@ def _lock_and_sync(
     reinstall: bool | set[str],
     fetched: _c.Mapping[str, SourceCollection] | None = None,
 ) -> bool:
-    """Resolve ``text`` as the new ``alai.toml``, let ``finish`` give its final text from the lock, and write both;
+    """Resolve ``doc`` as the new ``alai.toml``, let ``finish`` make its last edits from the lock, and write both;
     then sync, with ``group`` installed as well as the default groups, reinstalling ``reinstall``. Nothing is written
     if resolving fails. ``fetched`` are the URL sources already downloaded, by name, so they aren't again.
 
@@ -285,7 +278,7 @@ def _lock_and_sync(
     writes ``pyproject.toml`` when the requirement is only spelt differently, and ``alai.lock`` kept as it is.
     """
     started = time.monotonic()
-    raw, manifest = with_root(settings, raw_manifest(tomllib.loads(text), config))
+    raw, manifest = with_root(settings, raw_manifest(doc.data(), config))
     manifest.local.update(fetched or {})
     path = lock_path(settings.project.root)
     existing = read_lock(path)
@@ -293,15 +286,15 @@ def _lock_and_sync(
         error(f"there's no {shown_path(path)}, and --locked was given; run alai lock")
         return False
     lock, resolution = resolve_project(settings, manifest, raw, existing, upgrade=upgrade)
-    final = finish(text, lock)
-    raw, manifest = with_root(settings, raw_manifest(tomllib.loads(final), config))
+    finish(doc, lock)
+    raw, manifest = with_root(settings, raw_manifest(doc.data(), config))
     lock = Lock(raw, lock.collections, lock.root)
     summary("Resolved", len(lock.collections), time.monotonic() - started, dim=True)
     if locked and not lock_unchanged(existing, manifest, lock):
         report_changes(existing, manifest, lock, resolution, inputs=True)
         error(f"{shown_path(path)} would change, and --locked was given")
         return False
-    _write(config, final)
+    _write(config, str(doc))
     if not locked:
         _ = write_lock(path, lock)
     if sync:
@@ -342,14 +335,14 @@ def _path_source(
     return read_path_source(settings, None, source), source
 
 
-def _by_source(settings: Settings, text: str, given: str) -> str | None:
+def _by_source(settings: Settings, doc: TomlDocument, given: str) -> str | None:
     """What to say when ``alai remove`` is given a source, such as ``git+...``, rather than a collection name: the
     collections ``[project.sources]`` takes from it, to remove by name, as ``uv remove`` takes names alone. None when
     ``given`` isn't a source, for the error about collection names to stand."""
     key = given_source(given)
     if key is None:
         return None
-    raw = raw_manifest(tomllib.loads(text), "alai.toml")
+    raw = raw_manifest(doc.data(), "alai.toml")
     names = sorted(n for n, table in raw.sources.items() if source_key(table, settings.project.root) == key)
     if not names:
         return f"alai remove takes collection names, such as ns.col, and [project.sources] takes nothing from {given}"
@@ -359,23 +352,22 @@ def _by_source(settings: Settings, text: str, given: str) -> str | None:
     )
 
 
-def _drop_path_source(text: str, name: str) -> str:
-    """``text`` without ``name``'s ``[project.sources]`` entry when it's a directory, a tarball or a git repository and
+def _drop_path_source(doc: TomlDocument, name: str) -> None:
+    """Remove ``name``'s ``[project.sources]`` entry when it's a directory, a tarball or a git repository and
     nothing lists the collection any more, as ``uv remove`` drops its source. An index pin stays: it also applies to what other
     collections depend on."""
-    data = tomllib.loads(text)
-    raw = raw_manifest(data, "alai.toml")
+    raw = raw_manifest(doc.data(), "alai.toml")
     source = raw.sources.get(name)
     if source is None or not {"path", "url", "git"} & set(source):
-        return text
+        return
     listed = [*raw.collections, *(r for items in raw.groups.values() for r in items)]
     if name in (_name_of(r) for r in listed):
-        return text
-    return _toml_edit.remove_key(text, ("project", "sources", name))
+        return
+    doc.remove_key(("project", "sources", name))
 
 
-def _read(settings: Settings, group: str | None) -> tuple[str, str]:
-    """The project's ``alai.toml`` path and text, as written: its newlines kept, so edits keep them too. In a
+def _read(settings: Settings, group: str | None) -> tuple[str, TomlDocument]:
+    """The project's ``alai.toml`` path and document, its newlines kept, so edits keep them too. In a
     collection project only a group can be edited, as the rest is in ``galaxy.yml``."""
     config = settings.project.config_file
     if settings.project.collection_file is not None and group is None:
@@ -388,11 +380,7 @@ def _read(settings: Settings, group: str | None) -> tuple[str, str]:
         raise ConfigError(
             f"there's no alai.toml in {home_path(settings.project.root)}: create one with a [project] table first"
         )
-    try:
-        with open(config, encoding="utf-8", newline="") as f:
-            return config, f.read()
-    except OSError as e:
-        raise ConfigError(f"can't read {config}: {e.strerror or e}") from None
+    return config, read_toml_document(config)
 
 
 def _write(config: str, text: str) -> None:
@@ -448,16 +436,16 @@ def _position(names: list[str], name: str) -> int:
     return len(names)
 
 
-def _not_there(text: str, name: str, group: str | None) -> str:
+def _not_there(doc: TomlDocument, name: str, group: str | None) -> str:
     where = "project.collections" if group is None else f"group '{group}'"
     message = f"{name} isn't in {where}"
     places: list[str] = []
-    if group is not None and name in [_name_of(v) for v in _toml_edit.values(text, ("project", "collections")) or []]:
+    if group is not None and name in [_name_of(v) for v in doc.values(("project", "collections")) or []]:
         places.append(f"project.collections (try: alai remove {name})")
-    for other in sorted(raw_manifest(tomllib.loads(text), "alai.toml").groups):
+    for other in sorted(raw_manifest(doc.data(), "alai.toml").groups):
         if other == group:
             continue
-        found = _toml_edit.values(text, ("project", "groups", other, "collections")) or []
+        found = doc.values(("project", "groups", other, "collections")) or []
         if name in [_name_of(v) for v in found]:
             places.append(f"group '{other}' (try: alai remove {name} --group {other})")
     return message + (f"; it's in {', '.join(places)}" if places else "")

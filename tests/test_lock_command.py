@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 
 import pytest
@@ -13,11 +12,7 @@ from index_data import make_index, v
 from alai import _output
 from alai._cli import EXIT_ERROR, main
 from alai._commands.lock import EXIT_STALE
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib
+from alai._native import toml_loads
 
 COLLECTIONS: dict[str, list[dict[str, object]]] = {
     "a.a": [v("1.0.0"), v("2.0.0", {"b.b": ">=1.0.0"})],
@@ -304,7 +299,7 @@ class TestCheck:
 
 def versions(project: Path) -> dict[str, str]:
     """What alai.lock locks, by name."""
-    table = tomllib.loads((project / "alai.lock").read_text())
+    table = toml_loads((project / "alai.lock").read_text())
     return {c["name"]: c["version"] for c in table["collection"]}
 
 

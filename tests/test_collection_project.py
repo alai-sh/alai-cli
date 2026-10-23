@@ -9,7 +9,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import sys
 from pathlib import Path
 
 import pytest
@@ -20,11 +19,7 @@ from alai._common import ConfigError
 from alai._config import Overrides, find_project, load_settings
 from alai._galaxy import read_source_collection
 from alai._lock import EditableSource, LockError, parse_lock, read_lock, render_lock
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib
+from alai._native import toml_loads
 
 
 def galaxy(
@@ -243,7 +238,7 @@ class TestSync:
         assert main(["lock", "-q"]) == 0
 
         text = (project / "alai.lock").read_text()
-        data = tomllib.loads(text)
+        data = toml_loads(text)
         assert data["project"] == {"requires_ansible": ">=2.15", "requirements": ["a.a>=1.0.0", "c.c"]}
         assert [c["name"] for c in data["collection"]] == ["a.a", "b.b", "c.c", "ns.col"]
         assert data["collection"][-1] == {
@@ -414,7 +409,7 @@ class TestSync:
 
         assert main(["add", "-q", "--group", "test", "d.d"]) == 0
 
-        assert (project / "alai.toml").read_text() == '[project.groups.test]\ncollections = ["d.d>=1.0.0"]\n'
+        assert (project / "alai.toml").read_text() == '[project.groups.test]\ncollections = [\n    "d.d>=1.0.0",\n]\n'
         lock = read_lock(str(project / "alai.lock"))
         assert lock is not None and lock.root is not None and lock.root.dependencies == ("c.c",)
         assert installed(tree(project)) == {"c.c": "dir", "d.d": "dir", "ns.col": f"-> {project}"}

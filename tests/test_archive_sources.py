@@ -10,7 +10,6 @@ import collections.abc as _c
 import json
 import os
 import shutil
-import sys
 from pathlib import Path
 
 import pytest
@@ -19,11 +18,7 @@ from index_server import IndexServer, serve
 
 from alai._cli import EXIT_ERROR, main
 from alai._lock import ArchiveSource, ArchiveUrlSource, read_lock, render_lock
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib
+from alai._native import toml_loads
 
 
 def tarball(
@@ -82,7 +77,7 @@ class TestPath:
 
         assert main(["lock", "-q"]) == 0
 
-        data = tomllib.loads((project / "alai.lock").read_text())
+        data = toml_loads((project / "alai.lock").read_text())
         assert data["sources"] == {"ns.src": {"path": "../dist/ns-src-1.0.0.tar.gz"}}
         entries = {c["name"]: c for c in data["collection"]}
         assert sorted(entries) == ["a.a", "b.b", "ns.src"]
@@ -199,7 +194,7 @@ class TestUrl:
         assert main(["sync"]) == 0
 
         assert lines(capsys.readouterr().err)[-2:] == [" + c.c==1.0.0", f" + ns.src==1.0.0 (from {url})"]
-        data = tomllib.loads((project / "alai.lock").read_text())
+        data = toml_loads((project / "alai.lock").read_text())
         entry = next(c for c in data["collection"] if c["name"] == "ns.src")
         assert entry["source"] == {"url": url} and entry["cksum"] == cksum and entry["size"] == size
         assert entry["requirements"] == ["c.c"]
@@ -311,7 +306,7 @@ class TestAddRemove:
         assert main(["add", "-q", "ns-src-1.0.0.tar.gz"]) == 0
 
         assert (project / "alai.toml").read_text() == (
-            '[project]\ncollections = ["c.c", "ns.src"]\n\n'
+            '[project]\ncollections = [\n    "c.c",\n    "ns.src",\n]\n\n'
             + '[project.sources]\n"ns.src" = { path = "dist/ns-src-1.0.0.tar.gz" }\n'
         )
         assert (installed_at(project) / "MANIFEST.json").exists()
@@ -344,7 +339,7 @@ class TestAddRemove:
         assert main(["add", "-q", url]) == 0
 
         assert (project / "alai.toml").read_text() == (
-            f'[project]\ncollections = ["ns.src"]\n\n[project.sources]\n"ns.src" = {{ url = "{url}" }}\n'
+            f'[project]\ncollections = [\n    "ns.src",\n]\n\n[project.sources]\n"ns.src" = {{ url = "{url}" }}\n'
         )
         # Downloaded once, for its name, and that copy locked and installed.
         assert downloads(server) == 1

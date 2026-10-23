@@ -176,14 +176,20 @@ name = "ansible.netcommon"
 - **Written deterministically**: collections sorted by name, dependencies
   sorted, one key per line in a fixed order, so a change shows up as a small
   diff. A comment at the top says it's generated.
-- **Written by our own emitter**, not a TOML library. The stdlib only reads
-  TOML, and tomli-w can't write `source` as an inline table or give control
-  over the layout; the schema is small and alai writes all of it. Tests read
-  every written lock back with `tomllib`. The layout being alai's own also
-  keeps the bytes stable: with a library such as tomlkit, its formatting
-  choices could change between its releases, and two people with different
-  versions would rewrite each other's locks with whitespace-only diffs. uv
-  and cargo write their lock formats themselves too.
+- **Written with `toml_edit`, in a layout alai fixes** (2026-10-23, decided
+  with the user; before, a small emitter in `_lock.py`). `render_lock` lays
+  the lock out as a mapping and `_native.toml_dumps` writes it by fixed
+  rules: `[table]`s and `[[collection]]`s after a blank line, `source` as
+  an inline table with its keys in a fixed order, `groups.<name>.requirements`
+  as dotted keys, and an array over 80 characters one item per line. Every
+  lock the emitter wrote comes out byte for byte the same; a string with a
+  `"` or `\` is written as a literal string (`'a"b'`) where the emitter
+  escaped it, which reads the same. Python's stdlib only reads TOML, and
+  tomli-w can't write `source` as an inline table or give control over the
+  layout. The layout being fixed by alai, not left to a library's
+  formatting choices, keeps the bytes stable: `toml_edit` is pinned in
+  `Cargo.lock` and built into each release, so two people with the same
+  alai write the same lock. uv also writes `uv.lock` with `toml_edit`.
 - **Each root's inputs are copied in**, so `alai sync` can tell the lock
   is out of date without resolving, and `lock --check` can tell the inputs
   changed even when the result didn't. They're
