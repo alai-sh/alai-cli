@@ -32,8 +32,9 @@ alai is useful to you, these may be too.
   come from: alai's default index is a mirror of it. alai installs a
   collection the way `ansible-galaxy` does, so the result is the same
   either way.
-- **[resolvelib](https://github.com/sarugaku/resolvelib)**, the dependency
-  resolver pip and `ansible-galaxy` use, chooses the versions.
+- **[PubGrub](https://github.com/pubgrub-rs/pubgrub)**, the version solving
+  algorithm uv and Cargo use, chooses the versions and explains why there's
+  no choice when there isn't.
 - **[PyYAML](https://pyyaml.org/)** reads a collection's `galaxy.yml` and
   `meta/runtime.yml`, with the same parser `ansible-core` uses.
 - **[distlib](https://github.com/pypa/distlib)** reads the `manifest`

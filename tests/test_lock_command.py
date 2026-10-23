@@ -387,8 +387,9 @@ class TestErrors:
         assert lock() == EXIT_ERROR
 
         assert (
-            capsys.readouterr().err
-            == "error: no version of a.a meets every requirement on it:\n  a.a>=3 (from the project)\n"
+            capsys.readouterr().err == "error: no solution found when resolving collections:\n"
+            "  Because only a.a==1.0.0 and a.a==2.0.0 are available and the project depends on a.a>=3.0.0, we can "
+            "conclude that the project's requirements are unsatisfiable.\n"
         )
         assert not (project / "alai.lock").exists()
 

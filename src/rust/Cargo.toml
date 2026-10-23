@@ -17,6 +17,8 @@ crate-type = ["cdylib"]
 flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 # The FICLONE ioctl and macOS's clonefile, which std has no wrapper for.
 libc = "0.2"
+# The version resolver (see design/resolver.md). 0.4 needs Rust 1.92, which sets the workspace's rust-version.
+pubgrub = "0.4"
 # The stable ABIs, so three wheels per platform cover every CPython from 3.10: built for 3.10 to 3.14, one abi3 wheel for
 # CPython 3.10 and later; for 3.15, one abi3.abi3t wheel (PEP 803) for 3.15 and later, free-threaded or not; and for
 # free-threaded 3.14, which has no stable ABI, a cp314t wheel of its own. extension-module, so as not to link libpython,
