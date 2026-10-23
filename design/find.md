@@ -340,17 +340,46 @@ into `ansible.builtin`, which the index lacked until it was synced.
 
 - **Fetched like any index file**, with an ETag and revalidated each run
   (`IndexClient.plugins()`), from the `plugins` path in `config.json`. An
-  index without one is skipped. `find` passes `prefetch=False`, as it has
-  no use for `collections.json` (724 KB).
+  index without one is skipped. `find` passes `prefetch="plugins"`, so the
+  plugin index is requested alongside `config.json`, not after it, and
+  `collections.json` (724 KB), which it has no use for, isn't fetched
+  ([index-client.md](index-client.md)).
 - **Searched as bytes.** The file is 16.5 MB (1.5 MB compressed, 101,796
-  lines on 2026-10-21); parsing every line costs ~570 ms cold. A search
-  finds the query's literal parts in the raw bytes with `bytes.find` and
-  parses only the lines that hold all of them; parts JSON may have
+  lines on 2026-10-21); parsing every line cost ~570 ms cold in Python,
+  and about 190 ms into `Plugin`s with the extension (17 MB, 106,077
+  lines, 2026-10-23). A search finds the query's literal parts in the raw
+  bytes and parses only the lines that hold all of them; parts JSON may have
   escaped (non-ASCII, `"`, `\`, `/`) aren't looked for, falling back to
   parsing more. Redirect targets are looked up a hop at a time with one
-  regex pass per hop (`Catalog.preload_routes`): one pass per target made
+  pass per hop (`Catalog.preload_routes`): one pass per target made
   `community.general.*` take 1.2 s. A search takes ~0.3 s, most of it the
   two revalidation requests.
+- **The scanning and parsing are the extension's** (2026-10-23):
+  `_native.plugin_lines` finds the lines holding every token with
+  `memchr`'s SIMD search, as `bytes.find` did, and reads them with
+  `serde_json`; `plugin_lines_named` replaces the redirect lookups' regex,
+  an alternation of every target's name, which Python's `re` was slow to
+  scan 17 MB with (0.87 s of `find a`); `plugin_names` the suggestions'.
+  Each returns the fields `Plugin` needs and the line itself, which
+  `Plugin.raw` parses only when asked, for JSON output. A line is skipped
+  as before, but for the stricter JSON in [index-client.md](index-client.md).
+  `assess` shares each `since` and `until` version parsed, as a broad search
+  read the same few hundred 151,452 times. `memchr` was already built, as
+  `serde_json` depends on it; using it directly was agreed with the user. On
+  the development machine, 2026-10-23, the 17 MB, 106,078-line file, five
+  runs each, offline and online (one revalidation round trip, about
+  0.08 s):
+
+  | `alai find --limit 10` | Before, offline | Now, offline | Now, online |
+  |---|---|---|---|
+  | `copy` | 0.13 s | 0.10–0.11 s | 0.18–0.30 s |
+  | `ansible.builtin.copy` | 0.15 s | 0.09 s | 0.17–0.25 s |
+  | `*_info` (12,983 matches) | 0.43–0.45 s | 0.15–0.16 s | 0.23–0.33 s |
+  | `a` (73,263 matches) | 1.89–1.94 s | 0.58–0.61 s | 0.65–0.75 s |
+  | `zzzqqq` (none, so suggestions) | 0.19–0.20 s | 0.14 s | 0.21–0.30 s |
+
+  What's left of `find a` is in Python: assessing and ranking 73k matches
+  (about 0.3 s), then the extension's parsing (about 0.12 s).
 - **What needs every line is cached per change to the file**: the probable
   copies, in `<cache_dir>/plugins-v1/<hash of the URL>.json`, keyed by the
   file's SHA-256 (~7 ms) and the `ansible` package list's releases. The

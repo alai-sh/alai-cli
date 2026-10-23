@@ -429,7 +429,8 @@ def _fetch(collections: list[LockedCollection], settings: Settings) -> _Sources:
                 url = source.url
                 if url not in clients:
                     index = configured.get(url) or Index(url, url, source=f"{settings.project.root}/alai.lock")
-                    clients[url] = IndexClient(index, fetcher, settings.cache_dir)
+                    # Only config.json, for the download URLs: not collections.json, which installing doesn't use.
+                    clients[url] = IndexClient(index, fetcher, settings.cache_dir, prefetch=None)
                 dl = artifact_url(clients[url].config(), collection.name, collection.version, cksum)
             else:
                 raise ValueError(f"{collection.name} doesn't come from an artifact")

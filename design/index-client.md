@@ -86,7 +86,13 @@ from a machine ~250 ms (TCP plus TLS) from Cloudflare.
   `max-age` isn't used to skip revalidation. The listing is requested
   alongside `config.json`, from the path the cached config gives, so the two
   cost one round trip; if the config has changed, the guess is one unused
-  request. Offline reads only the cache and fails on a miss; it'll be
+  request. With no config cached, a first run, the guess is
+  `<root>/collections.json`, where the spec's layout and `index.alai.sh`
+  keep it (2026-10-23): only `config.json`'s location is fixed, so an index
+  that keeps it elsewhere, or a `moved-to` one, costs one unused request
+  instead, and a `file://` index isn't guessed for, having no round trip to
+  save. On `index.alai.sh` the two had been about 65 ms apiece, one after
+  the other. Offline reads only the cache and fails on a miss; it'll be
   `--offline` and `ALAI_OFFLINE` once a command uses it.
 - **Index files are checked against the listing's `sha256`** (the spec's
   "Cached index files"). A cached file whose SHA-256, computed over its own
@@ -200,6 +206,25 @@ from a machine ~250 ms (TCP plus TLS) from Cloudflare.
   exceptions: `can't resolve the host name`, `can't connect: Connection
   refused`, `TLS error: …`, `timed out`, and `proxy error: …` with the proxy
   named.
+- **Index lines are read by the extension** (`_native.parse_index_lines`,
+  2026-10-23): the JSON, with `serde_json`, and each field's type, in the
+  order and with the words the Python reader used, so its messages are
+  unchanged. A line that got as far as `vers` comes back with it, and
+  Python parses the version before using the extension's verdict, as the
+  version was checked before the fields after it. The version, its
+  requirements and `requires_ansible` are still parsed in Python, so
+  SemVer and PEP 440 have one implementation each. Where it reads JSON
+  differently from `json.loads`, it's stricter, and only on what no index
+  writes: `NaN` and `Infinity`, a lone surrogate escape, an integer beyond
+  64 bits, nesting deeper than 128. Blank is still `bytes.strip`'s
+  whitespace, a byte order mark is still skipped, and a `v` of `1.0` is
+  still 1, as Python compared it by value. Measured on the 94 index files
+  `scratch/acd` (the ansible 15 package, nothing pinned) reads, 5,199 lines,
+  a first pass: 22 ms in Python, 14.7 ms now; a warm offline `alai lock` of
+  it went from 74 to 89 ms to 62 to 72 ms. What's left is mostly building
+  the Python objects. `collections.json` was tried too and left in Python:
+  one 724 KB document, which the C decoder in `json` reads as fast (5.4 ms
+  against 4.8 ms).
 - **Index lines are judged one by one.** A line that can't be read at all
   (bad JSON, a missing or wrongly typed required field, a `name` that isn't
   the file's, a `vers` that isn't SemVer, a duplicate version) is skipped,
@@ -212,9 +237,14 @@ from a machine ~250 ms (TCP plus TLS) from Cloudflare.
 
 - **The plugin index is fetched only by `alai find`** (2026-10-21), with
   `IndexClient.plugins()`, cached and revalidated like any index file.
-  `IndexClient(prefetch=False)` skips starting `collections.json` with
-  `config.json`, which `find` doesn't use. Searching it is in
-  [find.md](find.md).
+  `IndexClient(prefetch="plugins")` starts the plugin index with
+  `config.json` instead of `collections.json`, which `find` doesn't use,
+  guessed the same way (`<root>/plugins.jsonl` on a first run), so its two
+  requests cost one round trip (2026-10-23; they'd been one after the
+  other). Searching it is in [find.md](find.md). `sync`'s downloads pass
+  `prefetch=None`, as they read only `config.json`, for the artifact URLs
+  (2026-10-23): with the default, each sync that downloaded also fetched a
+  `collections.json` it never read, on a connection of its own.
 
 ## What `index.alai.sh` does today
 

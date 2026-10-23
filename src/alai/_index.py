@@ -19,6 +19,7 @@ import threading
 import typing as _t
 import urllib.parse
 
+from . import _native
 from ._common import Error, Record
 from ._config import Index
 from ._fetch import Fetcher
@@ -27,16 +28,19 @@ from ._output import debug, trace, warn
 from ._pep440 import SpecifierSet
 from ._semver import Version, VersionReq
 
+if _t.TYPE_CHECKING:
+    from ._native import _IndexFields
+
 FORMAT = 1
 """The highest ``config.json`` format this alai reads."""
-LINE_VERSION = 1
-"""The highest index line ``v`` this alai reads."""
 COLLECTIONS_VERSION = 1
 """The ``collections.json`` ``v`` this alai reads."""
 
 _MAX_MOVES = 5
+_Prefetch = _t.Literal["collections", "plugins"]
+_USUAL_PATHS: dict[_Prefetch, str] = {"collections": "collections.json", "plugins": "plugins.jsonl"}
+"""Where the spec's layout, and ``index.alai.sh``, keep the listing and the plugin index, relative to the root."""
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
-_T = _t.TypeVar("_T")
 _DL_PLACEHOLDERS = ("{sha256-checksum}", "{sha256-prefix}", "{namespace}", "{name}", "{version}")
 
 
@@ -159,15 +163,23 @@ class IndexClient:
     The cache for an index lives under ``<cache_dir>/index/<host>-<hash>/``, keyed by its root URL rather than its
     name, so renaming an index in ``alai.toml`` doesn't lose the cache and two names for one URL share it.
 
-    ``collections.json`` is fetched alongside ``config.json``, from where the cached config says it is, and gives
-    each index file's SHA-256: a cached file that matches is used without a request (the spec's "Cached index
+    ``collections.json`` is fetched alongside ``config.json``, from where the cached config says it is (or, with
+    none cached, where the spec's layout puts it), and gives each index file's SHA-256: a cached file that matches is used without a request (the spec's "Cached index
     files"), so a run where nothing changed costs those two requests.
     """
 
-    def __init__(self, index: Index, fetcher: Fetcher, cache_dir: str, *, prefetch: bool = True) -> None:
+    def __init__(
+        self,
+        index: Index,
+        fetcher: Fetcher,
+        cache_dir: str,
+        *,
+        prefetch: _Prefetch | None = "collections",
+    ) -> None:
         self.index = index
-        self._prefetch = prefetch
-        """Whether to start fetching ``collections.json`` with ``config.json``: not for a command that won't use it."""
+        self._prefetch: _Prefetch | None = prefetch
+        """Which file to start fetching with ``config.json``, ``collections.json`` or the plugin index, so the two cost
+        one round trip: the one the command reads first, or None."""
         self._fetcher = fetcher
         self._cache_dir = cache_dir
         self._lock = threading.Lock()
@@ -179,8 +191,8 @@ class IndexClient:
         """The index's ``config.json``, following ``moved-to`` to where the index is now."""
         with self._lock:
             if self._config is None:
-                if self._prefetch:
-                    self._prefetch_collections()
+                if self._prefetch is not None:
+                    self._prefetch_file(self._prefetch)
                 self._config = self._load_config()
             return self._config
 
@@ -253,20 +265,26 @@ class IndexClient:
         data = self._fetcher.cached(cache_path)
         return data if data is not None and _sha256(data) == listed.sha256 else None
 
-    def _prefetch_collections(self) -> None:
-        """Start fetching ``collections.json`` from where the cached ``config.json`` says it is, so it arrives with
-        ``config.json`` rather than after it. If the config has changed, the guess is just an unused request."""
+    def _prefetch_file(self, which: _Prefetch) -> None:
+        """Start fetching ``which`` from where the cached ``config.json`` says it is, so it arrives with ``config.json``
+        rather than after it; with no cached config, from where the spec's layout puts it, as ``index.alai.sh`` does. If
+        the config says otherwise, the guess is just an unused request."""
         root = self.index.url
         url = urllib.parse.urljoin(root, "config.json")
         data = self._fetcher.cached(self._cache_path(root, url))
         if data is None:
-            return
-        try:
-            guess, moved_to = parse_config(data, root, url)
-        except IndexDataError:
-            return
-        if moved_to is None:
-            _ = self._fetcher.fetch(guess.collections_url, self._cache_path(root, guess.collections_url))
+            # A file index costs no round trip to save.
+            guess = None if root.startswith("file:") else urllib.parse.urljoin(root, _USUAL_PATHS[which])
+        else:
+            try:
+                config, moved_to = parse_config(data, root, url)
+            except IndexDataError:
+                return
+            if moved_to is not None:
+                return
+            guess = config.collections_url if which == "collections" else config.plugins_url
+        if guess is not None:
+            _ = self._fetcher.fetch(guess, self._cache_path(root, guess))
 
     def _load_config(self) -> IndexConfig:
         root = self.index.url
@@ -375,36 +393,28 @@ def parse_collections(data: bytes, url: str) -> dict[str, Listed]:
 
 
 def parse_index_file(data: bytes, name: str, url: str) -> IndexFile:
-    """Read collection ``name``'s index file: one JSON object per line, blank lines ignored."""
+    """Read collection ``name``'s index file: one JSON object per line, blank lines ignored. The extension reads each
+    line and checks its fields' types (``_native.parse_index_lines``); the version, its requirements and
+    ``requires_ansible`` are parsed here."""
     versions: list[CollectionVersion] = []
     invalid: list[str] = []
-    newer = 0
     seen: set[str] = set()
-    for number, line in enumerate(data.split(b"\n"), start=1):
-        if not line.strip():
-            continue
+    entries, newer = _native.parse_index_lines(data, name)
+    for number, vers, read in entries:
         try:
-            obj = json.loads(line)
-        except ValueError:
-            invalid.append(f"{url}:{number}: not valid JSON")
-            continue
-        if not isinstance(obj, dict):
-            invalid.append(f"{url}:{number}: not a JSON object")
-            continue
-        v = obj.get("v")  # pyright: ignore[reportUnknownVariableType]
-        if isinstance(v, int) and not isinstance(v, bool) and v > LINE_VERSION:
-            newer += 1
-            continue
-        try:
-            version = _parse_line(obj, name)
+            # The version first, as it was checked before the fields after it, so its message wins.
+            version = None if vers is None else Version(vers)
+            if version is None or isinstance(read, str):
+                raise ValueError(read)
+            line = _version_from(name, version, read)
         except ValueError as e:
             invalid.append(f"{url}:{number}: {e}")
             continue
-        if version.version.text in seen:
-            invalid.append(f"{url}:{number}: version {version.version} is listed more than once")
+        if version.text in seen:
+            invalid.append(f"{url}:{number}: version {version} is listed more than once")
             continue
-        seen.add(version.version.text)
-        versions.append(version)
+        seen.add(version.text)
+        versions.append(line)
     return IndexFile(name, tuple(versions), newer=newer, invalid=tuple(invalid))
 
 
@@ -421,52 +431,21 @@ def artifact_url(config: IndexConfig, name: str, version: Version, cksum: str) -
     )
 
 
-def _parse_line(obj: dict[str, object], name: str) -> CollectionVersion:
-    """One index line as a version, raising ValueError if it can't be read at all."""
-    if obj.get("v") != LINE_VERSION or isinstance(obj.get("v"), bool):
-        raise ValueError(f"'v' must be {LINE_VERSION}")
-    if obj.get("name") != name:
-        raise ValueError(f"'name' must be '{name}', the file's collection")
-    vers = _field(obj, "vers", str)
-    try:
-        version = Version(vers)
-    except ValueError as e:
-        raise ValueError(str(e)) from None
-    cksum = _field(obj, "cksum", str)
-    if not _SHA256_RE.fullmatch(cksum):
-        raise ValueError(f"{vers}: 'cksum' must be a lowercase hex sha256")
-    size = _field(obj, "size", int)
-    if size < 0:
-        raise ValueError(f"{vers}: 'size' must not be negative")
-    yanked = _field(obj, "yanked", bool)
-    origin = _field(obj, "origin", str)
-    published = _field(obj, "published", str)
-    raw_deps = _t.cast("list[object]", _field(obj, "deps", list))
-    deprecated = obj.get("deprecated", False)
-    if not isinstance(deprecated, (bool, str)):
-        raise ValueError(f"{vers}: 'deprecated' must be true or a message")
-    upstream_conflict = obj.get("upstream_conflict", False)
-    if not isinstance(upstream_conflict, bool):
-        raise ValueError(f"{vers}: 'upstream_conflict' must be a boolean")
-
-    # What follows makes the version unusable rather than unreadable: the line is fine, its metadata isn't.
+def _version_from(name: str, version: Version, fields: _IndexFields) -> CollectionVersion:
+    """A line the extension has read as a version: what follows makes it unusable rather than unreadable, as the line
+    is fine and its metadata isn't."""
+    cksum, size, yanked, origin, published, deprecated, upstream_conflict, raw_deps, text = fields
     problems: list[str] = []
     deps: list[tuple[str, VersionReq]] = []
-    for dep in raw_deps:
-        dep_name = dep.get("name") if isinstance(dep, dict) else None  # pyright: ignore[reportUnknownVariableType]
-        req = dep.get("req") if isinstance(dep, dict) else None  # pyright: ignore[reportUnknownVariableType]
-        if not isinstance(dep_name, str) or not isinstance(req, str):
-            raise ValueError(f"{vers}: each of 'deps' must have a 'name' and a 'req' string")
-        try:
-            deps.append((_collection_name(dep_name), _requirement(req)))
-        except ValueError as e:
-            problems.append(f"dependency {dep_name}: {e}")
+    for dep_name, req in raw_deps:
+        dep = _dependency(dep_name, req)
+        if isinstance(dep, str):
+            problems.append(f"dependency {dep_name}: {dep}")
+        else:
+            deps.append(dep)
 
     requires_ansible = None
-    text = obj.get("requires_ansible")
     if text is not None:
-        if not isinstance(text, str):
-            raise ValueError(f"{vers}: 'requires_ansible' must be a string")
         try:
             requires_ansible = _specifier_set(text)
         except ValueError as e:
@@ -496,6 +475,14 @@ _SPECIFIER_SETS: dict[str, SpecifierSet] = {}
 _NAMES: set[str] = set()
 
 
+def _dependency(name: str, req: str) -> tuple[str, VersionReq] | str:
+    """A dependency as ``(name, requirement)``, or why it can't be read."""
+    try:
+        return _collection_name(name), _requirement(req)
+    except ValueError as e:
+        return str(e)
+
+
 def _requirement(text: str) -> VersionReq:
     req = _REQUIREMENTS.get(text)
     if req is None:
@@ -514,17 +501,6 @@ def _collection_name(text: str) -> str:
     if text not in _NAMES:
         _NAMES.add(collection_name(text))
     return text
-
-
-def _field(obj: dict[str, object], key: str, kind: type[_T]) -> _T:
-    value = obj.get(key)
-    # bool is an int, so a size of true isn't accepted as 1.
-    if not isinstance(value, kind) or (kind is int and isinstance(value, bool)):
-        raise ValueError(f"'{key}' is required and must be {_KIND_NAMES[kind]}")
-    return value
-
-
-_KIND_NAMES: dict[type, str] = {str: "a string", int: "an integer", bool: "a boolean", list: "an array"}
 
 
 def _sha256(data: bytes) -> str:

@@ -208,7 +208,8 @@ What it suggests, in order of what it's worth here:
 4. Thread counts: one per CPU is too many on this disk; measure on
    others. Done: four at most, below.
 5. One `SSLContext` for every connection, in Python; then index parsing
-   in the extension.
+   in the extension. Parsing done, and the `SSLContext` left, on
+   2026-10-23 ([below](#a-cold-sync-profiled-again)).
 6. A parsed index cache, deferred until the tar work is done (decided
    with the user, 2026-10-22). Index files, and `collections.json`, kept
    parsed under the SHA-256 `collections.json` lists for each, so an entry
@@ -219,7 +220,9 @@ What it suggests, in order of what it's worth here:
    loaded and rebuilt in 12.9 ms against 38 ms to parse, about a quarter of
    a warm resolve (about 100 ms). Lazy parsing (about 16 ms at best, and
    bad lines found late) and cheaper field checks (about 5 ms) weren't
-   worth it.
+   worth it. Since the extension reads index lines (2026-10-23), the 94
+   files of `scratch/acd` parse in 14.7 ms, so a cache would save less than
+   it did.
 
 ### Done: the tree linker and separate download pool
 
@@ -327,6 +330,122 @@ cold unless it says warm:
   **Changed** (with the user, 2026-10-22): the read timeout is now 30 s,
   as uv's, so a stall that would have cost 186 s costs about 96 s; the
   connect timeout stays 15 s.
+
+## A cold sync, profiled again
+
+`scratch/acd` from nothing, 2026-10-23: every collection in the ansible 15
+package, nothing pinned, 92 collections and 43,938 files once extracted,
+on the development machine (XFS `/home`, 94% full by then), sampled on
+every thread with Python 3.15's `profiling.sampling` (wall, CPU and
+GIL modes), with `cProfile`, `strace -c` and timers around each
+download, extraction and install. The scripts are in the session's
+scratchpad, not the repository.
+
+| Phase | Time | Bound by |
+|---|---|---|
+| Resolve, no lock | 1.0–1.3 s, 9–13.6 s on bad runs | `index.alai.sh`: 96 requests, already prefetched in parallel; the slow runs were the host taking up to 8 s for one file |
+| Resolve, warm | 75–89 ms | Parsing index lines; PubGrub is 4 ms |
+| Prepare, with the lock | 2.0–3.0 s | Downloads: extraction, four at once, ends within 0.1 s of the last |
+| Install (clone) | 2.4–4.4 s | XFS, not alai's code |
+| Nothing to change | 0.04–0.05 s | |
+
+- **Python is about 0.2 s of a cold sync**: in GIL mode, about 1,060
+  samples at 5 kHz in an 11 s run, which is HTTP, JSON and imports. The
+  rest of the CPU is the extension's extraction and linking, so moving
+  more Python to Rust can save tenths of a second at most.
+- **Cloning on XFS waits for what was just written.** A clone flushes its
+  source's dirty pages first, so installing straight after extracting
+  writes the cache out a file at a time. With `cp`, all 92: cloning them
+  just extracted took 4.1–7.2 s, against one `sync` (0.43–0.62 s) and then
+  cloning clean files (1.3–1.4 s). The linker itself is as fast as
+  `cp --reflink=always` (0.34–0.42 s against 0.37 s for the six largest
+  collections from a clean cache, with the same system calls).
+- **Install threads, here**, linking all 92 from a clean cache with
+  `link_tree`: clone 1.0–1.3 s on one thread, 0.86–0.90 s on two,
+  1.9–2.3 s on three, 2.4 s on four and 3.4–3.6 s on six; hardlinks
+  0.45 s on one and 0.62–0.86 s on four. The note above found three best
+  on this machine, so it moves with the machine's state.
+- **Tried and rejected: flushing before installing, and two threads.** On
+  this machine, a cold sync with the lock, three runs each: 5.4–7.1 s as
+  it is, 5.3–5.5 s flushing first, and 3.8–4.0 s flushing first with two
+  threads; for the six largest collections 3.4–3.6 s, 2.7–2.8 s and
+  1.9–2.2 s. On the user's 16-thread btrfs machine (`cold_sync.py`, five
+  runs each, medians) both made it slower:
+
+  | | Prepare | Install | Total |
+  |---|---|---|---|
+  | As it is (four threads) | 3.41 s | 1.18 s | 4.76 s |
+  | Flushing first | 3.47 s | 1.51 s | 5.03 s |
+  | Two threads | 3.36 s | 1.39 s | 4.86 s |
+  | Flushing first, two threads | 3.30 s | 1.84 s | 5.31 s |
+
+  btrfs evidently doesn't wait for each file's writeback when it clones,
+  as XFS does, so a flush only brings into the run the writing the kernel
+  would otherwise do after it. Kept as it is (decided with the user,
+  2026-10-23): the gain is one VM's, short of memory and on a nearly full
+  virtual disk, which isn't enough to justify filesystem-specific code.
+- **Left: skipping each cloned or copied file's `fchmod`** when the umask
+  doesn't mask its mode (43,938 calls, about a tenth of the install's
+  system calls; decided with the user, 2026-10-23). `link_tree` sets each
+  mode exactly, with no umask to pass, for simplicity since the review in
+  [the native extension](#the-native-extension), and a default ACL on the
+  collections directory would mask a new file's mode instead.
+- **Left: truststore loading the CA store for every connection.** Its
+  Linux backend calls `set_default_verify_paths` in each `wrap_socket`,
+  under the context's lock: 3.3 ms each, about 52 ms of CPU for 16
+  connections, mostly while waiting on the network. Avoiding it means
+  leaving truststore on Linux and copying how it finds a CA bundle when
+  OpenSSL's defaults point nowhere, as in uv's standalone Pythons.
+- **Done: one round trip for `config.json` and what's read next.** On a
+  first run the listing is now guessed at `<root>/collections.json` and
+  requested with `config.json`, and `alai find` requests the plugin index
+  with it rather than after it ([index-client.md](index-client.md#decisions)):
+  about 65 ms each on `index.alai.sh`. Connections are pooled, up to 16 per
+  host: a cold sync of `scratch/acd` made 98 requests to `index.alai.sh` on
+  18 TLS connections and 92 downloads on 16. Two of the 18 were the
+  downloads' own client, which needs only `config.json` but also started
+  `collections.json`; it no longer does (97 on 17). Reusing the resolve's
+  fetcher for the downloads would save the other, and a round trip, only
+  when a run both resolves and downloads; not done (decided with the user,
+  2026-10-23).
+- **Connections per host, swept** (`MAX_CONNECTIONS`, 16 since the client
+  was written, chosen while comparing libraries, not measured as a count).
+  On this machine, three rounds, each count in turn:
+
+  | Connections | Resolve, cold `alai lock` | Prepare, cold sync with the lock |
+  |---|---|---|
+  | 4 | 1.02–1.09 s (one 10.4 s) | 2.06–2.38 s |
+  | 8 | 0.81–0.90 s | 2.14–2.41 s |
+  | 16 | 0.92–0.94 s (one 2.81 s) | 2.35–2.59 s |
+  | 32 | 1.34–2.90 s | 2.89–2.96 s |
+
+  On the user's 16-thread btrfs machine, six runs of each (prepare's range
+  and median; resolve's fastest, and how many runs the index host stalled
+  past 2 s):
+
+  | Connections | Resolve, fastest | Stalled | Prepare | Median |
+  |---|---|---|---|---|
+  | 4 | 0.76 s | 3 of 6 | 3.03–3.22 s | 3.11 s |
+  | 8 | 0.69 s | 2 of 6 | 3.16–3.40 s | 3.29 s |
+  | 16 | 0.66 s | 1 of 6 | 3.20–3.49 s | 3.38 s |
+  | 32 | 0.95 s | 1 of 6 | 3.75–3.93 s | 3.86 s |
+
+  On both, 32 is worse at everything and fewer download faster, likely as
+  more downloads only wait on the four extracting and the disk; 16 is as
+  good as any for the index, and on the user's machine the least hurt by a
+  stalling host, perhaps as the other requests keep moving past a slow
+  file. **Kept at 16** (decided with the user, 2026-10-23): a separate,
+  smaller download pool, 8, would save 0.1 to 0.3 s of a 4.8 s cold sync,
+  and fewer connections could cost a link with more latency than either
+  machine's, which wants more in flight.
+- **Done: index lines and the plugin index read by the extension**, with
+  `serde_json`, and `memchr` to search the plugin index. A warm resolve of
+  `scratch/acd` went from 74–89 ms to 62–72 ms (its parsing from 22 ms to
+  14.7 ms; the "60 ms" `cProfile` gave was mostly the profiler's), and
+  `alai find` from 0.13 to 0.10 s for a narrow search and from 1.9 to
+  0.6 s for the broadest. The details are in
+  [index-client.md](index-client.md#decisions) and
+  [find.md](find.md#reading-the-file).
 
 ## The native extension
 
@@ -446,9 +565,11 @@ fallback (see [Shipping](#shipping)).
   reads every member of a multi-member stream, and `sha2`, which uses the
   CPU's SHA-256 instructions, and `serde_json` for `MANIFEST.json` and
   `FILES.json`: 0.91 ms for the largest `FILES.json` (a10.acos_axapi,
-  850 KB) into typed structs, against Python's `json.loads` at 2.5 ms;
-  other JSON alai parses, the index lines and `plugins.jsonl`, stays in
-  Python for now. It reads gzip only, as every build is gzipped. The crate needs Rust 1.92, the highest of the dependencies'
+  850 KB) into typed structs, against Python's `json.loads` at 2.5 ms,
+  and since 2026-10-23 for index lines and the plugin index, which it
+  searches with `memchr` (already built, as `serde_json` depends on it);
+  `config.json`, `collections.json` and alai's own caches stay in Python,
+  whose `json` reads one large document as fast. It reads gzip only, as every build is gzipped. The crate needs Rust 1.92, the highest of the dependencies'
   own minimums (`pubgrub` 0.4 1.92, `sha2` 0.11 1.88, `pyo3` 0.30 1.85).
 - **In development** maturin is alai's build backend, so `uv sync` builds
   the extension into `src/alai/` (an editable install) and every tox

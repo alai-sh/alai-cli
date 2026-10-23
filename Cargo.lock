@@ -8,6 +8,7 @@ version = "0.0.1"
 dependencies = [
  "flate2",
  "libc",
+ "memchr",
  "pubgrub",
  "pyo3",
  "serde_json",

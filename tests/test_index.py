@@ -248,6 +248,53 @@ class TestIndexFile:
             assert match in parsed.invalid[0]
             assert parsed.invalid[0].startswith("u:2: ")
 
+    def test_version_checked_first(self) -> None:
+        # The version was checked before the fields after it, so its message wins when both are wrong.
+        parsed = parse_index_file(index_file(line(vers="1.0", cksum="ABC", size=-1)), "ns.coll", "u")
+
+        [invalid] = parsed.invalid
+        assert invalid.startswith("u:1: invalid version '1.0'")
+
+    @pytest.mark.parametrize(
+        ("text", "accepted"),
+        [
+            ('{"v": 1.0', True),  # equal to 1, as Python compared it
+            ('{"v": 2.0', False),  # not an integer, so not a newer line: unreadable
+            ('{"v": -1', False),
+        ],
+    )
+    def test_v_by_value(self, text: str, accepted: bool) -> None:
+        bad = json.dumps(line(v=None)).replace("{", f"{text}, ", 1)
+
+        parsed = parse_index_file(index_file(bad), "ns.coll", "u")
+
+        assert (len(parsed.versions), parsed.newer) == ((1, 0) if accepted else (0, 0))
+        assert parsed.invalid == (() if accepted else ("u:1: 'v' must be 1",))
+
+    def test_whitespace_and_byte_order_mark(self) -> None:
+        # bytes.strip's whitespace, \x0b and \x0c included, makes a line blank, and json.loads skips a BOM.
+        data = b"\x0b\x0c \t\r\n\xef\xbb\xbf" + json.dumps(line()).encode() + b"\r\n"
+
+        parsed = parse_index_file(data, "ns.coll", "u")
+
+        assert [v.version.text for v in parsed.versions] == ["1.0.0"]
+        assert parsed.invalid == ()
+
+    def test_null_optional_fields(self) -> None:
+        # null is no requires_ansible, but neither a deprecated flag nor a message.
+        parsed = parse_index_file(
+            index_file(
+                json.dumps(line()).replace("{", '{"requires_ansible": null, ', 1),
+                line(vers="2.0.0") | {"deprecated": None},
+            ),
+            "ns.coll",
+            "u",
+        )
+
+        assert [v.version.text for v in parsed.versions] == ["1.0.0"]
+        assert parsed.versions[0].requires_ansible is None
+        assert parsed.invalid == ("u:2: 2.0.0: 'deprecated' must be true or a message",)
+
     def test_duplicate_version(self) -> None:
         parsed = parse_index_file(index_file(line(), line(cksum="b" * 64)), "ns.coll", "u")
 
@@ -383,13 +430,43 @@ class TestIndexClient:
             "/index/community/library_inventory_filtering_v1.jsonl",
         ]
 
+    def test_first_run_guesses_listing(self, server: IndexServer, fetcher: Fetcher, tmp_path: Path) -> None:
+        index = client(server.url, fetcher, tmp_path / "cache")
+
+        _ = index.config()
+        # Started with config.json, from where the spec's layout puts it, before the config said where it is.
+        _ = fetcher.fetch(f"{server.url}collections.json", None).result()
+
+        assert sorted(server.paths()) == ["/collections.json", "/config.json"]
+
+    def test_first_run_guess_elsewhere(self, server: IndexServer, site: Path, fetcher: Fetcher, tmp_path: Path) -> None:
+        (site / "listing").mkdir()
+        _ = (site / "collections.json").rename(site / "listing" / "collections.json")
+        _ = (site / "config.json").write_bytes(
+            config(formats={"1": {"index": "index/", "collections": "listing/collections.json"}})
+        )
+        index = client(server.url, fetcher, tmp_path / "cache")
+
+        assert index.has("community.general")
+        _ = fetcher.fetch(f"{server.url}collections.json", None).result()
+        # The guess was one unused request.
+        assert sorted(server.paths()) == ["/collections.json", "/config.json", "/listing/collections.json"]
+
+    def test_no_prefetch(self, server: IndexServer, fetcher: Fetcher, tmp_path: Path) -> None:
+        # As sync's downloads read it: config.json alone, for the artifact URLs.
+        for _ in range(2):  # with nothing cached, then with the config cached
+            index = IndexClient(Index("test", server.url, source="t"), fetcher, str(tmp_path / "cache"), prefetch=None)
+            _ = index.config()
+
+        assert server.paths() == ["/config.json"]
+
     def test_plugins(self, server: IndexServer, fetcher: Fetcher, tmp_path: Path) -> None:
-        index = IndexClient(Index("test", server.url, source="t"), fetcher, str(tmp_path / "cache"), prefetch=False)
+        index = IndexClient(Index("test", server.url, source="t"), fetcher, str(tmp_path / "cache"), prefetch="plugins")
 
         data = index.plugins()
 
         assert data == (EXAMPLE / "plugins.jsonl").read_bytes()
-        # Without prefetch, collections.json, which finding plugins doesn't use, isn't fetched.
+        # collections.json, which finding plugins doesn't use, isn't fetched.
         assert sorted(server.paths()) == ["/config.json", "/plugins.jsonl"]
 
     def test_no_plugins(self, server: IndexServer, site: Path, fetcher: Fetcher, tmp_path: Path) -> None:
@@ -436,7 +513,10 @@ class TestMovedTo:
 
         assert index.config().root == server.url
         assert index.versions("community.general") is not None
-        assert server.paths() == [
+        # With nothing cached, the listing was guessed to be beside the old config, where it isn't.
+        paths = server.paths()
+        assert "/old/collections.json" in paths
+        assert [p for p in paths if p != "/old/collections.json"] == [
             "/old/config.json",
             "/config.json",
             "/collections.json",
@@ -475,6 +555,9 @@ class TestMovedTo:
 
             def get(self, url: str, cache_path: str | None) -> bytes:
                 return config(**{"moved-to": "http://index.example/"})
+
+            def fetch(self, url: str, cache_path: str | None) -> None:
+                return None
 
         index = IndexClient(Index("test", ROOT), Stub(), str(tmp_path))  # pyright: ignore[reportArgumentType]
 

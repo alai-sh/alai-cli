@@ -66,10 +66,23 @@ class TestParseLine:
             b'{"v": true, "type": "module", "name": "a", "collection": "a.a"}',
             b'{"v": 1, "name": "a", "collection": "a.a"}',
             b'{"v": 1, "type": "module", "name": "a", "collection": "a"}',
+            b'{"v": 1.0, "type": "module", "name": "a", "collection": "a.a"}',
+            b'{"v": 1, "type": "module", "name": 1, "collection": "a.a"}',
         ],
     )
     def test_skipped(self, line: bytes) -> None:
         assert parse_line(line) is None
+
+    def test_older_v_read(self) -> None:
+        assert parse_line(b'{"v": 0, "type": "module", "name": "a", "collection": "a.a"}') is not None
+
+    def test_fields_not_strings(self) -> None:
+        parsed = parse_line(
+            b'{"v": 1, "type": "module", "name": "a", "collection": "a.a", "since": 1, "short_description": null}'
+        )
+
+        assert parsed is not None
+        assert (parsed.since, parsed.short_description) == (None, None)
 
     def test_unknown_fields_kept(self) -> None:
         parsed = parse_line(b'{"v": 1, "type": "new_type", "name": "a", "collection": "a.a", "extra": 1}')
@@ -83,6 +96,36 @@ class TestParseLine:
 
         assert parsed is not None
         assert parsed.routing == {}
+
+
+class TestPluginIndex:
+    def test_every_token_once(self) -> None:
+        index = PluginIndex("test", data(plugin("a.a.user_user"), plugin("a.a.user"), plugin("b.b.other")))
+
+        found = index.with_tokens([b"user_user", b"a.a"])
+
+        assert [p.fqcn for p in found] == ["a.a.user_user"]
+        assert [p.fqcn for p in index.with_tokens([b"user"])] == ["a.a.user_user", "a.a.user"]
+
+    def test_named(self) -> None:
+        lines = data(plugin("a.a.user"), plugin("a.a.ping"), plugin("b.b.users"))
+        spaced = b'{"v": 1, "type": "module", "name" :\t"user", "collection": "c.c"}\n'
+        index = PluginIndex("test", lines + spaced)
+
+        assert [p.fqcn for p in index.named({"user", "nope"})] == ["a.a.user", "c.c.user"]
+        assert index.named(set()) == []
+
+    def test_names(self) -> None:
+        escaped = b'{"v": 1, "type": "module", "name": "a\\"b", "collection": "c.c"}\n'
+        index = PluginIndex("test", data(plugin("a.a.user"), plugin("b.b.ping")) + escaped + b"not json\n")
+
+        assert index.names() == {"user", "ping"}
+
+    def test_raw_read_when_asked(self) -> None:
+        [found] = PluginIndex("test", data(plugin("a.a.user") | {"extra": [1, 2]})).with_tokens()
+
+        assert found.line.startswith(b"{")
+        assert found.raw["extra"] == [1, 2]
 
 
 class TestQuery:
