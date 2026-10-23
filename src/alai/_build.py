@@ -25,7 +25,7 @@ import shutil
 import stat
 import typing as _t
 
-from ._common import Error
+from ._common import Error, as_list, as_table, inside, json_object, sha256_file
 from ._semver import Version
 
 _FORMAT = 1
@@ -95,12 +95,10 @@ def build(source: str, dest: str, name: str, version: Version, *, umask: int, so
         )
     files = _files(source, info, galaxy_file)
     files.sort(key=lambda entry: str(entry["name"]))
-    manifest = _manifest(info)
 
     os.mkdir(dest, 0o755 & ~umask)
     files_json = json.dumps({"files": files, "format": _FORMAT}, indent=True, sort_keys=True).encode()
-    file_manifest = _t_dict(manifest["file_manifest_file"])
-    file_manifest["chksum_sha256"] = hashlib.sha256(files_json).hexdigest()
+    manifest = _manifest(info, hashlib.sha256(files_json).hexdigest())
     for file_name, data in (("MANIFEST.json", json.dumps(manifest, indent=True).encode()), ("FILES.json", files_json)):
         path = os.path.join(dest, file_name)
         with open(path, "xb") as f:
@@ -124,23 +122,22 @@ def copy_built(source: str, dest: str, name: str, version: Version, *, umask: in
     files_bytes = _read(files_file)
     manifest, files = _json_object(manifest_bytes, manifest_file), _json_object(files_bytes, files_file)
 
-    info = _t_dict(manifest.get("collection_info")) if isinstance(manifest.get("collection_info"), dict) else {}
+    info = as_table(manifest.get("collection_info")) or {}
     found = f"{info.get('namespace')}.{info.get('name')}"
     if found != name or info.get("version") != version.text:
         raise BuildError(
             f"{manifest_file} is for {found} {info.get('version')} now, not {name} {version} as locked; run alai lock"
         )
-    recorded = manifest.get("file_manifest_file")
-    expected = _t_dict(recorded).get("chksum_sha256") if isinstance(recorded, dict) else None
+    expected = (as_table(manifest.get("file_manifest_file")) or {}).get("chksum_sha256")
     if isinstance(expected, str) and hashlib.sha256(files_bytes).hexdigest() != expected:
         raise BuildError(f"{files_file} doesn't match the checksum {manifest_file} gives it")
 
-    listed = files.get("files")
-    if not isinstance(listed, list):
+    listed = as_list(files.get("files"))
+    if listed is None:
         raise BuildError(f"{files_file} has no 'files' list")
     entries: list[tuple[str, str, str | None]] = []
-    for item in _t_list(listed):
-        fields = _t_dict(item) if isinstance(item, dict) else {}
+    for item in listed:
+        fields = as_table(item) or {}
         entry, ftype, sha256 = fields.get("name"), fields.get("ftype"), fields.get("chksum_sha256")
         if (
             not isinstance(entry, str)
@@ -182,7 +179,7 @@ def _copy(source: str, dest: str, entries: _c.Iterable[tuple[str, str, str | Non
             target = os.path.realpath(src)
             if not os.path.exists(target):
                 raise BuildError(f"{src} is a symlink to {target}, which doesn't exist")
-            if _inside(target, real_source):
+            if inside(target, real_source):
                 os.symlink(os.path.relpath(target, os.path.dirname(os.path.join(real_source, relative))), dst)
                 if sha256 is not None and _sha256(src) != sha256:
                     raise BuildError(f"{src} doesn't match its checksum in FILES.json")
@@ -207,12 +204,9 @@ def _read(path: str) -> bytes:
 
 def _json_object(data: bytes, path: str) -> dict[str, object]:
     try:
-        value: object = json.loads(data)
+        return json_object(data)
     except ValueError as e:
-        raise BuildError(f"{path} isn't valid JSON: {e}") from None
-    if not isinstance(value, dict):
-        raise BuildError(f"{path} isn't a JSON object")
-    return _t_dict(value)
+        raise BuildError(f"{path}: {e}") from None
 
 
 def _galaxy_info(galaxy_file: str) -> dict[str, object]:
@@ -237,7 +231,8 @@ def _galaxy_info(galaxy_file: str) -> dict[str, object]:
     return info
 
 
-def _manifest(info: dict[str, object]) -> dict[str, object]:
+def _manifest(info: dict[str, object], files_sha256: str) -> dict[str, object]:
+    """``MANIFEST.json`` for ``info``, naming ``FILES.json`` by its checksum."""
     return {
         "collection_info": {
             "namespace": info["namespace"],
@@ -259,7 +254,7 @@ def _manifest(info: dict[str, object]) -> dict[str, object]:
             "name": "FILES.json",
             "ftype": "file",
             "chksum_type": "sha256",
-            "chksum_sha256": None,
+            "chksum_sha256": files_sha256,
             "format": _FORMAT,
         },
         "format": _FORMAT,
@@ -281,7 +276,8 @@ def _files(source: str, info: dict[str, object], galaxy_file: str) -> list[dict[
     if "manifest" in info:
         files.extend(_files_from_directives(source, info, galaxy_file))
     else:
-        files.extend(_files_walked(source, f"{info['namespace']}-{info['name']}", _strings(info["build_ignore"])))
+        build_ignore = [str(v) for v in as_list(info["build_ignore"]) or []]
+        files.extend(_files_walked(source, f"{info['namespace']}-{info['name']}", build_ignore))
     return files
 
 
@@ -311,7 +307,7 @@ def _files_walked(source: str, artifact_prefix: str, build_ignore: list[str]) ->
             if os.path.isdir(path):
                 if item in _IGNORED_DIRS or any(fnmatch.fnmatch(rel, p) for p in patterns):
                     continue
-                if os.path.islink(path) and not _inside(os.path.realpath(path), os.path.realpath(source)):
+                if os.path.islink(path) and not inside(os.path.realpath(path), os.path.realpath(source)):
                     warn(f"skipping {path}, a symlink to a directory outside the collection, as ansible-galaxy does")
                     continue
                 yield _entry(rel, "dir")
@@ -331,18 +327,16 @@ def _files_from_directives(source: str, info: dict[str, object], galaxy_file: st
     from distlib.manifest import Manifest  # pyright: ignore[reportMissingTypeStubs]
 
     control: object = info["manifest"]
-    if control is None:
-        control = {}
-    if not isinstance(control, dict) or set(control) - {"directives", "omit_default_directives"}:
+    settings = as_table({} if control is None else control)
+    if settings is None or set(settings) - {"directives", "omit_default_directives"}:
         raise BuildError(f'{galaxy_file}: "manifest" may only have "directives" and "omit_default_directives"')
-    settings = _t_dict(control)
-    given: object = settings.get("directives", [])
-    omit: object = settings.get("omit_default_directives", False)
-    if not isinstance(given, list):
+    given = as_list(settings.get("directives", []))
+    omit = settings.get("omit_default_directives", False)
+    if given is None:
         raise BuildError(f'{galaxy_file}: "manifest.directives" must be a list')
     if not isinstance(omit, bool):
         raise BuildError(f'{galaxy_file}: "manifest.omit_default_directives" must be a boolean')
-    directives = [str(d) for d in _t_list(given)]
+    directives = [str(d) for d in given]
     if omit and not directives:
         raise BuildError(
             f'{galaxy_file}: "manifest.omit_default_directives" is true but "manifest.directives" is empty, which '
@@ -400,27 +394,4 @@ def _files_from_directives(source: str, info: dict[str, object], galaxy_file: st
 def _sha256(path: str) -> str | None:
     """A file's sha256, following a link to it, or None for a link with nothing behind it, as ansible-core's
     ``secure_hash`` gives."""
-    if not os.path.exists(path) or os.path.isdir(path):
-        return None
-    digest = hashlib.sha256()
-    with open(path, "rb") as f:
-        while chunk := f.read(1 << 16):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _inside(path: str, parent: str) -> bool:
-    path = os.path.normpath(path)
-    return path == parent or path.startswith(parent + os.sep)
-
-
-def _strings(value: object) -> list[str]:
-    return [str(v) for v in _t_list(value)] if isinstance(value, list) else []
-
-
-def _t_list(value: list[object]) -> list[object]:
-    return value
-
-
-def _t_dict(value: object) -> dict[str, object]:
-    return value  # pyright: ignore[reportReturnType]
+    return None if not os.path.exists(path) or os.path.isdir(path) else sha256_file(path)

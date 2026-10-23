@@ -326,8 +326,8 @@ fn parse_object(data: &[u8], name: &str) -> Result<serde_json::Map<String, Value
 }
 
 /// The namespace, name and version `MANIFEST.json`'s `collection_info` gives: with `expected`, `manifest` unless
-/// they're those, compared as text, as alai's `Version` compares; without, `manifest_fields` unless all three are
-/// strings, for the caller to check.
+/// they're those, compared as text, as alai's `Version` compares, the message giving what it found as JSON (`null`
+/// for a missing field); without, `manifest_fields` unless all three are strings, for the caller to check.
 fn check_manifest(data: &[u8], expected: Option<&(String, String, String)>) -> Result<(String, String, String), Error> {
     let obj = parse_object(data, MANIFEST)?;
     let info = obj.get("collection_info").and_then(Value::as_object);
@@ -341,8 +341,7 @@ fn check_manifest(data: &[u8], expected: Option<&(String, String, String)>) -> R
     match expected {
         Some((namespace, name, version)) => {
             if text != (Some(namespace.as_str()), Some(name.as_str()), Some(version.as_str())) {
-                // As Python shows them, so the message reads the same as the rest of alai's.
-                let shown = format!("{}.{} {}", shown(found.0), shown(found.1), shown(found.2));
+                let shown = format!("{}.{} {}", text_of(found.0), text_of(found.1), text_of(found.2));
                 return Err(Error::Extract("manifest", String::new(), shown));
             }
             Ok((namespace.clone(), name.clone(), version.clone()))
@@ -356,13 +355,12 @@ fn check_manifest(data: &[u8], expected: Option<&(String, String, String)>) -> R
     }
 }
 
-/// A JSON value as Python's `str` shows what `json.loads` makes of it.
-fn shown(value: Option<&Value>) -> String {
+/// A field as a message shows it: a string as it is, anything else as JSON, `null` when missing.
+fn text_of(value: Option<&Value>) -> String {
     match value {
-        None | Some(Value::Null) => "None".to_owned(),
         Some(Value::String(s)) => s.clone(),
-        Some(Value::Bool(b)) => if *b { "True" } else { "False" }.to_owned(),
         Some(other) => other.to_string(),
+        None => "null".to_owned(),
     }
 }
 

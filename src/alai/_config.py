@@ -13,13 +13,8 @@ import collections.abc as _c
 import enum
 import os
 
-from ._common import FALSE_WORDS, NAME_RE, TRUE_WORDS, ConfigError, Record, as_table, env_bool
+from ._common import NAME_RE, ConfigError, Record, as_table, env_bool, inside, parse_bool, read_toml, string_list
 from ._output import debug
-
-# typing.TYPE_CHECKING without importing typing, which this module, loaded by every command, otherwise doesn't need.
-TYPE_CHECKING = False
-if TYPE_CHECKING:
-    from ._native import TomlDocument
 
 CONFIG_FILE_NAME = "alai.toml"
 DEFAULT_INDEX_NAME = "alai"
@@ -92,7 +87,7 @@ class Overrides(Record):
         no_config: bool = False,
         **settings: str | _c.Sequence[str] | bool | None,
     ) -> None:
-        if unknown := sorted(settings.keys() - {s.name for s in SETTINGS if s.flag}):
+        if unknown := sorted(settings.keys() - {s.name for s in SETTINGS}):
             raise TypeError(f"Overrides got an unexpected keyword argument '{unknown[0]}'")
         self.project = project
         self.config_file = config_file
@@ -192,9 +187,9 @@ class Settings(Record):
         self.indexes = indexes
         """The indexes in resolution order, the default index last."""
         self.system_certs = system_certs
+        """Verify TLS certificates with the operating system's trust store rather than OpenSSL's."""
         self.offline = offline
         """Read only what's cached, never the network."""
-        """Verify TLS certificates with the operating system's trust store rather than OpenSSL's."""
 
     @property
     def cache_dir(self) -> str:
@@ -206,6 +201,12 @@ class Settings(Record):
         if self._cache_dir is None:
             raise ConfigError("cannot find the home directory for the cache, set ALAI_CACHE_DIR")
         return self._cache_dir
+
+    @property
+    def collections_dir_set(self) -> bool:
+        """Whether a flag, environment variable or config file chose ``collections_dir``, rather than the default:
+        outside a project, the commands that work on the directory need one to have been chosen."""
+        return self.sources["collections_dir"] != "default"
 
 
 class _Source(Record):
@@ -437,7 +438,7 @@ def _check_tree(root: str, collections_dir: str, source: str) -> None:
     an exact sync removing whatever is beside it."""
     tree = os.path.realpath(collections_dir)
     for inner, outer, what in ((tree, root, "inside the collection"), (root, tree, "holds the collection")):
-        if os.path.commonpath((inner, outer)) == outer:
+        if inside(inner, outer):
             raise ConfigError(
                 f"collections_dir {collections_dir} (from {source}) {what} at {root}; "
                 + "a collection's dependencies are installed into a directory outside its checkout"
@@ -501,34 +502,6 @@ def default_cache_dir(environ: _c.Mapping[str, str]) -> str | None:
     return None if home is None else os.path.join(home, ".cache", "alai")
 
 
-def read_toml(path: str) -> dict[str, object]:
-    """The TOML file at ``path``: a config file, ``alai.toml`` or ``alai.lock``."""
-    # Imported here so a command run without any config files never loads the extension for it.
-    from ._native import TomlError, toml_read
-
-    try:
-        return toml_read(path)
-    except (TomlError, OSError) as e:
-        raise _toml_error(path, e) from None
-
-
-def read_toml_document(path: str) -> TomlDocument:
-    """The TOML file at ``path`` to edit, ``alai.toml`` for ``alai add``, read as ``read_toml`` reads one."""
-    from ._native import TomlDocument, TomlError
-
-    try:
-        return TomlDocument.read(path)
-    except (TomlError, OSError) as e:
-        raise _toml_error(path, e) from None
-
-
-def _toml_error(path: str, e: Exception) -> ConfigError:
-    """A file that can't be read, or isn't UTF-8 or valid TOML, as an error naming it."""
-    if isinstance(e, OSError):
-        return ConfigError(f"can't read {path}: {e.strerror or e}")
-    return ConfigError(f"{path}: invalid TOML: {e}")
-
-
 def _file_layer(table: _c.Mapping[str, object], path: str, level: Level, home: str | None) -> _Layer:
     """The settings in a config file.
 
@@ -536,23 +509,22 @@ def _file_layer(table: _c.Mapping[str, object], path: str, level: Level, home: s
     project. Its manifest keys are checked here and read by ``_manifest.load_manifest``. Every other file, including a
     ``--config-file``, holds settings only.
     """
-    description = path
-    source = _Source(level, description, os.path.dirname(path), home)
+    source = _Source(level, path, os.path.dirname(path), home)
     layer = _Layer()
 
     # A quoted key such as "project.collections_dir" is one key, not the table, so it can't name a setting.
     if dotted := [key for key in table if "." in key]:
-        raise ConfigError(f"{description}: '{dotted[0]}' is a quoted key, not a table; use [{dotted[0].split('.')[0]}]")
+        raise ConfigError(f"{path}: '{dotted[0]}' is a quoted key, not a table; use [{dotted[0].split('.')[0]}]")
     values = dict(table)
     # [tool] is left to other tools, as pyproject.toml's is: alai never reads it.
     if "tool" in values and as_table(values.pop("tool")) is None:
-        raise ConfigError(f"{description}: 'tool' must be a table ([tool.<name>])")
+        raise ConfigError(f"{path}: 'tool' must be a table ([tool.<name>])")
     # Everything under [project] describes the project; everything else is a setting.
     is_project = level is Level.PROJECT
     if not is_project:
         if "project" in values:
             hint = "; --config-file only takes settings" if level is Level.EXPLICIT else ""
-            raise ConfigError(f"{description}: [project] is only allowed in the project's alai.toml{hint}")
+            raise ConfigError(f"{path}: [project] is only allowed in the project's alai.toml{hint}")
     else:
         # Also checks [project] is a table.
         _ = raw_manifest(table, path)
@@ -562,12 +534,12 @@ def _file_layer(table: _c.Mapping[str, object], path: str, level: Level, home: s
     for key, value in values.items():
         setting = FILE_SETTINGS.get(key)
         if setting is None:
-            raise ConfigError(f"{description}: unknown setting '{key}'{suggest_key(key, manifest=is_project)}")
+            raise ConfigError(f"{path}: unknown setting '{key}'{suggest_key(key, manifest=is_project)}")
 
         if setting.boolean:
             # TOML's true or false, not a string such as "yes".
             if not isinstance(value, bool):
-                raise ConfigError(f"{description}: '{key}' must be true or false")
+                raise ConfigError(f"{path}: '{key}' must be true or false")
             layer.add(setting, value, source)
         elif setting.parse_file:
             for item in setting.parse_file(value, source):
@@ -638,9 +610,10 @@ def _table_value(table: _c.Mapping[str, object], key: str, path: str, form: str,
 
 
 def _string_list(value: object, path: str, key: str, what: str) -> list[str]:
-    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):  # pyright: ignore[reportUnknownVariableType]
+    items = string_list(value)
+    if items is None:
         raise ConfigError(f"{path}: '{key}' must be an array of {what}")
-    return value  # pyright: ignore[reportUnknownVariableType]
+    return items
 
 
 def _index_tables(value: object, source: _Source) -> _c.Iterator[Index]:
@@ -800,12 +773,7 @@ def _str_value(key: str, value: object, source: _Source) -> str:
 
 def _bool_arg(value: str, source: _Source) -> bool:
     """Parse a boolean environment variable, with the words ``ALAI_NO_CONFIG`` takes."""
-    lowered = value.lower()
-    if lowered in TRUE_WORDS:
-        return True
-    if lowered in FALSE_WORDS:
-        return False
-    raise ConfigError(f"{source.description}: expected a boolean (1, true, yes, on, 0, false, no, off), got '{value}'")
+    return parse_bool(value, source.description)
 
 
 def _link_mode(value: str, source: _Source) -> LinkMode:

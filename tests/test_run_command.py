@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import subprocess
@@ -11,9 +10,10 @@ import sys
 from pathlib import Path
 
 import pytest
+from helpers import installed_names, lines, write_project
 
-from alai._cli import EXIT_ERROR, main
-from alai._commands.lock import EXIT_STALE
+from alai._cli import main
+from alai._common import EXIT_ERROR, EXIT_STALE
 
 
 class Exec(Exception):
@@ -34,28 +34,15 @@ def no_exec(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(os, "execve", execve)
 
 
-def write(project: Path, collections: list[str]) -> None:
-    _ = (project / "alai.toml").write_text(f"[project]\ncollections = {json.dumps(collections)}\n")
-
-
 def run(*args: str) -> Exec:
     with pytest.raises(Exec) as e:
         _ = main(["run", *args])
     return e.value
 
 
-def lines(err: str) -> list[str]:
-    """The output with its timings dropped, which vary."""
-    return [line.rsplit(" in ", 1)[0] if not line.startswith(" ") else line for line in err.splitlines()]
-
-
-def installed(project: Path) -> list[str]:
-    return sorted(f"{p.parent.name}.{p.name}" for p in (project / "collections/ansible_collections").glob("*/*"))
-
-
 class TestRun:
     def test_syncs_then_runs(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        write(project, ["a.a"])
+        write_project(project, ["a.a"])
 
         ran = run("sh", "-c", "true")
 
@@ -64,13 +51,13 @@ class TestRun:
         assert ran.env["ANSIBLE_COLLECTIONS_PATH"] == str(project / "collections")
         assert ran.env["ANSIBLE_COLLECTIONS_SCAN_SYS_PATH"] == "False"
         assert ran.env["HOME"] == os.environ["HOME"]
-        assert installed(project) == ["a.a", "b.b"]
+        assert installed_names(project / "collections") == ["a.a", "b.b"]
         assert (project / "alai.lock").is_file()
         # As uv run syncs: only what changed, without each collection's line.
         assert lines(capsys.readouterr().err) == ["Prepared 2 collections", "Installed 2 collections"]
 
     def test_nothing_to_do_is_silent(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        write(project, ["a.a"])
+        write_project(project, ["a.a"])
         _ = run("true")
         _ = capsys.readouterr()
 
@@ -79,26 +66,26 @@ class TestRun:
         assert capsys.readouterr().err == ""
 
     def test_verbose_lists_collections(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        write(project, ["c.c"])
+        write_project(project, ["c.c"])
 
         _ = run("-v", "true")
 
         assert " + c.c==1.0.0" in lines(capsys.readouterr().err)
 
     def test_arguments_go_to_the_command(self, project: Path) -> None:
-        write(project, [])
+        write_project(project, [])
 
         ran = run("true", "--exact", "-v", "--", "--no-sync")
 
         assert ran.argv == ["true", "--exact", "-v", "--", "--no-sync"]
 
     def test_double_dash_before_the_command(self, project: Path) -> None:
-        write(project, [])
+        write_project(project, [])
 
         assert run("--", "true", "-h").argv == ["true", "-h"]
 
     def test_command_by_path(self, project: Path, tmp_path: Path) -> None:
-        write(project, [])
+        write_project(project, [])
         script = tmp_path / "script"
         _ = script.write_text("#!/bin/sh\n")
         script.chmod(0o755)
@@ -106,12 +93,12 @@ class TestRun:
         assert run(str(script)).path == str(script)
 
     def test_warns_of_unlisted_collections(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        write(project, ["c.c"])
+        write_project(project, ["c.c"])
         (project / "collections/ansible_collections/my/work").mkdir(parents=True)
 
         ran = run("true")
 
-        assert installed(project) == ["c.c", "my.work"]
+        assert installed_names(project / "collections") == ["c.c", "my.work"]
         assert ran.argv == ["true"]
         assert capsys.readouterr().err.splitlines()[-2:] == [
             "warning: Ansible can load collections alai.lock doesn't list here, from collections: my.work",
@@ -119,7 +106,7 @@ class TestRun:
         ]
 
     def test_warns_of_namespace_links(self, project: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        write(project, [])
+        write_project(project, [])
         (tmp_path / "elsewhere/one").mkdir(parents=True)
         (project / "collections/ansible_collections").mkdir(parents=True)
         (project / "collections/ansible_collections/linked").symlink_to(tmp_path / "elsewhere")
@@ -129,31 +116,31 @@ class TestRun:
         assert "from collections: linked.* (a link)" in capsys.readouterr().err
 
     def test_inexact_keeps_them_quietly(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        write(project, ["c.c"])
+        write_project(project, ["c.c"])
         (project / "collections/ansible_collections/my/work").mkdir(parents=True)
 
         _ = run("--inexact", "true")
 
-        assert installed(project) == ["c.c", "my.work"]
+        assert installed_names(project / "collections") == ["c.c", "my.work"]
         assert "warning" not in capsys.readouterr().err
 
     def test_exact_and_inexact(self, project: Path) -> None:
-        write(project, [])
+        write_project(project, [])
 
         with pytest.raises(SystemExit):
             _ = main(["run", "--exact", "--inexact", "true"])
 
     def test_exact_removes_unlisted_collections(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        write(project, ["c.c"])
+        write_project(project, ["c.c"])
         (project / "collections/ansible_collections/my/work").mkdir(parents=True)
 
         _ = run("--exact", "true")
 
-        assert installed(project) == ["c.c"]
+        assert installed_names(project / "collections") == ["c.c"]
         assert "warning" not in capsys.readouterr().err
 
     def test_no_sync(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        write(project, ["a.a"])
+        write_project(project, ["a.a"])
 
         ran = run("--no-sync", "true")
 
@@ -163,14 +150,14 @@ class TestRun:
         assert capsys.readouterr().err == ""
 
     def test_locked_without_a_lock(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        write(project, ["a.a"])
+        write_project(project, ["a.a"])
 
         assert main(["run", "--locked", "true"]) == EXIT_STALE
 
         assert "there's no alai.lock, and --locked was given" in capsys.readouterr().err
 
     def test_no_sync_with_locked(self, project: Path) -> None:
-        write(project, [])
+        write_project(project, [])
 
         with pytest.raises(SystemExit):
             _ = main(["run", "--no-sync", "--locked", "true"])
@@ -187,14 +174,14 @@ class TestRun:
         assert "COMMAND" in capsys.readouterr().err
 
     def test_command_not_found(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        write(project, [])
+        write_project(project, [])
 
         assert main(["run", "no-such-command-here"]) == EXIT_ERROR
 
         assert capsys.readouterr().err.splitlines()[-1] == "error: can't run no-such-command-here: it isn't on PATH"
 
     def test_no_such_file(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        write(project, [])
+        write_project(project, [])
 
         assert main(["run", "./missing"]) == EXIT_ERROR
 
@@ -203,7 +190,7 @@ class TestRun:
     def test_exec_fails(
         self, project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        write(project, [])
+        write_project(project, [])
 
         def execve(path: str, argv: list[str], env: dict[str, str]) -> None:
             raise OSError(8, "Exec format error")
@@ -220,7 +207,7 @@ class TestRun:
 
 def test_replaces_alai(project: Path) -> None:
     """A real exec, in a process of its own: the command's output, exit code and environment are its own."""
-    write(project, [])
+    write_project(project, [])
     code = "import os, sys; print(os.environ['ANSIBLE_COLLECTIONS_PATH']); sys.exit(3)"
 
     result = subprocess.run(  # noqa: S603

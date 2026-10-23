@@ -143,8 +143,9 @@ and at the end otherwise. If resolving fails, nothing is written.
 `alai add` also takes a directory holding a collection, such as a checkout
 of one you're working on, with a `/` in it so it isn't read as a collection
 name. It adds the collection by name and takes it from that directory in
-[`[project.sources]`](alai-toml.md#projectsources); `--editable` links it
-rather than copying it:
+[`[project.sources]`](alai-toml.md#projectsources); given with
+`--editable` instead, it's linked rather than copied, so edits there are
+seen without adding it again:
 
 ```console
 $ alai add ../corp.dev
@@ -155,8 +156,8 @@ Installed 2 collections in 3ms
  + corp.dev==0.3.0 (from ~/corp.dev)
 ```
 
-`alai add` of the same directory with or without `--editable` switches
-between the two. `alai remove corp.dev` removes its `[project.sources]`
+`alai add` of the same directory with or without `--editable` switches between the
+two. `alai remove corp.dev` removes its `[project.sources]`
 entry too, once no group lists it; an `{ index = ... }` entry stays, as it
 can apply to what other collections depend on.
 

@@ -7,9 +7,20 @@ from __future__ import annotations
 
 import argparse
 
-from .._args import HelpFormatter, add_global_args, add_settings_args, settings_from_args
-from .._common import ConfigError
-from .lock import EXIT_STALE, add_upgrade_args
+from .._args import (
+    HelpFormatter,
+    add_check_args,
+    add_global_args,
+    add_group_args,
+    add_reinstall_args,
+    add_settings_args,
+    add_upgrade_args,
+    reinstall_from_args,
+    selected_groups,
+    settings_from_args,
+    upgrade_from_args,
+)
+from .._common import EXIT_STALE
 
 
 def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -35,86 +46,22 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
     sync.set_defaults(parser=sync, handler=run)
 
 
-def add_check_args(parser: argparse.ArgumentParser) -> argparse._MutuallyExclusiveGroup:
-    """``--locked`` and ``--frozen``, for the commands that sync: ``sync`` and ``run``."""
-    check = parser.add_mutually_exclusive_group()
-    _ = check.add_argument(
-        "--locked",
-        action="store_true",
-        help="resolve, and exit 1 rather than install if alai.lock is missing or would change",
-    )
-    _ = check.add_argument(
-        "--frozen",
-        action="store_true",
-        help="install from alai.lock as it is, without checking it against alai.toml",
-    )
-    return check
-
-
-def add_group_args(parser: argparse.ArgumentParser) -> argparse._ArgumentGroup:
-    """The options choosing which groups to install, for the commands that sync: ``sync`` and ``run``."""
-    groups = parser.add_argument_group("groups")
-    _ = groups.add_argument(
-        "--group", metavar="NAME", action="append", default=[], help="also install group NAME; can be repeated"
-    )
-    _ = groups.add_argument(
-        "--no-group",
-        metavar="NAME",
-        action="append",
-        default=[],
-        help="don't install group NAME, even if another option asks for it; can be repeated",
-    )
-    _ = groups.add_argument(
-        "--only-group",
-        metavar="NAME",
-        action="append",
-        default=[],
-        help="install only group NAME, without the project's own collections; can be repeated",
-    )
-    _ = groups.add_argument("--all-groups", action="store_true", help="install every group")
-    _ = groups.add_argument("--no-default-groups", action="store_true", help="don't install the 'dev' group")
-    _ = groups.add_argument("--no-dev", action="store_true", help="the same as --no-group dev")
-    _ = groups.add_argument("--only-dev", action="store_true", help="the same as --only-group dev")
-    return groups
-
-
-def add_reinstall_args(parser: argparse.ArgumentParser) -> None:
-    """``--reinstall`` and ``--reinstall-collection``, for every command that installs, as uv has them on ``sync``,
-    ``add``, ``remove`` and ``pip install``."""
-    _ = parser.add_argument(
-        "--reinstall",
-        action="store_true",
-        help="reinstall every collection, even those already at the right version",
-    )
-    _ = parser.add_argument(
-        "--reinstall-collection",
-        metavar="NAME",
-        action="append",
-        default=[],
-        help="reinstall collection NAME, even if it's already at the right version; can be repeated",
-    )
-
-
-def reinstall_from_args(args: argparse.Namespace) -> bool | set[str]:
-    """What to reinstall: everything, the collections named, or nothing (False)."""
-    from .._manifest import collection_name
-
-    if args.reinstall:
-        return True
-    try:
-        return {collection_name(n) for n in args.reinstall_collection} or False
-    except ValueError as e:
-        raise ConfigError(f"--reinstall-collection: {e}") from None
-
-
 def run(args: argparse.Namespace) -> int:
+    from .._project import load_project
     from .._sync import sync_project
 
     settings = settings_from_args(args)
+    raw, manifest = load_project(settings, "alai sync installs what it lists")
+    project, groups = selected_groups(args, manifest.groups)
     synced = sync_project(
-        args,
         settings,
-        "alai sync installs what it lists",
+        raw,
+        manifest,
+        project=project,
+        groups=groups,
+        upgrade=upgrade_from_args(args),
+        locked=args.locked,
+        frozen=args.frozen,
         exact=not args.inexact,
         reinstall=reinstall_from_args(args),
     )

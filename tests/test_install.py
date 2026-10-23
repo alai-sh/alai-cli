@@ -12,6 +12,7 @@ import stat
 from pathlib import Path
 
 import pytest
+from helpers import installed_at
 
 from alai import _install, _native
 from alai._config import LinkMode
@@ -48,11 +49,6 @@ def collection(path: Path, name: str = "ns.coll", version: str | None = "1.0.0",
 
 def cached(tmp_path: Path, name: str = "ns.coll", version: str = "1.0.0") -> str:
     return str(collection(tmp_path / "cache" / f"{name}-{version}", name, version))
-
-
-def installed_at(cdir: Path, name: str = "ns.coll") -> Path:
-    namespace, short = name.split(".")
-    return cdir / "ansible_collections" / namespace / short
 
 
 def leftovers(cdir: Path) -> list[str]:
@@ -114,19 +110,19 @@ class TestPlan:
 
     def test_edits_dont_count(self, cdir: Path) -> None:
         # Matched by version, as uv does: an edited file is left as it is.
-        path = collection(installed_at(cdir), "ns.coll", "1.0.0")
+        path = collection(installed_at(cdir, "ns.coll"), "ns.coll", "1.0.0")
         _ = (path / "plugins" / "modules" / "mod.py").write_text("edited\n")
 
         assert plan(str(cdir), {"ns.coll": Version("1.0.0")}, exact=True).unchanged == ("ns.coll",)
 
     def test_no_manifest_replaced(self, cdir: Path) -> None:
         # Named by its path, at no version, so it never matches the lock.
-        _ = collection(installed_at(cdir), manifest=False)
+        _ = collection(installed_at(cdir, "ns.coll"), manifest=False)
 
         assert plan(str(cdir), {"ns.coll": Version("1.0.0")}, exact=True).install == ("ns.coll",)
 
     def test_no_manifest_removed(self, cdir: Path) -> None:
-        _ = collection(installed_at(cdir), manifest=False)
+        _ = collection(installed_at(cdir, "ns.coll"), manifest=False)
 
         assert [c.name for c in plan(str(cdir), {}, exact=True).remove] == ["ns.coll"]
 
@@ -167,7 +163,7 @@ class TestInstall:
 
         install(str(cdir), "ns.coll", source, Linker(mode))
 
-        target = installed_at(cdir)
+        target = installed_at(cdir, "ns.coll")
         assert describe(target) == describe(Path(source))
         assert (target / "plugins" / "modules" / "alias.py").readlink() == Path("mod.py")
         # auto clones or hardlinks depending on the filesystem, so only the explicit modes say which.
@@ -181,11 +177,11 @@ class TestInstall:
 
         install(str(cdir), "ns.coll", source, Linker(LinkMode.SYMLINK))
 
-        assert (installed_at(cdir) / "run.sh").readlink() == Path(source, "run.sh")
+        assert (installed_at(cdir, "ns.coll") / "run.sh").readlink() == Path(source, "run.sh")
 
     def test_replaces(self, tmp_path: Path, cdir: Path) -> None:
-        _ = collection(installed_at(cdir), version="1.0.0")
-        _ = (installed_at(cdir) / "stale.txt").write_text("from 1.0.0")
+        _ = collection(installed_at(cdir, "ns.coll"), version="1.0.0")
+        _ = (installed_at(cdir, "ns.coll") / "stale.txt").write_text("from 1.0.0")
         info = cdir / "ansible_collections" / "ns.coll-1.0.0.info"
         info.mkdir()
         other_info = cdir / "ansible_collections" / "ns.collection-1.0.0.info"
@@ -194,13 +190,13 @@ class TestInstall:
         install(str(cdir), "ns.coll", cached(tmp_path, version="2.0.0"), Linker(LinkMode.COPY))
 
         assert installed(str(cdir))["ns.coll"].version == Version("2.0.0")
-        assert not (installed_at(cdir) / "stale.txt").exists()
+        assert not (installed_at(cdir, "ns.coll") / "stale.txt").exists()
         assert not info.exists()
         assert other_info.exists()
         assert leftovers(cdir) == []
 
     def test_failure_keeps_what_was_there(self, tmp_path: Path, cdir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _ = collection(installed_at(cdir), version="1.0.0")
+        _ = collection(installed_at(cdir, "ns.coll"), version="1.0.0")
 
         monkeypatch.setattr(_install, "_link_tree", FakeLinker({"copy": errno.ENOSPC}))
 
@@ -247,7 +243,7 @@ class TestLinker:
 
         # Each failed once, its partial tree removed, and copy made the whole one; the warning is given once.
         assert fake.calls == ["clone", "hardlink", "copy"]
-        assert describe(installed_at(cdir)) == describe(Path(cached(tmp_path / "again")))
+        assert describe(installed_at(cdir, "ns.coll")) == describe(Path(cached(tmp_path / "again")))
         err = capsys.readouterr().err
         assert err.count("warning:") == 1
         # The system's own wording: glibc says "Invalid cross-device link", macOS "Cross-device link".
@@ -313,7 +309,7 @@ def test_clone(tmp_path: Path, cdir: Path) -> None:
 
     install(str(cdir), "ns.coll", source, Linker(LinkMode.CLONE))
 
-    target = installed_at(cdir)
+    target = installed_at(cdir, "ns.coll")
     assert describe(target) == describe(Path(source))
     assert (target / "run.sh").read_text() == Path(source, "run.sh").read_text()
     # A clone is a file of its own, unlike a hardlink.
@@ -370,13 +366,13 @@ class TestNamespaceLinks:
 
 class TestRemove:
     def test_removes_with_info_and_empty_namespace(self, cdir: Path) -> None:
-        _ = collection(installed_at(cdir))
+        _ = collection(installed_at(cdir, "ns.coll"))
         info = cdir / "ansible_collections" / "ns.coll-1.0.0.info"
         info.mkdir()
 
         remove(str(cdir), installed(str(cdir))["ns.coll"])
 
-        assert not installed_at(cdir).exists()
+        assert not installed_at(cdir, "ns.coll").exists()
         assert not info.exists()
         assert not (cdir / "ansible_collections" / "ns").exists()
 
@@ -401,22 +397,22 @@ class TestRemove:
 
     def test_symlink_replaced_not_its_target(self, tmp_path: Path, cdir: Path) -> None:
         checkout = collection(tmp_path / "checkout", "ns.coll", "0.1.0")
-        installed_at(cdir).parent.mkdir(parents=True)
-        installed_at(cdir).symlink_to(checkout)
+        installed_at(cdir, "ns.coll").parent.mkdir(parents=True)
+        installed_at(cdir, "ns.coll").symlink_to(checkout)
 
         install(str(cdir), "ns.coll", cached(tmp_path), Linker(LinkMode.COPY))
 
-        assert not installed_at(cdir).is_symlink()
+        assert not installed_at(cdir, "ns.coll").is_symlink()
         assert installed(str(cdir))["ns.coll"].version == Version("1.0.0")
         assert (checkout / "MANIFEST.json").is_file()
 
     def test_broken_symlink_removed(self, tmp_path: Path, cdir: Path) -> None:
-        installed_at(cdir).parent.mkdir(parents=True)
-        installed_at(cdir).symlink_to(tmp_path / "gone")
+        installed_at(cdir, "ns.coll").parent.mkdir(parents=True)
+        installed_at(cdir, "ns.coll").symlink_to(tmp_path / "gone")
 
         remove(str(cdir), installed(str(cdir))["ns.coll"])
 
-        assert not installed_at(cdir).is_symlink()
+        assert not installed_at(cdir, "ns.coll").is_symlink()
 
     def test_hardlinked_cache_untouched(self, tmp_path: Path, cdir: Path) -> None:
         source = cached(tmp_path)

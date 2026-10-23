@@ -10,16 +10,16 @@ import collections.abc as _c
 import json
 import os
 import shutil
-import subprocess
 import threading
 import time
 from pathlib import Path
 
 import pytest
+from helpers import Repo, install_record, installed_at, lines, write_sources
 
 from alai import _git
-from alai._cli import EXIT_ERROR, main
-from alai._common import ConfigError
+from alai._cli import main
+from alai._common import EXIT_ERROR, ConfigError
 from alai._git import _hint  # pyright: ignore[reportPrivateUsage]
 from alai._lock import GitCommitSource, read_lock, render_lock
 from alai._manifest import GitSource, parse_git
@@ -27,96 +27,19 @@ from alai._native import toml_loads
 from alai._semver import Version
 
 
-class Repo:
-    """A git repository on disk, committed to with a fixed author so tests don't depend on the user's git config."""
-
-    def __init__(self, path: Path) -> None:
-        self.path = path
-        path.mkdir(parents=True)
-        _ = self.git("init", "--quiet", "--initial-branch=main")
-
-    @property
-    def url(self) -> str:
-        return self.path.as_uri()
-
-    def git(self, *args: str) -> str:
-        env = {
-            **os.environ,
-            "GIT_AUTHOR_NAME": "t",
-            "GIT_AUTHOR_EMAIL": "t@example.com",
-            "GIT_COMMITTER_NAME": "t",
-            "GIT_COMMITTER_EMAIL": "t@example.com",
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_CONFIG_NOSYSTEM": "1",
-        }
-        done = subprocess.run(  # noqa: S603 # the test's own git commands
-            ["git", *args],  # noqa: S607
-            cwd=self.path,
-            env=env,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        return done.stdout.strip()
-
-    def collection(
-        self,
-        directory: str = "",
-        name: str = "ns.src",
-        version: str = "1.0.0",
-        dependencies: dict[str, str] | None = None,
-        readme: str = "readme\n",
-    ) -> None:
-        namespace, short = name.split(".")
-        root = self.path / directory if directory else self.path
-        (root / "plugins" / "modules").mkdir(parents=True, exist_ok=True)
-        lines = [f"namespace: {namespace}", f"name: {short}", f"version: '{version}'", "readme: README.md"]
-        lines.append("authors: [me]")
-        if dependencies:
-            lines.append("dependencies:")
-            lines += [f"  {key}: '{value}'" for key, value in dependencies.items()]
-        _ = (root / "galaxy.yml").write_text("\n".join(lines) + "\n")
-        _ = (root / "README.md").write_text(readme)
-        _ = (root / "plugins" / "modules" / "hello.py").write_text("# hello\n")
-
-    def commit(self, message: str = "commit") -> str:
-        _ = self.git("add", "--all")
-        _ = self.git("commit", "--quiet", "--allow-empty", "-m", message)
-        return self.git("rev-parse", "HEAD")
-
-
 @pytest.fixture
 def repo(tmp_path: Path) -> Repo:
     return Repo(tmp_path / "repo")
 
 
-def toml(project: Path, sources: str, collections: str = '"ns.src"') -> None:
-    _ = (project / "alai.toml").write_text(
-        f"[project]\ncollections = [{collections}]\n\n[project.sources]\n{sources}\n"
-    )
-
-
-def installed_at(project: Path, name: str = "ns.src") -> Path:
-    return project / "collections" / "ansible_collections" / Path(*name.split("."))
-
-
 def manifest_version(project: Path, name: str = "ns.src") -> str:
-    data = json.loads((installed_at(project, name) / "MANIFEST.json").read_text())
+    data = json.loads((installed_at(project / "collections", name) / "MANIFEST.json").read_text())
     return str(data["collection_info"]["version"])
-
-
-def record(project: Path, name: str = "ns.src") -> dict[str, object] | None:
-    path = project / "collections" / "ansible_collections" / ".alai" / f"{name}.json"
-    return json.loads(path.read_text()) if path.exists() else None
 
 
 def entry(project: Path, name: str = "ns.src") -> dict[str, object]:
     data = toml_loads((project / "alai.lock").read_text())
     return next(c for c in data["collection"] if c["name"] == name)
-
-
-def lines(err: str) -> list[str]:
-    return [line.rsplit(" in ", 1)[0] if not line.startswith(" ") else line for line in err.splitlines()]
 
 
 class TestLock:
@@ -126,7 +49,7 @@ class TestLock:
         _ = (repo.path / "meta" / "runtime.yml").write_text("requires_ansible: '>=2.16'\n")
         commit = repo.commit()
         _ = repo.git("tag", "--annotate", "v1.0.0", "-m", "v1.0.0")
-        toml(project, f'"ns.src" = {{ git = "{repo.url}", rev = "v1.0.0" }}')
+        write_sources(project, f'"ns.src" = {{ git = "{repo.url}", rev = "v1.0.0" }}')
 
         assert main(["lock", "-q"]) == 0
 
@@ -150,7 +73,7 @@ class TestLock:
     def test_default_branch(self, project: Path, repo: Repo) -> None:
         repo.collection()
         commit = repo.commit()
-        toml(project, f'"ns.src" = {{ git = "{repo.url}" }}')
+        write_sources(project, f'"ns.src" = {{ git = "{repo.url}" }}')
 
         assert main(["lock", "-q"]) == 0
 
@@ -159,7 +82,7 @@ class TestLock:
     def test_branch_kept_until_upgraded(self, project: Path, repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
         repo.collection()
         first = repo.commit()
-        toml(project, f'"ns.src" = {{ git = "{repo.url}", rev = "main" }}')
+        write_sources(project, f'"ns.src" = {{ git = "{repo.url}", rev = "main" }}')
         _ = main(["lock", "-q"])
         repo.collection(version="1.1.0")
         second = repo.commit()
@@ -177,7 +100,7 @@ class TestLock:
     def test_same_version_new_commit(self, project: Path, repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
         repo.collection()
         _ = repo.commit()
-        toml(project, f'"ns.src" = {{ git = "{repo.url}" }}')
+        write_sources(project, f'"ns.src" = {{ git = "{repo.url}" }}')
         _ = main(["lock", "-q"])
         repo.collection(readme="changed\n")
         second = repo.commit()
@@ -193,7 +116,7 @@ class TestLock:
         first = repo.commit()
         repo.collection(version="2.0.0")
         _ = repo.commit()
-        toml(project, f'"ns.src" = {{ git = "{repo.url}", rev = "{first}" }}')
+        write_sources(project, f'"ns.src" = {{ git = "{repo.url}", rev = "{first}" }}')
 
         assert main(["sync", "-q"]) == 0
 
@@ -203,7 +126,7 @@ class TestLock:
     def test_abbreviated_commit(self, project: Path, repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
         repo.collection()
         commit = repo.commit()
-        toml(project, f'"ns.src" = {{ git = "{repo.url}", rev = "{commit[:7]}" }}')
+        write_sources(project, f'"ns.src" = {{ git = "{repo.url}", rev = "{commit[:7]}" }}')
 
         assert main(["lock"]) == EXIT_ERROR
 
@@ -212,7 +135,7 @@ class TestLock:
     def test_no_such_rev(self, project: Path, repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
         repo.collection()
         _ = repo.commit()
-        toml(project, f'"ns.src" = {{ git = "{repo.url}", rev = "nope" }}')
+        write_sources(project, f'"ns.src" = {{ git = "{repo.url}", rev = "nope" }}')
 
         assert main(["lock"]) == EXIT_ERROR
 
@@ -221,14 +144,14 @@ class TestLock:
     def test_wrong_collection(self, project: Path, repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
         repo.collection(name="ns.other")
         _ = repo.commit()
-        toml(project, f'"ns.src" = {{ git = "{repo.url}" }}')
+        write_sources(project, f'"ns.src" = {{ git = "{repo.url}" }}')
 
         assert main(["lock"]) == EXIT_ERROR
 
         assert "takes ns.src from git+file://" in capsys.readouterr().err
 
     def test_unreachable(self, project: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        toml(project, f'"ns.src" = {{ git = "{(tmp_path / "missing").as_uri()}" }}')
+        write_sources(project, f'"ns.src" = {{ git = "{(tmp_path / "missing").as_uri()}" }}')
 
         assert main(["lock"]) == EXIT_ERROR
 
@@ -237,7 +160,7 @@ class TestLock:
     def test_no_git(
         self, project: Path, repo: Repo, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        toml(project, f'"ns.src" = {{ git = "{repo.url}" }}')
+        write_sources(project, f'"ns.src" = {{ git = "{repo.url}" }}')
         monkeypatch.setenv("PATH", str(project))
 
         assert main(["lock"]) == EXIT_ERROR
@@ -250,7 +173,7 @@ class TestSubdirectory:
         repo.collection("chocolatey", name="ns.src")
         repo.collection("other", name="ns.other")
         commit = repo.commit()
-        toml(project, f'"ns.src" = {{ git = "{repo.url}", subdirectory = "chocolatey" }}')
+        write_sources(project, f'"ns.src" = {{ git = "{repo.url}", subdirectory = "chocolatey" }}')
 
         assert main(["sync"]) == 0
 
@@ -258,14 +181,16 @@ class TestSubdirectory:
         assert lines(capsys.readouterr().err)[-1] == (
             f" + ns.src==1.0.0 (from git+{repo.url}@{commit}#subdirectory=chocolatey)"
         )
-        assert (installed_at(project) / "plugins" / "modules" / "hello.py").exists()
-        assert record(project) == {"source": {"git": repo.url, "commit": commit, "subdirectory": "chocolatey"}}
+        assert (installed_at(project / "collections", "ns.src") / "plugins" / "modules" / "hello.py").exists()
+        assert install_record(project / "collections", "ns.src") == {
+            "source": {"git": repo.url, "commit": commit, "subdirectory": "chocolatey"}
+        }
 
     def test_not_a_collection(self, project: Path, repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
         repo.collection("chocolatey")
         repo.collection("other", name="ns.other")
         _ = repo.commit()
-        toml(project, f'"ns.src" = {{ git = "{repo.url}" }}')
+        write_sources(project, f'"ns.src" = {{ git = "{repo.url}" }}')
 
         assert main(["lock"]) == EXIT_ERROR
 
@@ -277,19 +202,21 @@ class TestSubdirectory:
 
     def test_missing(self, project: Path, repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
         repo.collection("chocolatey")
-        _ = repo.commit()
-        toml(project, f'"ns.src" = {{ git = "{repo.url}", subdirectory = "nope" }}')
+        commit = repo.commit()
+        write_sources(project, f'"ns.src" = {{ git = "{repo.url}", subdirectory = "nope" }}')
 
         assert main(["lock"]) == EXIT_ERROR
 
-        assert "(nope) has no directory nope; collections are in chocolatey" in capsys.readouterr().err
+        assert f"{repo.url}@{commit[:7]} has no directory nope; collections are in chocolatey" in (
+            capsys.readouterr().err
+        )
 
 
 class TestSync:
     def test_sync(self, project: Path, repo: Repo, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         repo.collection()
         commit = repo.commit()
-        toml(project, f'"ns.src" = {{ git = "{repo.url}" }}')
+        write_sources(project, f'"ns.src" = {{ git = "{repo.url}" }}')
 
         assert main(["sync"]) == 0
 
@@ -302,8 +229,8 @@ class TestSync:
             f" + ns.src==1.0.0 (from git+{repo.url}@{commit})",
         ]
         assert manifest_version(project) == "1.0.0"
-        assert (installed_at(project) / "README.md").read_text() == "readme\n"
-        assert record(project) == {"source": {"git": repo.url, "commit": commit}}
+        assert (installed_at(project / "collections", "ns.src") / "README.md").read_text() == "readme\n"
+        assert install_record(project / "collections", "ns.src") == {"source": {"git": repo.url, "commit": commit}}
         # Only the files are cached, without .git.
         cached = list((tmp_path / "cache" / "git-v1").glob(f"*/{commit}"))
         assert len(cached) == 1 and (cached[0] / "galaxy.yml").exists() and not (cached[0] / ".git").exists()
@@ -316,7 +243,7 @@ class TestSync:
     ) -> None:
         repo.collection()
         commit = repo.commit()
-        toml(project, f'"ns.src" = {{ git = "{repo.url}" }}')
+        write_sources(project, f'"ns.src" = {{ git = "{repo.url}" }}')
         _ = main(["lock", "-q"])
         shutil.rmtree(tmp_path / "cache")
 
@@ -328,7 +255,7 @@ class TestSync:
             "Prepared 1 collection",
             "Installed 1 collection",
         ]
-        assert (installed_at(project) / "MANIFEST.json").exists()
+        assert (installed_at(project / "collections", "ns.src") / "MANIFEST.json").exists()
 
     def test_one_fetch_for_a_commit(
         self, project: Path, repo: Repo, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -336,7 +263,7 @@ class TestSync:
         repo.collection("a", name="ns.src")
         repo.collection("b", name="ns.other")
         commit = repo.commit()
-        toml(
+        write_sources(
             project,
             f'"ns.src" = {{ git = "{repo.url}", subdirectory = "a" }}\n'
             + f'"ns.other" = {{ git = "{repo.url}", subdirectory = "b" }}',
@@ -352,28 +279,28 @@ class TestSync:
             f"Updating ns.other, ns.src from {repo.url} ({commit[:7]})",
             f"Updated ns.other, ns.src from {repo.url} ({commit})",
         ]
-        assert (installed_at(project, "ns.other") / "MANIFEST.json").exists()
+        assert (installed_at(project / "collections", "ns.other") / "MANIFEST.json").exists()
 
     def test_offline(self, project: Path, repo: Repo, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         repo.collection()
         commit = repo.commit()
-        toml(project, f'"ns.src" = {{ git = "{repo.url}" }}')
+        write_sources(project, f'"ns.src" = {{ git = "{repo.url}" }}')
         _ = main(["sync", "-q"])
-        shutil.rmtree(installed_at(project))
+        shutil.rmtree(installed_at(project / "collections", "ns.src"))
 
         # Locked and cached, it needs nothing from the repository.
         assert main(["sync", "-q", "--offline"]) == 0
-        assert (installed_at(project) / "MANIFEST.json").exists()
+        assert (installed_at(project / "collections", "ns.src") / "MANIFEST.json").exists()
 
         shutil.rmtree(tmp_path / "cache")
-        shutil.rmtree(installed_at(project))
+        shutil.rmtree(installed_at(project / "collections", "ns.src"))
         assert main(["sync", "--offline"]) == EXIT_ERROR
         assert f"{repo.url}@{commit[:7]} isn't in the cache, and --offline doesn't fetch it" in capsys.readouterr().err
 
     def test_new_commit_reinstalls(self, project: Path, repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
         repo.collection()
         _ = repo.commit()
-        toml(project, f'"ns.src" = {{ git = "{repo.url}" }}')
+        write_sources(project, f'"ns.src" = {{ git = "{repo.url}" }}')
         _ = main(["sync", "-q"])
         repo.collection(readme="changed\n")
         second = repo.commit()
@@ -382,14 +309,14 @@ class TestSync:
 
         # The same version from another commit replaces it: the record holds the commit.
         assert lines(capsys.readouterr().err)[-1] == f" ~ ns.src==1.0.0 (from git+{repo.url}@{second})"
-        assert (installed_at(project) / "README.md").read_text() == "changed\n"
+        assert (installed_at(project / "collections", "ns.src") / "README.md").read_text() == "changed\n"
 
     def test_server_without_fetch_by_hash(self, project: Path, repo: Repo, monkeypatch: pytest.MonkeyPatch) -> None:
         repo.collection()
         first = repo.commit()
         repo.collection(version="2.0.0")
         _ = repo.commit()
-        toml(project, f'"ns.src" = {{ git = "{repo.url}", rev = "{first}" }}')
+        write_sources(project, f'"ns.src" = {{ git = "{repo.url}", rev = "{first}" }}')
         # git's first protocol, with a server that only serves the tips of branches and tags by their hash.
         for i, (key, value) in enumerate((("protocol.version", "0"), ("uploadpack.allowAnySHA1InWant", "false"))):
             monkeypatch.setenv(f"GIT_CONFIG_KEY_{i}", key)
@@ -409,7 +336,7 @@ class TestSync:
             "-c", "protocol.file.allow=always", "submodule", "--quiet", "add", inner.url, "plugins/module_utils"
         )
         _ = repo.commit()
-        toml(project, f'"ns.src" = {{ git = "{repo.url}" }}')
+        write_sources(project, f'"ns.src" = {{ git = "{repo.url}" }}')
         # git only fetches a file:// submodule when told to, since CVE-2022-39253.
         monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
         monkeypatch.setenv("GIT_CONFIG_KEY_0", "protocol.file.allow")
@@ -417,14 +344,16 @@ class TestSync:
 
         assert main(["sync", "-q"]) == 0
 
-        assert (installed_at(project) / "plugins" / "module_utils" / "shared.py").read_text() == "# shared\n"
+        assert (
+            installed_at(project / "collections", "ns.src") / "plugins" / "module_utils" / "shared.py"
+        ).read_text() == "# shared\n"
 
 
 class TestSourceVersion:
     def test_placeholder_needs_one(self, project: Path, repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
         repo.collection("chocolatey", version="{{ REPLACE_VERSION }}")
         commit = repo.commit()
-        toml(project, f'"ns.src" = {{ git = "{repo.url}", subdirectory = "chocolatey" }}')
+        write_sources(project, f'"ns.src" = {{ git = "{repo.url}", subdirectory = "chocolatey" }}')
 
         assert main(["lock"]) == EXIT_ERROR
 
@@ -440,7 +369,7 @@ class TestSourceVersion:
     def test_git(self, project: Path, repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
         repo.collection("chocolatey", version="{{ REPLACE_VERSION }}")
         _ = repo.commit()
-        toml(project, f'"ns.src" = {{ git = "{repo.url}", subdirectory = "chocolatey", version = "1.5.0" }}')
+        write_sources(project, f'"ns.src" = {{ git = "{repo.url}", subdirectory = "chocolatey", version = "1.5.0" }}')
 
         assert main(["sync"]) == 0
 
@@ -452,37 +381,37 @@ class TestSourceVersion:
         assert render_lock(lock) == (project / "alai.lock").read_text()
 
         # A new version in alai.toml locks again, from the cached commit.
-        toml(project, f'"ns.src" = {{ git = "{repo.url}", subdirectory = "chocolatey", version = "1.5.1" }}')
+        write_sources(project, f'"ns.src" = {{ git = "{repo.url}", subdirectory = "chocolatey", version = "1.5.1" }}')
         assert main(["sync", "-q"]) == 0
         assert manifest_version(project) == "1.5.1"
 
     def test_path(self, project: Path, tmp_path: Path) -> None:
         repo = Repo(tmp_path / "checkout")
         repo.collection(version="")
-        toml(project, '"ns.src" = { path = "../checkout", version = "2.0.0" }')
+        write_sources(project, '"ns.src" = { path = "../checkout", version = "2.0.0" }')
 
         assert main(["sync", "-q"]) == 0
 
         assert manifest_version(project) == "2.0.0"
         # --frozen builds it from the lock alone, which knows the version is the source's.
-        shutil.rmtree(installed_at(project))
+        shutil.rmtree(installed_at(project / "collections", "ns.src"))
         assert main(["sync", "-q", "--frozen"]) == 0
         assert manifest_version(project) == "2.0.0"
 
     def test_editable(self, project: Path, tmp_path: Path) -> None:
         repo = Repo(tmp_path / "checkout")
         repo.collection(version="{{ VERSION }}")
-        toml(project, '"ns.src" = { path = "../checkout", editable = true, version = "2.0.0" }')
+        write_sources(project, '"ns.src" = { path = "../checkout", editable = true, version = "2.0.0" }')
 
         assert main(["sync", "-q"]) == 0
 
         assert entry(project)["version"] == "2.0.0"
-        assert installed_at(project).is_symlink()
+        assert installed_at(project / "collections", "ns.src").is_symlink()
 
     def test_warns_when_galaxy_has_one(self, project: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         repo = Repo(tmp_path / "checkout")
         repo.collection(version="1.0.0")
-        toml(project, '"ns.src" = { path = "../checkout", version = "2.0.0" }')
+        write_sources(project, '"ns.src" = { path = "../checkout", version = "2.0.0" }')
 
         assert main(["lock"]) == 0
 
@@ -492,7 +421,7 @@ class TestSourceVersion:
         )
         assert entry(project)["version"] == "2.0.0"
 
-        toml(project, '"ns.src" = { path = "../checkout", version = "1.0.0" }')
+        write_sources(project, '"ns.src" = { path = "../checkout", version = "1.0.0" }')
         assert main(["lock"]) == 0
         assert "has version 1.0.0 too, so [project.sources] for ns.src's 'version' isn't needed" in (
             capsys.readouterr().err
@@ -500,7 +429,7 @@ class TestSourceVersion:
 
     def test_not_for_a_tarball(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         _ = (project.parent / "ns-src-1.0.0.tar.gz").write_bytes(b"\x1f\x8b")
-        toml(project, '"ns.src" = { path = "../ns-src-1.0.0.tar.gz", version = "2.0.0" }')
+        write_sources(project, '"ns.src" = { path = "../ns-src-1.0.0.tar.gz", version = "2.0.0" }')
 
         assert main(["lock"]) == EXIT_ERROR
 
@@ -513,7 +442,7 @@ class TestSourceVersion:
         built.mkdir()
         info = {"namespace": "ns", "name": "src", "version": "1.0.0", "dependencies": {}}
         _ = (built / "MANIFEST.json").write_text(json.dumps({"collection_info": info}))
-        toml(project, '"ns.src" = { path = "../built", version = "2.0.0" }')
+        write_sources(project, '"ns.src" = { path = "../built", version = "2.0.0" }')
 
         assert main(["lock"]) == EXIT_ERROR
 
@@ -525,7 +454,7 @@ class TestSourceVersion:
         info = {"namespace": "ns", "name": "src", "version": "1.0.0", "dependencies": {}}
         _ = (repo.path / "MANIFEST.json").write_text(json.dumps({"collection_info": info}))
         commit = repo.commit()
-        toml(project, f'"ns.src" = {{ git = "{repo.url}", version = "2.0.0" }}')
+        write_sources(project, f'"ns.src" = {{ git = "{repo.url}", version = "2.0.0" }}')
 
         assert main(["lock"]) == EXIT_ERROR
 
@@ -557,12 +486,12 @@ class TestAddRemove:
             "subdirectory": "chocolatey",
             "commit": commit,
         }
-        assert (installed_at(project) / "MANIFEST.json").exists()
+        assert (installed_at(project / "collections", "ns.src") / "MANIFEST.json").exists()
 
         assert main(["remove", "-q", "ns.src"]) == 0
 
         assert (project / "alai.toml").read_text() == "[project]\ncollections = []\n\n[project.sources]\n"
-        assert not installed_at(project).exists()
+        assert not installed_at(project / "collections", "ns.src").exists()
 
     def test_add_placeholder(self, project: Path, repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
         repo.collection(version="{{ REPLACE_VERSION }}")
@@ -741,7 +670,7 @@ class TestSharing:
     def test_shared(self, project: Path, repo: Repo, ssh: Path) -> None:
         repo.collection()
         _ = repo.commit()
-        toml(project, f'"ns.src" = {{ git = "ssh://git@localhost{repo.path}", rev = "main" }}')
+        write_sources(project, f'"ns.src" = {{ git = "ssh://git@localhost{repo.path}", rev = "main" }}')
 
         assert main(["sync", "-q"]) == 0
 
@@ -751,12 +680,12 @@ class TestSharing:
         assert all("-o ControlMaster=auto" in call and "-o ControlPersist=60" in call for call in calls)
         paths = {next(a for a in call.split() if a.startswith("ControlPath=")) for call in calls}
         assert len(paths) == 1 and paths.pop().startswith("ControlPath=/tmp/alai-ssh-")
-        assert (installed_at(project) / "MANIFEST.json").exists()
+        assert (installed_at(project / "collections", "ns.src") / "MANIFEST.json").exists()
 
     def test_users_ssh_command(self, project: Path, repo: Repo, ssh: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         repo.collection()
         _ = repo.commit()
-        toml(project, f'"ns.src" = {{ git = "ssh://git@localhost{repo.path}" }}')
+        write_sources(project, f'"ns.src" = {{ git = "ssh://git@localhost{repo.path}" }}')
         monkeypatch.setenv("GIT_SSH_COMMAND", "ssh -o User=me")
 
         assert main(["sync", "-q"]) == 0
@@ -768,7 +697,7 @@ class TestSharing:
     def test_users_own_sharing(self, project: Path, repo: Repo, ssh: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         repo.collection()
         _ = repo.commit()
-        toml(project, f'"ns.src" = {{ git = "ssh://git@localhost{repo.path}" }}')
+        write_sources(project, f'"ns.src" = {{ git = "ssh://git@localhost{repo.path}" }}')
         # ~/.ssh/config shares connections to the host already, maybe through one that's open and approved.
         monkeypatch.setenv("FAKE_CONTROLMASTER", "auto")
 

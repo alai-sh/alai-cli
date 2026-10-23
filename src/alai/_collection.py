@@ -22,18 +22,13 @@ from ._manifest import (
     Requirement,
     Source,
     SourceCollection,
-    UrlSource,
     collection_name,
-    file_url_path,
     given_source,
-    is_git,
-    is_path,
-    is_url,
-    parse_git,
+    is_source,
     source_key,
 )
 from ._output import DIM, change, debug, home_path, shown_path, status, styled, summary, warn
-from ._project import resolve_manifest
+from ._project import given_requirement, read_given_source, resolve_manifest
 from ._sync import install_locked
 
 
@@ -41,7 +36,7 @@ def target(settings: Settings) -> str:
     """The collections directory to work on: the project's, or one set explicitly. With neither, an error, as uv won't
     install without an environment to install into, rather than make a ``collections/`` wherever alai runs."""
     project = settings.project
-    if project.marker is None and settings.sources.get("collections_dir", "default") == "default":
+    if project.marker is None and not settings.collections_dir_set:
         raise ConfigError(
             f"no project found from {home_path(project.root)} (no alai.toml, ansible.cfg or collections/ansible_collections in "
             + "it or a directory above it); pass --collections-dir to say where to install"
@@ -80,8 +75,6 @@ def install(
     such as a source checkout with no ``MANIFEST.json``, counts as installed whatever version is asked for, as
     ansible-galaxy counts one: it's left as it is, and isn't resolved when it's asked for.
     """
-    from ._project import fetch_git_source, fetch_url_source, read_path_source
-
     started = time.monotonic()
     cdir = target(settings)
     _ = using(cdir)
@@ -89,23 +82,11 @@ def install(
     sources: dict[str, Source] = {}
     local: dict[str, SourceCollection] = {}
     for text, edit in [*((t, False) for t in requirements), *((t, True) for t in editable)]:
-        if is_git(text):
-            if edit:
-                raise ConfigError(f"{text} is a git repository, which can't be editable: give a checkout to link to")
-            source = parse_git(text)
-            collection = fetch_git_source(settings, source)
-        elif is_url(text) and not text.lower().startswith("file:"):
-            if edit:
-                raise ConfigError(f"{text} is a tarball, which can't be editable: give a directory to link to")
-            source = UrlSource(text)
-            collection = fetch_url_source(settings, source)
-        elif edit or is_url(text) or is_path(text):
-            path = file_url_path(text) if is_url(text) else text
-            source = PathSource(os.path.abspath(os.path.expanduser(path)), editable=edit)
-            collection = read_path_source(settings, None, source)
-        else:
-            wanted.append(_requirement(text))
+        # -e takes a directory, so a bare name there is one, as uv pip install -e lib2 installs the directory lib2.
+        if not edit and not is_source(text):
+            wanted.append(given_requirement(text))
             continue
+        collection, source = read_given_source(settings, text, editable=edit, relative_to=None)
         if collection.name in sources:
             raise ConfigError(f"{collection.name} is given twice, from {sources[collection.name]} and {source}")
         sources[collection.name] = source
@@ -207,10 +188,3 @@ def _by_source(present: _c.Mapping[str, Installed], given: str) -> str | None:
         f"collection uninstall takes collection names: {', '.join(names)} came from {given}, so run "
         + f"alai collection uninstall {' '.join(names)}"
     )
-
-
-def _requirement(text: str) -> Requirement:
-    try:
-        return Requirement.parse(text.strip())
-    except ValueError as e:
-        raise ConfigError(str(e)) from None

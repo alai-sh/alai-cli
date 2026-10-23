@@ -3,18 +3,15 @@
 
 from __future__ import annotations
 
-import json
 import shutil
 from pathlib import Path
 
 import pytest
+from helpers import write_project
 
-from alai._cli import EXIT_ERROR, main
+from alai._cli import main
+from alai._common import EXIT_ERROR
 from alai._environ import render
-
-
-def write(project: Path, collections: list[str]) -> None:
-    _ = (project / "alai.toml").write_text(f"[project]\ncollections = {json.dumps(collections)}\n")
 
 
 class TestEnv:
@@ -22,7 +19,7 @@ class TestEnv:
         self, project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.setenv("SHELL", "/bin/bash")
-        write(project, ["c.c"])
+        write_project(project, ["c.c"])
         assert main(["sync", "-q"]) == 0
 
         assert main(["env"]) == 0
@@ -37,7 +34,7 @@ class TestEnv:
         self, project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.setenv("SHELL", "/usr/bin/fish")
-        write(project, [])
+        write_project(project, [])
 
         assert main(["env", "-q"]) == 0
 
@@ -47,14 +44,14 @@ class TestEnv:
         self, project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.setenv("SHELL", "/usr/bin/fish")
-        write(project, [])
+        write_project(project, [])
 
         assert main(["env", "-q", "--output-format", "dotenv"]) == 0
 
         assert capsys.readouterr().out.splitlines()[1] == "ANSIBLE_COLLECTIONS_SCAN_SYS_PATH=False"
 
     def test_no_lock(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        write(project, ["c.c"])
+        write_project(project, ["c.c"])
 
         assert main(["env"]) == 0
 
@@ -64,9 +61,9 @@ class TestEnv:
         assert not (project / "collections").exists()
 
     def test_stale_lock(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        write(project, ["c.c"])
+        write_project(project, ["c.c"])
         assert main(["lock", "-q"]) == 0
-        write(project, ["c.c", "d.d"])
+        write_project(project, ["c.c", "d.d"])
 
         assert main(["env"]) == 0
 
@@ -76,7 +73,7 @@ class TestEnv:
         )
 
     def test_not_installed(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        write(project, ["a.a"])
+        write_project(project, ["a.a"])
         assert main(["sync", "-q"]) == 0
         shutil.rmtree(project / "collections/ansible_collections/b")
 
@@ -85,7 +82,7 @@ class TestEnv:
         assert capsys.readouterr().err == "warning: 1 collection from alai.lock not installed; run alai sync\n"
 
     def test_unlisted(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        write(project, [])
+        write_project(project, [])
         assert main(["sync", "-q"]) == 0
         (project / "collections/ansible_collections/my/work").mkdir(parents=True)
 

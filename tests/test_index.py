@@ -338,9 +338,7 @@ class TestIndexFile:
 
 
 @pytest.fixture
-def fetcher(monkeypatch: pytest.MonkeyPatch) -> _c.Iterator[Fetcher]:
-    for name in ("http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY"):
-        monkeypatch.delenv(name, raising=False)
+def fetcher() -> _c.Iterator[Fetcher]:
     with Fetcher(user_agent="alai-test") as f:
         yield f
 

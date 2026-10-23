@@ -6,11 +6,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from test_sync_command import edit, edited, installed, lines
+from helpers import edit, edited, installed_versions, lines
 
 from alai import _edit
-from alai._cli import EXIT_ERROR, main
-from alai._commands.lock import EXIT_STALE
+from alai._cli import main
+from alai._common import EXIT_ERROR, EXIT_STALE
 from alai._native import TomlDocument, TomlEditError
 
 # The index (from test_sync_command): a.a 1.0.0 and 2.0.0 (which needs b.b>=1.0.0), b.b 1.0.0 and 1.1.0, c.c and d.d.
@@ -39,7 +39,7 @@ class TestAdd:
         assert main(["add", "a.a"]) == 0
 
         assert toml(project) == TOML.replace('    "c.c",  # why\n', '    "a.a>=2.0.0",\n    "c.c",  # why\n')
-        assert installed(project) == {"a.a": "2.0.0", "b.b": "1.1.0", "c.c": "1.0.0"}
+        assert installed_versions(project / "collections") == {"a.a": "2.0.0", "b.b": "1.1.0", "c.c": "1.0.0"}
         assert 'name = "a.a"' in (project / "alai.lock").read_text()
         assert lines(capsys.readouterr().err)[0] == "Resolved 3 collections"
 
@@ -49,7 +49,7 @@ class TestAdd:
         assert main(["add", "b.b < 1.1"]) == 0
 
         assert '    "b.b<1.1",\n' in toml(project)
-        assert installed(project)["b.b"] == "1.0.0"
+        assert installed_versions(project / "collections")["b.b"] == "1.0.0"
 
     def test_already_there(self, project: Path) -> None:
         write(project)
@@ -81,7 +81,7 @@ class TestAdd:
 
         assert toml(project) == TOML + '\n[project.groups.docs]\ncollections = [\n    "d.d>=1.0.0",\n]\n'
         # The group added to is installed, though it isn't a default one.
-        assert set(installed(project)) == {"c.c", "d.d"}
+        assert set(installed_versions(project / "collections")) == {"c.c", "d.d"}
 
     def test_dev(self, project: Path) -> None:
         write(project)
@@ -144,7 +144,7 @@ class TestRemove:
         assert main(["remove", "c.c"]) == 0
 
         assert toml(project) == '[project]\ncollections = [\n    # why\n    "d.d",\n]\n'
-        assert set(installed(project)) == {"d.d"}
+        assert set(installed_versions(project / "collections")) == {"d.d"}
         assert " - c.c==1.0.0" in capsys.readouterr().err
 
     def test_several(self, project: Path) -> None:
@@ -161,6 +161,19 @@ class TestRemove:
         assert main(["remove", "--dev", "d.d"]) == 0
 
         assert toml(project) == TOML + "\n[project.groups.dev]\ncollections = []\n"
+
+    def test_from_a_group_that_isnt_default(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # Synced with the default groups alone afterwards, as uv remove --group syncs: the rest of the group goes too.
+        write(project)
+        assert main(["add", "--group", "test", "a.a", "d.d"]) == 0
+        assert set(installed_versions(project / "collections")) == {"a.a", "b.b", "c.c", "d.d"}
+        _ = capsys.readouterr()
+
+        assert main(["remove", "--group", "test", "d.d"]) == 0
+
+        assert '[project.groups.test]\ncollections = [\n    "a.a>=2.0.0",\n]\n' in toml(project)
+        assert set(installed_versions(project / "collections")) == {"c.c"}
+        assert lines(capsys.readouterr().err)[-3:] == [" - a.a==2.0.0", " - b.b==1.1.0", " - d.d==1.0.0"]
 
     def test_not_there(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         write(project, TOML + '\n[project.groups.test]\ncollections = ["d.d"]\n')
@@ -195,7 +208,7 @@ class TestUpgrade:
 
         assert main(["add", "-P", "b.b", "c.c"]) == 0
 
-        assert installed(project) == {"b.b": "1.1.0", "c.c": "1.0.0"}
+        assert installed_versions(project / "collections") == {"b.b": "1.1.0", "c.c": "1.0.0"}
 
     def test_remove_upgrades(self, project: Path) -> None:
         write(project, '[project]\ncollections = ["b.b<1.1", "c.c"]\n')
@@ -204,7 +217,7 @@ class TestUpgrade:
 
         assert main(["remove", "-U", "c.c"]) == 0
 
-        assert installed(project) == {"b.b": "1.1.0"}
+        assert installed_versions(project / "collections") == {"b.b": "1.1.0"}
 
     def test_add_upgrades_a_group(self, project: Path) -> None:
         write(project, '[project]\ncollections = ["c.c"]\n[project.groups.test]\ncollections = ["b.b<1.1"]\n')
@@ -215,7 +228,7 @@ class TestUpgrade:
         assert main(["add", "--upgrade-group", "test", "d.d"]) == 0
 
         assert 'name = "b.b"\nversion = "1.1.0"' in (project / "alai.lock").read_text()
-        assert installed(project) == {"c.c": "1.0.0", "d.d": "1.0.0"}
+        assert installed_versions(project / "collections") == {"c.c": "1.0.0", "d.d": "1.0.0"}
 
     def test_remove_upgrades_a_group(self, project: Path) -> None:
         write(project, '[project]\ncollections = ["c.c", "d.d"]\n[project.groups.dev]\ncollections = ["b.b<1.1"]\n')
@@ -224,7 +237,7 @@ class TestUpgrade:
 
         assert main(["remove", "--upgrade-group", "dev", "d.d"]) == 0
 
-        assert installed(project) == {"b.b": "1.1.0", "c.c": "1.0.0"}
+        assert installed_versions(project / "collections") == {"b.b": "1.1.0", "c.c": "1.0.0"}
 
     def test_add_reinstalls(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         write(project, '[project]\ncollections = ["b.b", "c.c"]\n')
@@ -237,7 +250,7 @@ class TestUpgrade:
 
         assert lines(capsys.readouterr().err)[-2:] == [" ~ c.c==1.0.0", " + d.d==1.0.0"]
         assert edited(cdir) == {"b.b"}
-        assert installed(project) == {"b.b": "1.1.0", "c.c": "1.0.0", "d.d": "1.0.0"}
+        assert installed_versions(project / "collections") == {"b.b": "1.1.0", "c.c": "1.0.0", "d.d": "1.0.0"}
 
     def test_remove_reinstalls(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         write(project, '[project]\ncollections = ["c.c", "d.d"]\n')
@@ -250,7 +263,7 @@ class TestUpgrade:
 
         assert lines(capsys.readouterr().err)[-2:] == [" ~ c.c==1.0.0", " - d.d==1.0.0"]
         assert edited(cdir) == set()
-        assert installed(project) == {"c.c": "1.0.0"}
+        assert installed_versions(project / "collections") == {"c.c": "1.0.0"}
 
     @pytest.mark.parametrize(
         "argv",
@@ -263,8 +276,10 @@ class TestUpgrade:
     def test_frozen_refuses(self, project: Path, capsys: pytest.CaptureFixture[str], argv: list[str]) -> None:
         write(project)
 
-        assert main(argv) == EXIT_ERROR
+        with pytest.raises(SystemExit) as e:
+            _ = main(argv)
 
+        assert e.value.code == EXIT_ERROR
         assert "--frozen doesn't" in capsys.readouterr().err
         assert toml(project) == TOML
 
@@ -309,7 +324,7 @@ class TestLocked:
         assert lines(capsys.readouterr().err) == [*expected, "error: alai.lock would change, and --locked was given"]
         assert toml(project) == TOML
         assert (project / "alai.lock").read_bytes() == before
-        assert installed(project) == {"c.c": "1.0.0"}
+        assert installed_versions(project / "collections") == {"c.c": "1.0.0"}
 
     def test_already_there(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         before = self.synced(project)
@@ -321,7 +336,7 @@ class TestLocked:
 
         assert toml(project) == TOML
         assert (project / "alai.lock").read_bytes() == before
-        assert installed(project) == {"c.c": "1.0.0"}
+        assert installed_versions(project / "collections") == {"c.c": "1.0.0"}
 
     def test_spelt_differently(self, project: Path) -> None:
         before = self.synced(project, '[project]\ncollections = ["c.c>=1"]\n')
@@ -376,7 +391,7 @@ class TestLocked:
 
         assert main(["add", "--locked", "-U", "c.c"]) == EXIT_STALE
         assert (project / "alai.lock").read_bytes() == before
-        assert installed(project) == {"b.b": "1.0.0", "c.c": "1.0.0"}
+        assert installed_versions(project / "collections") == {"b.b": "1.0.0", "c.c": "1.0.0"}
 
     def test_with_no_sync(self, project: Path) -> None:
         _ = self.synced(project)
@@ -384,7 +399,7 @@ class TestLocked:
 
         assert main(["add", "--locked", "--no-sync", "c.c"]) == 0
 
-        assert installed(project) == {}
+        assert installed_versions(project / "collections") == {}
 
     @pytest.mark.parametrize("command", ["add", "remove"])
     def test_not_with_frozen(self, project: Path, capsys: pytest.CaptureFixture[str], command: str) -> None:

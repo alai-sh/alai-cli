@@ -10,12 +10,27 @@ import collections.abc as _c
 import os
 import re
 
+# typing.TYPE_CHECKING without importing typing, which this module, loaded by every command, otherwise doesn't need.
+TYPE_CHECKING = False
+if TYPE_CHECKING:
+    from ._native import TomlDocument
+
 NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
 """Index and group names: lowercase, so each is spelled one way in files and on the command line."""
+SHA256_RE = re.compile(r"[0-9a-f]{64}")
+"""A SHA-256 as the index, the lock and the cache write one: lowercase hex."""
 
 
 class Error(Exception):
     """A failure to report to the user as ``error: <message>``, without a traceback."""
+
+
+EXIT_ERROR = 2
+"""An ``Error`` was reported, or the command line was wrong, as argparse exits."""
+EXIT_STALE = 1
+"""``--check`` or ``--locked`` found the lock missing, or resolving would change it."""
+EXIT_NOT_FOUND = 1
+"""Nothing matched, as ``uv pip show`` exits 1 for a package it can't find."""
 
 
 MAX_THREADS = 4
@@ -52,8 +67,95 @@ class Record:
 
 
 def as_table(value: object) -> dict[str, object] | None:
-    # TOML tables always have string keys.
+    # TOML tables and JSON objects always have string keys.
     return value if isinstance(value, dict) else None  # pyright: ignore[reportUnknownVariableType]
+
+
+def as_list(value: object) -> list[object] | None:
+    # TOML and JSON arrays come back as list[Any]; this names them as list[object] for the type checker.
+    return value if isinstance(value, list) else None  # pyright: ignore[reportUnknownVariableType]
+
+
+def as_str(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def string_list(value: object) -> list[str] | None:
+    """``value`` when it's a list of strings, else None, for the caller to say what it must be."""
+    items = as_list(value)
+    if items is None or not all(isinstance(v, str) for v in items):
+        return None
+    return items  # pyright: ignore[reportReturnType]
+
+
+def json_object(data: bytes) -> dict[str, object]:
+    """``data`` as a JSON object; ValueError, ``not valid JSON: ...`` or ``expected a JSON object``, if it isn't."""
+    import json
+
+    try:
+        obj = json.loads(data)
+    except ValueError as e:
+        raise ValueError(f"not valid JSON: {e}") from None
+    found = as_table(obj)
+    if found is None:
+        raise ValueError("expected a JSON object")
+    return found
+
+
+def sha256_file(path: str) -> str:
+    """The SHA-256 of the file at ``path``, read in chunks; OSError if it can't be read."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def file_url_to_path(url: str) -> str:
+    """The path a ``file://`` URL names; ValueError if it names another host, which only Windows can reach."""
+    import urllib.parse
+    import urllib.request
+
+    parts = urllib.parse.urlsplit(url)
+    if parts.netloc not in ("", "localhost"):
+        raise ValueError("a file URL can't name another host")
+    return urllib.request.url2pathname(parts.path)
+
+
+def inside(path: str, parent: str) -> bool:
+    """Whether ``path`` is ``parent`` or under it. Both are absolute and resolved alike (``os.path.realpath``) by
+    the caller, so a symlink doesn't hide one in the other."""
+    return os.path.commonpath((path, parent)) == parent
+
+
+def read_toml(path: str) -> dict[str, object]:
+    """The TOML file at ``path``: a config file, ``alai.toml`` or ``alai.lock``."""
+    # Imported here so a command run without any config files never loads the extension for it.
+    from ._native import TomlError, toml_read
+
+    try:
+        return toml_read(path)
+    except (TomlError, OSError) as e:
+        raise _toml_error(path, e) from None
+
+
+def read_toml_document(path: str) -> TomlDocument:
+    """The TOML file at ``path`` to edit, ``alai.toml`` for ``alai add``, read as ``read_toml`` reads one."""
+    from ._native import TomlDocument, TomlError
+
+    try:
+        return TomlDocument.read(path)
+    except (TomlError, OSError) as e:
+        raise _toml_error(path, e) from None
+
+
+def _toml_error(path: str, e: Exception) -> ConfigError:
+    """A file that can't be read, or isn't UTF-8 or valid TOML, as an error naming it."""
+    if isinstance(e, OSError):
+        return ConfigError(f"can't read {path}: {e.strerror or e}")
+    return ConfigError(f"{path}: invalid TOML: {e}")
 
 
 TRUE_WORDS = frozenset(("1", "true", "yes", "on"))
@@ -61,10 +163,23 @@ FALSE_WORDS = frozenset(("0", "false", "no", "off"))
 """The words a boolean environment variable takes, in any case."""
 
 
-def env_bool(environ: _c.Mapping[str, str], name: str) -> bool:
-    value = (environ.get(name) or "").lower()
-    if not value or value in FALSE_WORDS:
-        return False
-    if value in TRUE_WORDS:
+def parse_bool(value: str, where: str) -> bool:
+    """``value`` as one of the boolean words, in any case; ConfigError naming ``where`` if it's none of them."""
+    lowered = value.lower()
+    if lowered in TRUE_WORDS:
         return True
-    raise ConfigError(f"{name}: expected a boolean (1, true, yes, on, 0, false, no, off), got '{value}'")
+    if lowered in FALSE_WORDS:
+        return False
+    raise ConfigError(f"{where}: expected a boolean (1, true, yes, on, 0, false, no, off), got '{value}'")
+
+
+def env_bool(environ: _c.Mapping[str, str], name: str) -> bool:
+    """The boolean environment variable ``name``: False when unset or empty."""
+    value = environ.get(name) or ""
+    return parse_bool(value, name) if value else False
+
+
+def selects(selection: bool | _c.Collection[str], name: str) -> bool:
+    """Whether ``name`` is in ``selection``: everything (True), nothing (False), or the names given, as ``--upgrade``
+    and ``--upgrade-collection``, or ``--reinstall`` and ``--reinstall-collection``, choose collections."""
+    return selection is True or (selection is not False and name in selection)

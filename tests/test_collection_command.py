@@ -3,23 +3,15 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
-from test_sync_command import edit, edited, lines
+from helpers import edit, edited, installed_versions, lines
 
-from alai._cli import EXIT_ERROR, main
+from alai._cli import main
+from alai._common import EXIT_ERROR
 
 # The index (conftest's COLLECTIONS): a.a 1.0.0 and 2.0.0 (which needs b.b>=1.0.0), b.b 1.0.0 and 1.1.0, c.c and d.d.
-
-
-def installed(cdir: Path) -> dict[str, str]:
-    out: dict[str, str] = {}
-    for manifest in sorted((cdir / "ansible_collections").glob("*/*/MANIFEST.json")):
-        info = json.loads(manifest.read_text())["collection_info"]
-        out[f"{info['namespace']}.{info['name']}"] = info["version"]
-    return out
 
 
 def install(*args: str) -> int:
@@ -56,7 +48,7 @@ class TestWhere:
     def test_explicit_directory(self, project: Path, tmp_path: Path) -> None:
         assert install("--collections-dir", str(tmp_path / "out"), "c.c") == 0
 
-        assert installed(tmp_path / "out") == {"c.c": "1.0.0"}
+        assert installed_versions(tmp_path / "out") == {"c.c": "1.0.0"}
 
     def test_default_directory_not_named(self, cdir: Path, capsys: pytest.CaptureFixture[str]) -> None:
         # collections/ in the current directory is the one a user would assume, as uv pip names no ./.venv.
@@ -78,7 +70,7 @@ class TestWhere:
 
         assert install("c.c") == 0
 
-        assert installed(cdir) == {"c.c": "1.0.0"}
+        assert installed_versions(cdir) == {"c.c": "1.0.0"}
         assert lines(capsys.readouterr().err)[0] == "Using collections directory at: ~/project/collections"
 
     def test_named_when_already_installed(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -99,28 +91,28 @@ class TestWhere:
 
         assert install("c.c") == 0
 
-        assert installed(tmp_path / "env") == {"c.c": "1.0.0"}
+        assert installed_versions(tmp_path / "env") == {"c.c": "1.0.0"}
 
     def test_alai_project_files_untouched(self, project: Path) -> None:
         _ = (project / "alai.toml").write_text('[project]\ncollections = ["d.d"]\n')
 
         assert install("c.c") == 0
 
-        assert installed(project / "collections") == {"c.c": "1.0.0"}
+        assert installed_versions(project / "collections") == {"c.c": "1.0.0"}
         assert (project / "alai.toml").read_text() == '[project]\ncollections = ["d.d"]\n'
         assert not (project / "alai.lock").exists()
 
     def test_ansible_cfg_project(self, cdir: Path) -> None:
         assert install("c.c") == 0
 
-        assert installed(cdir) == {"c.c": "1.0.0"}
+        assert installed_versions(cdir) == {"c.c": "1.0.0"}
 
 
 class TestInstall:
     def test_with_dependencies(self, cdir: Path, capsys: pytest.CaptureFixture[str]) -> None:
         assert install("a.a") == 0
 
-        assert installed(cdir) == {"a.a": "2.0.0", "b.b": "1.1.0"}
+        assert installed_versions(cdir) == {"a.a": "2.0.0", "b.b": "1.1.0"}
         assert lines(capsys.readouterr().err) == [
             "Resolved 2 collections",
             "Prepared 2 collections",
@@ -148,7 +140,7 @@ class TestInstall:
         assert install("a.a", "c.c") == 0
 
         # b.b 1.0.0 still fits a.a's b.b>=1.0.0, so it stays, as uv pip keeps what's installed.
-        assert installed(cdir) == {"a.a": "2.0.0", "b.b": "1.0.0", "c.c": "1.0.0"}
+        assert installed_versions(cdir) == {"a.a": "2.0.0", "b.b": "1.0.0", "c.c": "1.0.0"}
 
     def test_requirement_replaces_an_installed_version(self, cdir: Path, capsys: pytest.CaptureFixture[str]) -> None:
         _ = install("b.b")
@@ -156,7 +148,7 @@ class TestInstall:
 
         assert install("b.b<1.1") == 0
 
-        assert installed(cdir) == {"b.b": "1.0.0"}
+        assert installed_versions(cdir) == {"b.b": "1.0.0"}
         assert " - b.b==1.1.0" in capsys.readouterr().err
 
     @pytest.mark.parametrize("args", [["-U"], ["-P", "b.b"]])
@@ -165,14 +157,14 @@ class TestInstall:
 
         assert install(*args, "a.a") == 0
 
-        assert installed(cdir)["b.b"] == "1.1.0"
+        assert installed_versions(cdir)["b.b"] == "1.1.0"
 
     def test_nothing_removed(self, cdir: Path) -> None:
         _ = install("c.c")
 
         assert install("d.d") == 0
 
-        assert installed(cdir) == {"c.c": "1.0.0", "d.d": "1.0.0"}
+        assert installed_versions(cdir) == {"c.c": "1.0.0", "d.d": "1.0.0"}
 
     def test_reinstall(self, cdir: Path, capsys: pytest.CaptureFixture[str]) -> None:
         _ = install("a.a", "c.c")
@@ -191,7 +183,7 @@ class TestInstall:
         ]
         # c.c wasn't asked for, so it's left as it is.
         assert edited(cdir) == {"c.c"}
-        assert installed(cdir) == {"a.a": "2.0.0", "b.b": "1.1.0", "c.c": "1.0.0"}
+        assert installed_versions(cdir) == {"a.a": "2.0.0", "b.b": "1.1.0", "c.c": "1.0.0"}
 
     def test_reinstall_collection(self, cdir: Path, capsys: pytest.CaptureFixture[str]) -> None:
         _ = install("a.a", "c.c")
@@ -240,7 +232,7 @@ class TestUnversioned:
 
         assert install("c.c") == 0
 
-        assert installed(cdir) == {"c.c": "1.0.0"}
+        assert installed_versions(cdir) == {"c.c": "1.0.0"}
         assert not (path / "galaxy.yml").exists()
         assert lines(capsys.readouterr().err)[-2:] == [" - c.c (unknown version)", " + c.c==1.0.0"]
 
@@ -257,7 +249,7 @@ class TestUnversioned:
 
         assert install("--keep-unversioned", "a.a") == 0
 
-        assert installed(cdir) == {"a.a": "2.0.0"}
+        assert installed_versions(cdir) == {"a.a": "2.0.0"}
         assert (path / "galaxy.yml").exists()
         assert lines(capsys.readouterr().err) == [
             "Resolved 2 collections",
@@ -272,7 +264,7 @@ class TestUnversioned:
 
         assert install("--keep-unversioned", "x.x", "d.d") == 0
 
-        assert installed(cdir) == {"d.d": "1.0.0"}
+        assert installed_versions(cdir) == {"d.d": "1.0.0"}
         assert (path / "galaxy.yml").exists()
         assert lines(capsys.readouterr().err)[-1] == " + d.d==1.0.0"
 
@@ -280,8 +272,10 @@ class TestUnversioned:
     def test_not_with_reinstall(self, cdir: Path, capsys: pytest.CaptureFixture[str], flag: list[str]) -> None:
         path = checkout(cdir, "c.c")
 
-        assert install("--keep-unversioned", *flag, "c.c") == EXIT_ERROR
+        with pytest.raises(SystemExit) as e:
+            _ = install("--keep-unversioned", *flag, "c.c")
 
+        assert e.value.code == EXIT_ERROR
         assert "--keep-unversioned can't be used with --reinstall" in capsys.readouterr().err
         assert (path / "galaxy.yml").exists()
 
@@ -293,7 +287,7 @@ class TestUninstall:
 
         assert uninstall("a.a") == 0
 
-        assert installed(cdir) == {"b.b": "1.1.0"}
+        assert installed_versions(cdir) == {"b.b": "1.1.0"}
         assert lines(capsys.readouterr().err) == ["Uninstalled 1 collection", " - a.a==2.0.0"]
 
     def test_not_installed(self, cdir: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -305,7 +299,7 @@ class TestUninstall:
         err = capsys.readouterr().err
         assert "warning: skipping d.d, which isn't installed in collections" in err
         assert " - c.c==1.0.0" in err
-        assert installed(cdir) == {}
+        assert installed_versions(cdir) == {}
 
     def test_other_directory_named(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         _ = install("--collections-dir", "out", "c.c")
@@ -318,7 +312,7 @@ class TestUninstall:
             "Uninstalled 1 collection",
             " - c.c==1.0.0",
         ]
-        assert installed(project / "out") == {}
+        assert installed_versions(project / "out") == {}
 
     def test_nothing_to_uninstall(self, cdir: Path, capsys: pytest.CaptureFixture[str]) -> None:
         assert uninstall("d.d") == 0

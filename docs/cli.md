@@ -51,7 +51,7 @@ Every command takes these, before or after its name.
 
 ## alai add
 
-Add collections to the project's alai.toml, then lock and install them. A collection given by name alone is written as >= the version locked for it. A directory, given with a / such as ./ns.col, is the collection it holds, from its galaxy.yml or a built one's MANIFEST.json: its name is added, and [project.sources] takes it from there. So is a built collection's tarball, by path, such as ns-col-1.0.0.tar.gz, or by https:// URL, and a git repository, as git+URL[@REV][#subdirectory=DIR&version=VERSION]. Every other line of alai.toml is left as it is.
+Add collections to the project's alai.toml, then lock and install them. A collection given by name alone is written as >= the version locked for it. A directory, given with a / such as ./ns.col, is the collection it holds, from its galaxy.yml or a built one's MANIFEST.json: its name is added, and [project.sources] takes it from there. So is a built collection's tarball, by path, such as ns-col-1.0.0.tar.gz, or by https:// URL, and a git repository, as git+URL[@REV][#subdirectory=DIR&version=VERSION]. A directory given with `--editable` is linked to rather than copied, so edits there are seen. Every other line of alai.toml is left as it is.
 
 [Adding collections to a new project](casts/add.cast){ .alai-cast }
 
@@ -67,7 +67,7 @@ Adding `community.general -P ansible.posix` adds `community.general` and upgrade
 {: .alai-cast-description }
 
 ```console
-$ alai add [OPTIONS] REQUIREMENT [REQUIREMENT ...]
+$ alai add [OPTIONS] [REQUIREMENT ...]
 ```
 
 ### Arguments
@@ -80,7 +80,7 @@ $ alai add [OPTIONS] REQUIREMENT [REQUIREMENT ...]
 
 | Option | Description |
 |---|---|
-| `--editable` | Add the directories given as editable, so the collection is linked to them rather than copied |
+| `--editable DIR` | Add the collection in DIR as editable, linked to it rather than copied, so edits there are seen; can be repeated |
 | `--group NAME` | Add them in group NAME rather than the project. Can't be used with `--dev` |
 | `--dev` | The same as `--group dev`. Can't be used with `--group` |
 | `--no-sync` | Lock, but don't install. Can't be used with `--frozen` |

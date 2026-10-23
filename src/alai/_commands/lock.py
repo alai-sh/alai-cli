@@ -8,11 +8,16 @@ from __future__ import annotations
 import argparse
 import time
 
-from .._args import HelpFormatter, add_global_args, add_settings_args, settings_from_args
+from .._args import (
+    HelpFormatter,
+    add_global_args,
+    add_settings_args,
+    add_upgrade_args,
+    settings_from_args,
+    upgrade_from_args,
+)
+from .._common import EXIT_STALE
 from .._output import error, shown_path, status, summary
-
-EXIT_STALE = 1
-"""``--check`` found the lock missing, or resolving would change it."""
 
 
 def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -35,33 +40,9 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
     lock.set_defaults(parser=lock, handler=run)
 
 
-def add_upgrade_args(parser: argparse.ArgumentParser, *, groups: bool = False) -> None:
-    """``-U`` and ``-P``, for every command that resolves, as uv has them on ``lock``, ``sync``, ``add`` and ``remove``;
-    with ``groups``, for the commands that resolve the project, ``--upgrade-group`` too."""
-    _ = parser.add_argument(
-        "-U", "--upgrade", action="store_true", help="choose the newest versions that fit, ignoring alai.lock"
-    )
-    _ = parser.add_argument(
-        "-P",
-        "--upgrade-collection",
-        metavar="NAME",
-        action="append",
-        default=[],
-        help="choose the newest version of collection NAME that fits; can be repeated",
-    )
-    if groups:
-        _ = parser.add_argument(
-            "--upgrade-group",
-            metavar="NAME",
-            action="append",
-            default=[],
-            help="choose the newest version of every collection group NAME lists that fits; can be repeated",
-        )
-
-
 def run(args: argparse.Namespace) -> int:
     from .._lock import lock_path, read_lock, write_lock
-    from .._project import load_project, lock_unchanged, report_changes, resolve_project, upgrade_from_args
+    from .._project import load_project, lock_unchanged, report_changes, resolve_project
 
     started = time.monotonic()
     settings = settings_from_args(args)

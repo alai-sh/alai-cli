@@ -1,18 +1,28 @@
 # Copyright: (c) 2026, Jordan Borean (@jborean93) <jborean93@gmail.com>
 # MIT License (see LICENSE or https://opensource.org/licenses/MIT)
 
-"""What every command's parser shares: the help formatter and the global and settings options.
+"""What every command's parser shares: the help formatter, the global and settings options, the options several
+commands take, and reading each of those into what the library takes.
 
-Kept apart from ``_cli`` so the command modules can use it without importing ``_cli``, which imports them.
+Kept apart from ``_cli`` so the command modules can use it without importing ``_cli``, which imports them. The
+library modules (``_sync``, ``_project``...) never see an argparse namespace: a command reads its options here and
+passes values on.
 """
 
 from __future__ import annotations
 
 import argparse
-import os
+import collections.abc as _c
 import sys
 
+from ._common import ConfigError
 from ._config import SETTINGS, Overrides, SettingDefinition, Settings, load_settings
+from ._output import terminal_width
+
+# typing.TYPE_CHECKING without importing typing, which this module, loaded by every command, otherwise doesn't need.
+TYPE_CHECKING = False
+if TYPE_CHECKING:
+    from ._project import Upgrade
 
 
 class HelpFormatter(argparse.HelpFormatter):
@@ -37,20 +47,6 @@ class HelpFormatter(argparse.HelpFormatter):
                 getattr(argparse.HelpFormatter, "_set_color")(self, self._pending_color)  # noqa: B009
                 return self.__dict__[name]
             raise AttributeError(name)
-
-
-def terminal_width() -> int:
-    """The terminal width as shutil.get_terminal_size() works it out."""
-    try:
-        columns = int(os.environ.get("COLUMNS", "0"))
-    except ValueError:
-        columns = 0
-    if columns > 0:
-        return columns
-    try:
-        return os.get_terminal_size(sys.__stdout__.fileno()).columns or 80  # pyright: ignore[reportOptionalMemberAccess]
-    except (AttributeError, ValueError, OSError):
-        return 80
 
 
 def add_global_args(parser: argparse.ArgumentParser, *, suppress: bool) -> None:
@@ -138,3 +134,177 @@ def settings_from_args(args: argparse.Namespace) -> Settings:
     return load_settings(
         Overrides(project=args.project, config_file=args.config_file, no_config=args.no_config, **settings)
     )
+
+
+def add_upgrade_args(parser: argparse.ArgumentParser, *, groups: bool = False) -> None:
+    """``-U`` and ``-P``, for every command that resolves, as uv has them on ``lock``, ``sync``, ``add`` and ``remove``;
+    with ``groups``, for the commands that resolve the project, ``--upgrade-group`` too."""
+    _ = parser.add_argument(
+        "-U", "--upgrade", action="store_true", help="choose the newest versions that fit, ignoring alai.lock"
+    )
+    _ = parser.add_argument(
+        "-P",
+        "--upgrade-collection",
+        metavar="NAME",
+        action="append",
+        default=[],
+        help="choose the newest version of collection NAME that fits; can be repeated",
+    )
+    if groups:
+        _ = parser.add_argument(
+            "--upgrade-group",
+            metavar="NAME",
+            action="append",
+            default=[],
+            help="choose the newest version of every collection group NAME lists that fits; can be repeated",
+        )
+
+
+def add_check_args(parser: argparse.ArgumentParser) -> argparse._MutuallyExclusiveGroup:
+    """``--locked`` and ``--frozen``, for the commands that sync: ``sync`` and ``run``."""
+    check = parser.add_mutually_exclusive_group()
+    _ = check.add_argument(
+        "--locked",
+        action="store_true",
+        help="resolve, and exit 1 rather than install if alai.lock is missing or would change",
+    )
+    _ = check.add_argument(
+        "--frozen",
+        action="store_true",
+        help="install from alai.lock as it is, without checking it against alai.toml",
+    )
+    return check
+
+
+def add_group_args(parser: argparse.ArgumentParser) -> argparse._ArgumentGroup:
+    """The options choosing which groups to install, for the commands that sync: ``sync`` and ``run``."""
+    groups = parser.add_argument_group("groups")
+    _ = groups.add_argument(
+        "--group", metavar="NAME", action="append", default=[], help="also install group NAME; can be repeated"
+    )
+    _ = groups.add_argument(
+        "--no-group",
+        metavar="NAME",
+        action="append",
+        default=[],
+        help="don't install group NAME, even if another option asks for it; can be repeated",
+    )
+    _ = groups.add_argument(
+        "--only-group",
+        metavar="NAME",
+        action="append",
+        default=[],
+        help="install only group NAME, without the project's own collections; can be repeated",
+    )
+    _ = groups.add_argument("--all-groups", action="store_true", help="install every group")
+    _ = groups.add_argument("--no-default-groups", action="store_true", help="don't install the 'dev' group")
+    _ = groups.add_argument("--no-dev", action="store_true", help="the same as --no-group dev")
+    _ = groups.add_argument("--only-dev", action="store_true", help="the same as --only-group dev")
+    return groups
+
+
+def add_reinstall_args(parser: argparse.ArgumentParser) -> None:
+    """``--reinstall`` and ``--reinstall-collection``, for every command that installs, as uv has them on ``sync``,
+    ``add``, ``remove`` and ``pip install``."""
+    _ = parser.add_argument(
+        "--reinstall",
+        action="store_true",
+        help="reinstall every collection, even those already at the right version",
+    )
+    _ = parser.add_argument(
+        "--reinstall-collection",
+        metavar="NAME",
+        action="append",
+        default=[],
+        help="reinstall collection NAME, even if it's already at the right version; can be repeated",
+    )
+
+
+def add_edit_args(parser: argparse.ArgumentParser, *, verb: str) -> None:
+    """The options ``add`` and ``remove`` share."""
+    where = parser.add_mutually_exclusive_group()
+    _ = where.add_argument("--group", metavar="NAME", help=f"{verb} them in group NAME rather than the project")
+    _ = where.add_argument("--dev", action="store_true", help="the same as --group dev")
+    when = parser.add_mutually_exclusive_group()
+    _ = when.add_argument("--no-sync", action="store_true", help="lock, but don't install")
+    _ = when.add_argument("--frozen", action="store_true", help="only edit alai.toml, without locking or installing")
+    _ = parser.add_argument(
+        "--locked",
+        action="store_true",
+        help="resolve, and exit 1 without writing anything if alai.lock is missing or would change",
+    )
+    add_upgrade_args(parser, groups=True)
+    add_reinstall_args(parser)
+
+
+def check_locked(args: argparse.Namespace) -> None:
+    """``--locked`` and ``--frozen`` exclude each other, as on ``sync``, but ``--no-sync`` and ``--frozen`` already
+    share a group, which argparse can't extend to say so; this is its own error for it."""
+    if args.locked and args.frozen:
+        usage_error(args, "argument --locked: not allowed with argument --frozen")
+
+
+def usage_error(args: argparse.Namespace, message: str) -> None:
+    """Exit as argparse does for options that can't go together, printing the usage and ``message``, so every such
+    conflict reads the same, whether argparse or alai found it."""
+    parser: argparse.ArgumentParser = args.parser
+    parser.error(message)
+
+
+def upgrade_from_args(args: argparse.Namespace) -> Upgrade:
+    """What ``-U``, ``-P`` and ``--upgrade-group`` ask to upgrade; a usage error with ``--frozen``, which resolves
+    nothing, on the commands that have it."""
+    from ._manifest import collection_name
+    from ._project import Upgrade
+
+    try:
+        collections = {collection_name(n) for n in args.upgrade_collection}
+    except ValueError as e:
+        raise ConfigError(f"--upgrade-collection: {e}") from None
+    upgrade = Upgrade(everything=args.upgrade, collections=collections, groups=getattr(args, "upgrade_group", []))
+    if upgrade and getattr(args, "frozen", False):
+        usage_error(args, "--upgrade, --upgrade-collection and --upgrade-group resolve, which --frozen doesn't")
+    return upgrade
+
+
+def reinstall_from_args(args: argparse.Namespace) -> bool | set[str]:
+    """What to reinstall: everything, the collections named, or nothing (False)."""
+    from ._manifest import collection_name
+
+    if args.reinstall:
+        return True
+    try:
+        return {collection_name(n) for n in args.reinstall_collection} or False
+    except ValueError as e:
+        raise ConfigError(f"--reinstall-collection: {e}") from None
+
+
+def selected_groups(args: argparse.Namespace, known: _c.Collection[str]) -> tuple[bool, list[str]]:
+    """Whether the project's own collections are installed, and which of the groups ``known``, as uv chooses them:
+    the default groups that exist, plus ``--group``, or every group with ``--all-groups``, or only
+    ``--only-group``'s, less ``--no-group``."""
+    from ._sync import DEFAULT_GROUPS
+
+    def check(flag: str, names: _c.Iterable[str], *, defaults_ok: bool = False) -> None:
+        # --no-group dev and --no-dev are fine without a dev group, so a CI job can always pass them.
+        for name in sorted(set(names)):
+            if name not in known and not (defaults_ok and name in DEFAULT_GROUPS):
+                have = ", ".join(f"'{g}'" for g in sorted(known))
+                raise ConfigError(f"{flag}: alai.toml has no group '{name}'" + (f" (it has {have})" if have else ""))
+
+    check("--group", args.group)
+    check("--only-group", args.only_group)
+    check("--only-dev", ["dev"] if args.only_dev else [])
+    check("--no-group", args.no_group, defaults_ok=True)
+    excluded = {*args.no_group, *(["dev"] if args.no_dev else [])}
+    only = {*args.only_group, *(["dev"] if args.only_dev else [])}
+    if only:
+        if args.group or args.all_groups:
+            usage_error(args, "--only-group and --only-dev can't be used with --group or --all-groups")
+        return False, sorted(only - excluded)
+    if args.all_groups:
+        chosen = set(known)
+    else:
+        chosen: set[str] = set() if args.no_default_groups else {g for g in DEFAULT_GROUPS if g in known}
+        chosen |= set(args.group)
+    return True, sorted(chosen - excluded)

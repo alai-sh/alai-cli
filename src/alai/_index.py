@@ -12,7 +12,6 @@ read is kept but marked unusable, for the resolver to skip with a warning. The d
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import re
 import threading
@@ -20,7 +19,7 @@ import typing as _t
 import urllib.parse
 
 from . import _native
-from ._common import Error, Record
+from ._common import SHA256_RE, Error, Record, json_object
 from ._config import Index
 from ._fetch import Fetcher
 from ._manifest import collection_name
@@ -40,7 +39,6 @@ _MAX_MOVES = 5
 _Prefetch = _t.Literal["collections", "plugins"]
 _USUAL_PATHS: dict[_Prefetch, str] = {"collections": "collections.json", "plugins": "plugins.jsonl"}
 """Where the spec's layout, and ``index.alai.sh``, keep the listing and the plugin index, relative to the root."""
-_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _DL_PLACEHOLDERS = ("{sha256-checksum}", "{sha256-prefix}", "{namespace}", "{name}", "{version}")
 
 
@@ -387,7 +385,7 @@ def parse_collections(data: bytes, url: str) -> dict[str, Listed]:
             sha256 = fields.get("sha256")
             result[f"{namespace}.{name}"] = Listed(
                 updated if isinstance(updated, str) else "",
-                sha256 if isinstance(sha256, str) and _SHA256_RE.fullmatch(sha256) else None,
+                sha256 if isinstance(sha256, str) and SHA256_RE.fullmatch(sha256) else None,
             )
     return result
 
@@ -509,9 +507,6 @@ def _sha256(data: bytes) -> str:
 
 def _json_object(data: bytes, url: str) -> dict[str, object]:
     try:
-        obj = json.loads(data)
+        return json_object(data)
     except ValueError as e:
-        raise IndexDataError(f"{url}: not valid JSON: {e}") from None
-    if not isinstance(obj, dict):
-        raise IndexDataError(f"{url}: expected a JSON object")
-    return obj  # pyright: ignore[reportUnknownVariableType]
+        raise IndexDataError(f"{url}: {e}") from None

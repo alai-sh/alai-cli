@@ -11,8 +11,9 @@ from pathlib import Path
 import pytest
 from index_data import make_index, plugin
 
-from alai._cli import EXIT_ERROR, main
-from alai._find import EXIT_NOT_FOUND, as_sentence, markup, plain, sentence
+from alai._cli import main
+from alai._common import EXIT_ERROR, EXIT_NOT_FOUND
+from alai._find import as_sentence, markup, plain, sentence
 
 PLUGINS = [
     plugin("ansible.builtin.copy", short_description="Copy files to remote locations"),

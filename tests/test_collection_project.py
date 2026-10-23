@@ -12,10 +12,11 @@ import os
 from pathlib import Path
 
 import pytest
+from helpers import lines
 
 from alai import _config
-from alai._cli import EXIT_ERROR, main
-from alai._common import ConfigError
+from alai._cli import main
+from alai._common import EXIT_ERROR, ConfigError
 from alai._config import Overrides, find_project, load_settings
 from alai._galaxy import read_source_collection
 from alai._lock import EditableSource, LockError, parse_lock, read_lock, render_lock
@@ -49,10 +50,6 @@ def installed(cdir: Path) -> dict[str, str]:
         name = f"{path.parent.name}.{path.name}"
         out[name] = f"-> {path.readlink()}" if path.is_symlink() else "dir"
     return out
-
-
-def lines(err: str) -> list[str]:
-    return [line.rsplit(" in ", 1)[0] if not line.startswith(" ") else line for line in err.splitlines()]
 
 
 class TestDiscovery:

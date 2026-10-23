@@ -37,6 +37,20 @@ live: _c.Callable[[str], None] | None = None
 """How the ``_progress.Live`` drawing now, if any, writes a message above itself."""
 
 
+def terminal_width() -> int:
+    """The terminal width as shutil.get_terminal_size() works it out, without importing shutil (~2 ms)."""
+    try:
+        columns = int(os.environ.get("COLUMNS", "0"))
+    except ValueError:
+        columns = 0
+    if columns > 0:
+        return columns
+    try:
+        return os.get_terminal_size(sys.__stdout__.fileno()).columns or 80  # pyright: ignore[reportOptionalMemberAccess]
+    except (AttributeError, ValueError, OSError):
+        return 80
+
+
 def progress_enabled() -> bool:
     """Whether to draw live progress: on a terminal, unless ``-q``, ``--no-progress`` or ``TERM=dumb``."""
     if verbosity < 0 or not progress or not sys.stderr.isatty():

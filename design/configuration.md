@@ -94,7 +94,22 @@ what's planned on top of it, and the questions still open.
   asks for the groups it uses: `alai lock` takes `resolve` only, so
   `alai lock --link-mode copy` is an error; `config show` takes every one.
   `cache_dir` is a global flag, since every command that reads an index or
-  installs uses the cache.
+  installs uses the cache. uv differs here: its `--offline` is a global
+  flag (uv 0.13.5, 2026-10-23: `uv version --offline` is accepted), where
+  `alai env --offline` is an error, as `env` never connects; the
+  environment variable, `ALAI_OFFLINE`, applies everywhere as uv's does.
+- **Options that can't go together are usage errors**, printing the usage
+  and exiting 2 as argparse does, whether argparse's own groups catch them
+  (`--locked --frozen`) or alai does after parsing (`--only-group` with
+  `--group`, `-U` with `--frozen`, `--keep-unversioned` with
+  `--reinstall`; `_args.usage_error`), as uv's are all clap errors (uv
+  0.13.5, 2026-10-23: `uv sync --only-group test --group dev`, `uv sync
+  --frozen -U` and `uv sync --locked --frozen` each print "the argument
+  ... cannot be used with ..." and the usage). A name an option takes that
+  the project doesn't have (`--group nope`) is still an `error:` line
+  without usage: the command line was fine, `alai.toml` isn't. uv accepts
+  `uv sync --exact --inexact`; `alai run --exact --inexact` stays a usage
+  error, as there's no sense to make of it.
 - **`offline`** (`--offline`, `ALAI_OFFLINE`) uses only what's cached and
   never connects to an index, as uv's `--offline`: a cached index file is
   used without revalidating, and one that isn't cached is an error.

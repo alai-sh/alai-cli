@@ -5,15 +5,14 @@
 
 from __future__ import annotations
 
-import argparse
 import collections.abc as _c
 import concurrent.futures
-import hashlib
 import os
+import re
 import typing as _t
 
-from ._common import ConfigError, Record
-from ._config import RawManifest, Settings, raw_manifest, read_toml
+from ._common import ConfigError, Record, inside, read_toml, selects, sha256_file
+from ._config import RawManifest, Settings, raw_manifest
 from ._lock import (
     ArchiveSource,
     ArchiveUrlSource,
@@ -24,7 +23,19 @@ from ._lock import (
     input_changes,
     local_changes,
 )
-from ._manifest import GitSource, Manifest, PathSource, SourceCollection, UrlSource, collection_name, parse_manifest
+from ._manifest import (
+    GitSource,
+    Manifest,
+    PathSource,
+    Requirement,
+    SourceCollection,
+    UrlSource,
+    file_url_path,
+    is_git,
+    is_url,
+    parse_git,
+    parse_manifest,
+)
 from ._output import detail, home_path, lock_change, status, warn
 from ._progress import Live, Task
 
@@ -66,15 +77,6 @@ class Upgrade(Record):
         return set(self.collections) | {r.name for group in self.groups for r in known[group]} or False
 
 
-def upgrade_from_args(args: argparse.Namespace) -> Upgrade:
-    """What ``-U``, ``-P`` and ``--upgrade-group`` ask to upgrade."""
-    try:
-        collections = {collection_name(n) for n in args.upgrade_collection}
-    except ValueError as e:
-        raise ConfigError(f"--upgrade-collection: {e}") from None
-    return Upgrade(everything=args.upgrade, collections=collections, groups=getattr(args, "upgrade_group", []))
-
-
 def load_project(settings: Settings, why: str) -> tuple[RawManifest, Manifest]:
     """The project's ``alai.toml`` as written and as parsed; ``why`` says, in the error, why a command needs one.
 
@@ -97,14 +99,17 @@ def load_project(settings: Settings, why: str) -> tuple[RawManifest, Manifest]:
     return with_root(settings, raw)
 
 
-def with_root(settings: Settings, raw: RawManifest) -> tuple[RawManifest, Manifest]:
+def with_root(
+    settings: Settings, raw: RawManifest, *, local: _c.Mapping[str, SourceCollection] | None = None
+) -> tuple[RawManifest, Manifest]:
     """``raw``, the project's ``alai.toml``, as resolved: as it is, or in a collection project, with
     the requirements and ``requires_ansible`` its ``galaxy.yml`` and ``meta/runtime.yml`` give, which ``alai.toml``
-    mustn't repeat. See ``design/collection-development.md``."""
+    mustn't repeat. See ``design/collection-development.md``. ``local`` is another manifest's ``local``, read from
+    the same sources moments ago, to use rather than read them again."""
     galaxy_file = settings.project.collection_file
     if galaxy_file is None:
         manifest = parse_manifest(raw)
-        read_local(settings, manifest)
+        _fill_local(settings, manifest, local)
         return raw, manifest
 
     from ._galaxy import read_source_collection
@@ -130,8 +135,15 @@ def with_root(settings: Settings, raw: RawManifest) -> tuple[RawManifest, Manife
     )
     manifest = parse_manifest(raw)
     manifest.root = root
-    read_local(settings, manifest)
+    _fill_local(settings, manifest, local)
     return raw, manifest
+
+
+def _fill_local(settings: Settings, manifest: Manifest, local: _c.Mapping[str, SourceCollection] | None) -> None:
+    if local is None:
+        read_local(settings, manifest)
+    else:
+        manifest.local.update(local)
 
 
 def source_dir(settings: Settings, path: str) -> str:
@@ -190,7 +202,7 @@ def read_path_source(settings: Settings, name: str | None, source: PathSource) -
     tree = os.path.realpath(settings.collections_dir)
     real = os.path.realpath(where)
     for inner, outer, what in ((real, tree, "is inside"), (tree, real, "holds")):
-        if os.path.commonpath((inner, outer)) == outer:
+        if inside(inner, outer):
             raise ConfigError(
                 f"{collection.name}'s source {home_path(where)} {what} the collections directory "
                 + f"{home_path(settings.collections_dir)}; a source is installed from outside it"
@@ -198,13 +210,54 @@ def read_path_source(settings: Settings, name: str | None, source: PathSource) -
     return collection
 
 
-def _for(name: str | None) -> str:
-    return f" (from [project.sources] for {name})" if name is not None else ""
-
-
 def _entry(name: str | None) -> str:
     """Where a source was given, in messages: the ``[project.sources]`` entry for ``name``, or the command line."""
     return f"[project.sources] for {name}" if name is not None else "the command line"
+
+
+def _for(name: str | None) -> str:
+    """``_entry`` as a suffix, ``(from [project.sources] for ns.col)``, or nothing for the command line."""
+    return f" (from {_entry(name)})" if name is not None else ""
+
+
+def read_given_source(
+    settings: Settings, given: str, *, editable: bool, relative_to: str | None
+) -> tuple[SourceCollection, PathSource | UrlSource | GitSource]:
+    """The collection in the directory, tarball or git repository ``given`` on the command line, to ``alai add`` or
+    ``alai collection install``, and the source taking it from there. An ``http`` or ``https`` URL is downloaded,
+    and a repository fetched, to read its name; a ``file`` URL is its absolute path, as uv writes one. A path is
+    written relative to ``relative_to``, the project root for ``alai add``, as uv writes one given from a
+    subdirectory, unless it was given as an absolute path; with None it's written absolute."""
+    if is_git(given):
+        if editable:
+            raise ConfigError(f"{given} is a git repository, which can't be editable: give a checkout to link to")
+        git = parse_git(given)
+        with Live(Task(f"Fetching {git}...")):
+            return read_git_source(settings, None, git), git
+    if is_url(given) and not given.lower().startswith("file:"):
+        if editable:
+            raise ConfigError(f"{given} is a tarball, which can't be editable: give a directory to link to")
+        from ._fetch import open_fetcher
+
+        url = UrlSource(given)
+        with open_fetcher(settings) as fetcher:
+            return read_url_source(settings, None, url, fetcher), url
+    if is_url(given):
+        given = file_url_path(given)
+    expanded = os.path.expanduser(given)
+    where = os.path.abspath(expanded)
+    written = where if relative_to is None or os.path.isabs(expanded) else os.path.relpath(where, relative_to)
+    source = PathSource(written, editable=editable)
+    return read_path_source(settings, None, source), source
+
+
+def given_requirement(text: str) -> Requirement:
+    """A requirement given on the command line, written as uv writes one: without the spaces it may be typed with.
+    ConfigError if it isn't one."""
+    try:
+        return Requirement.parse(re.sub(r"\s+", "", text))
+    except ValueError as e:
+        raise ConfigError(str(e)) from None
 
 
 def read_git_source(
@@ -212,7 +265,6 @@ def read_git_source(
 ) -> SourceCollection:
     """The collection at a git source's ``subdirectory`` of ``commit``, or of the commit its ``rev`` is at now when
     None, fetched into the cache if it isn't there, checked to be ``name`` when given."""
-    from ._galaxy import read_collection_dir
     from ._git import update
 
     commit, files = update(
@@ -223,12 +275,21 @@ def read_git_source(
         offline=settings.offline,
         names=[name] if name is not None else (),
     )
+    return _git_collection(name, source, commit, files)
+
+
+def _git_collection(name: str | None, source: GitSource, commit: str, files: str) -> SourceCollection:
+    """The collection at ``source``'s ``subdirectory`` of ``commit``, whose files are at ``files``, checked to be
+    ``name`` when given."""
+    from ._galaxy import read_collection_dir
+
     where = os.path.join(files, *source.subdirectory.split("/")) if source.subdirectory is not None else files
-    shown = f"{source.url}@{commit[:7]}" + (f" ({source.subdirectory})" if source.subdirectory is not None else "")
+    at = f"{source.url}@{commit[:7]}"
     if not any(os.path.isfile(os.path.join(where, f)) for f in ("galaxy.yml", "MANIFEST.json")):
         if not os.path.isdir(where):
-            message = f"{shown} has no directory {source.subdirectory}"
+            message = f"{at} has no directory {source.subdirectory}"
         else:
+            shown = f"{at} ({source.subdirectory})" if source.subdirectory is not None else at
             message = f"{shown} has no galaxy.yml or MANIFEST.json, so it isn't a collection"
         # As ansible-galaxy looks for collections one level down when a repository's root isn't one.
         found = sorted(
@@ -243,7 +304,7 @@ def read_git_source(
         where,
         source.version,
         source=_entry(name) if name is not None else str(source),
-        shown=f"{source.url}@{commit[:7]}" + (f"/{source.subdirectory}" if source.subdirectory is not None else ""),
+        shown=f"{at}/{source.subdirectory}" if source.subdirectory is not None else at,
     )
     if name is not None and collection.name != name:
         raise ConfigError(
@@ -268,11 +329,11 @@ def read_git_sources(
     One already in ``manifest.local``, as ``alai add`` fetches one to read its name, isn't read again. One locked from
     the same ``[project.sources]`` entry is taken from the lock, with no network, unless ``upgrade`` names it, as uv
     keeps a git dependency's locked commit until it's upgraded; one locked from the same repository and ``rev`` keeps
-    its commit, read from the cache. Anything else resolves ``rev`` to its commit now.
+    its commit, read from the cache. Anything else resolves ``rev`` to its commit now, the repositories fetched in
+    parallel as ``sync`` fetches them, and each collection then checked and kept here, in order by name, so the first
+    to fail by name is the one reported.
     """
-
-    def upgrading(name: str) -> bool:
-        return upgrade is True or (upgrade is not False and name in upgrade)
+    from ._git import update_all
 
     before = parse_manifest(locked.manifest).sources if locked is not None else {}
     wanted: dict[str, tuple[GitSource, str | None]] = {}
@@ -280,36 +341,22 @@ def read_git_sources(
         if not isinstance(source, GitSource) or name in manifest.local:
             continue
         was = locked.get(name) if locked is not None else None
-        if was is None or not isinstance(was.source, GitCommitSource) or upgrading(name):
+        if was is None or not isinstance(was.source, GitCommitSource) or selects(upgrade, name):
             wanted[name] = (source, None)
         elif before.get(name) == source:
-            manifest.local[name] = SourceCollection(
-                name,
-                was.version,
-                "",
-                dependencies=was.requirements or (),
-                requires_ansible=was.requires_ansible,
-                commit=was.source.commit,
-            )
+            manifest.local[name] = was.as_source()
         else:
             wanted[name] = (source, was.source.commit if was.source.same_source(source) else None)
     if not wanted:
         return
-    # As sync downloads index artifacts: in parallel, each checked and kept here, in order by name, so the first to
-    # fail by name is the one reported.
-    with concurrent.futures.ThreadPoolExecutor(8, thread_name_prefix="alai-git") as pool:
-        futures = {
-            name: pool.submit(read_git_source, settings, name, source, commit)
-            for name, (source, commit) in wanted.items()
-        }
-    for name, future in futures.items():
-        manifest.local[name] = future.result()
-
-
-def fetch_git_source(settings: Settings, source: GitSource) -> SourceCollection:
-    """``read_git_source`` for a repository given on the command line."""
-    with Live(Task(f"Fetching {source}...")):
-        return read_git_source(settings, None, source)
+    fetched = update_all(
+        settings.cache_dir,
+        [(source.url, source.rev, commit, name) for name, (source, commit) in wanted.items()],
+        offline=settings.offline,
+    )
+    for name, (source, _) in wanted.items():
+        commit, files = fetched[name]
+        manifest.local[name] = _git_collection(name, source, commit, files)
 
 
 def _read_archive(settings: Settings, name: str | None, shown: str, path: str) -> SourceCollection:
@@ -317,19 +364,15 @@ def _read_archive(settings: Settings, name: str | None, shown: str, path: str) -
     there yet: hashing a tarball costs little, and a tarball already extracted isn't read again."""
     from ._artifacts import GZIP_MAGIC, ArtifactCache
 
-    digest = hashlib.sha256()
-    size = 0
     try:
         with open(path, "rb") as f:
-            if f.read(len(GZIP_MAGIC)) != GZIP_MAGIC:
-                raise ConfigError(f"{home_path(path)} isn't a gzip file, so it isn't a collection tarball{_for(name)}")
-            _ = f.seek(0)
-            while chunk := f.read(1024 * 1024):
-                digest.update(chunk)
-                size += len(chunk)
+            magic = f.read(len(GZIP_MAGIC))
+        if magic != GZIP_MAGIC:
+            raise ConfigError(f"{home_path(path)} isn't a gzip file, so it isn't a collection tarball{_for(name)}")
+        cksum = sha256_file(path)
+        size = os.path.getsize(path)
     except OSError as e:
         raise ConfigError(f"can't read {home_path(path)}: {e.strerror or e}") from None
-    cksum = digest.hexdigest()
     return _archive_collection(name, shown, ArtifactCache(settings.cache_dir).add(path, cksum), cksum, size)
 
 
@@ -362,17 +405,6 @@ def read_url_source(settings: Settings, name: str | None, source: UrlSource, fet
     return _archive_collection(name, str(source), extracted, cksum, size)
 
 
-def fetch_url_source(settings: Settings, source: UrlSource) -> SourceCollection:
-    """``read_url_source`` with a fetcher of its own, for a URL given on the command line."""
-    from . import __version__
-    from ._fetch import Fetcher
-
-    with Fetcher(
-        user_agent=f"alai/{__version__}", offline=settings.offline, system_certs=settings.system_certs
-    ) as fetcher:
-        return read_url_source(settings, None, source, fetcher)
-
-
 def read_archives(
     settings: Settings,
     manifest: Manifest,
@@ -392,9 +424,6 @@ def read_archives(
     from ._artifacts import ArtifactCache
     from ._fetch import MAX_CONNECTIONS
 
-    def upgrading(name: str) -> bool:
-        return upgrade is True or (upgrade is not False and name in upgrade)
-
     wanted: dict[str, UrlSource] = {}
     for name, source in sorted(manifest.sources.items()):
         was = locked.get(name) if locked is not None else None
@@ -403,18 +432,9 @@ def read_archives(
                 was is not None
                 and was.source == ArchiveUrlSource(source.url)
                 and was.cksum is not None
-                and not upgrading(name)
+                and not selects(upgrade, name)
             ):
-                manifest.local[name] = SourceCollection(
-                    name,
-                    was.version,
-                    "",
-                    dependencies=was.requirements or (),
-                    requires_ansible=was.requires_ansible,
-                    metadata="MANIFEST.json",
-                    cksum=was.cksum,
-                    size=was.size,
-                )
+                manifest.local[name] = was.as_source()
             else:
                 wanted[name] = source
         elif (
@@ -424,7 +444,7 @@ def read_archives(
             and was is not None
             and was.source == ArchiveSource(source.path)
             and was.cksum != now.cksum
-            and not upgrading(name)
+            and not selects(upgrade, name)
         ):
             raise ConfigError(
                 f"{home_path(source_dir(settings, source.path))} has changed since {name} was locked from it: its "
@@ -477,17 +497,11 @@ def resolve_manifest(
 ) -> Resolution:
     """Resolve ``manifest`` against the configured indexes, with progress, and warn of anything the resolution
     reported. ``origin`` names where its requirements came from, in errors."""
-    from . import __version__
-    from ._fetch import Fetcher
+    from ._fetch import open_fetcher
     from ._index import IndexClient
     from ._resolve import resolve
 
-    with (
-        Fetcher(
-            user_agent=f"alai/{__version__}", offline=settings.offline, system_certs=settings.system_certs
-        ) as fetcher,
-        Live(Task("Resolving collections...")) as task,
-    ):
+    with open_fetcher(settings) as fetcher, Live(Task("Resolving collections...")) as task:
         read_archives(settings, manifest, fetcher, locked, upgrade)
         read_git_sources(settings, manifest, locked, upgrade)
         clients = [IndexClient(index, fetcher, settings.cache_dir) for index in settings.indexes]

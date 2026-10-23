@@ -16,7 +16,7 @@ import difflib
 import typing as _t
 
 from . import _native, _semver
-from ._common import Error, Record
+from ._common import Error, Record, selects
 from ._index import CollectionVersion, IndexClient, IndexFile
 from ._lock import GitCommitSource, IndexSource, Lock, LockedCollection, locked_source
 from ._manifest import GitSource, IndexPin, Manifest, PathSource, Requirement, SourceCollection
@@ -207,16 +207,14 @@ def _kept(
     installed: _c.Mapping[str, _semver.Version], upgrade: bool | _c.Collection[str]
 ) -> dict[str, _semver.Version]:
     """The installed versions to prefer: all of them, unless ``upgrade`` says otherwise."""
-    if upgrade is True:
-        return {}
-    return {name: version for name, version in installed.items() if upgrade is False or name not in upgrade}
+    return {name: version for name, version in installed.items() if not selects(upgrade, name)}
 
 
 def _preferences(locked: Lock | None, upgrade: bool | _c.Collection[str]) -> dict[str, LockedCollection]:
-    if locked is None or upgrade is True:
+    """The locked versions to prefer: all of them, unless ``upgrade`` says otherwise."""
+    if locked is None:
         return {}
-    keep_all = upgrade is False
-    return {c.name: c for c in locked.collections if keep_all or c.name not in upgrade}  # pyright: ignore[reportOperatorIssue]
+    return {c.name: c for c in locked.collections if not selects(upgrade, c.name)}
 
 
 def _clauses(req: VersionReq) -> _Clauses:
@@ -516,7 +514,7 @@ class _Table:
         upgrade: bool | _c.Collection[str],
     ) -> str | None:
         locked = f"{name} {was.version}"
-        if upgrade is True or (upgrade is not False and name in upgrade):
+        if selects(upgrade, name):
             return f"upgrading {name} was asked for"
         if was.source != IndexSource(self._indexes[candidate.index].config().root):
             return f"{name} now comes from index '{candidate.index}'"

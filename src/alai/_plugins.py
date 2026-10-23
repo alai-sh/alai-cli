@@ -23,7 +23,7 @@ import tempfile
 import typing as _t
 
 from . import _ansible_package, _native
-from ._common import Record
+from ._common import Record, as_str, as_table
 from ._output import debug, trace
 from ._semver import Version
 
@@ -97,11 +97,11 @@ class Plugin(Record):
 
     @property
     def tombstone(self) -> dict[str, object] | None:
-        return _table(self.routing.get("tombstone"))
+        return as_table(self.routing.get("tombstone"))
 
     @property
     def deprecation(self) -> dict[str, object] | None:
-        return _table(self.routing.get("deprecation"))
+        return as_table(self.routing.get("deprecation"))
 
 
 def parse_line(line: bytes, index: str = "") -> Plugin | None:
@@ -559,7 +559,7 @@ def _still_has(plugin: Plugin, installed: _c.Mapping[str, Version | None] | None
         return False
     have = installed[plugin.collection]
     tombstone = plugin.tombstone or {}
-    removed = _version(plugin.until) or _version(_text(tombstone.get("removal_version")))
+    removed = _version(plugin.until) or _version(as_str(tombstone.get("removal_version")))
     return have is not None and removed is not None and have < removed
 
 
@@ -577,11 +577,3 @@ def _version(text: str | None) -> Version | None:
 # Parsed once per distinct text: a broad search assesses tens of thousands of plugins (73,263 for 'a', 2026-10-23), whose
 # 'since' and 'until' are a few hundred versions, and a Version is never changed, so it's shared.
 _VERSIONS: dict[str, Version | None] = {}
-
-
-def _text(value: object) -> str | None:
-    return value if isinstance(value, str) else None
-
-
-def _table(value: object) -> dict[str, object] | None:
-    return _t.cast("dict[str, object]", value) if isinstance(value, dict) else None

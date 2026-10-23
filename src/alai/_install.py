@@ -21,7 +21,7 @@ import secrets
 import shutil
 import threading
 
-from ._common import Error, Record
+from ._common import Error, Record, selects
 from ._config import LinkMode
 from ._output import debug, trace, warn
 from ._semver import Version
@@ -137,9 +137,8 @@ def plan(
     unchanged: list[str] = []
     for name, version in sorted(locked.items()):
         have = present.get(name)
-        again = reinstall is True or (reinstall is not False and name in reinstall)
         kept = have is not None and (
-            (have.version == version and have.record == records.get(name) and not again)
+            (have.version == version and have.record == records.get(name) and not selects(reinstall, name))
             or (keep_unversioned and have.version is None)
         )
         (unchanged if kept else install).append(name)

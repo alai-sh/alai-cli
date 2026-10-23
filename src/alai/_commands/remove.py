@@ -7,10 +7,17 @@ from __future__ import annotations
 
 import argparse
 
-from .._args import HelpFormatter, add_global_args, add_settings_args, settings_from_args
-from .add import add_edit_args, check_locked
-from .lock import EXIT_STALE
-from .sync import reinstall_from_args
+from .._args import (
+    HelpFormatter,
+    add_edit_args,
+    add_global_args,
+    add_settings_args,
+    check_locked,
+    reinstall_from_args,
+    settings_from_args,
+    upgrade_from_args,
+)
+from .._common import EXIT_STALE
 
 
 def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -37,7 +44,6 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
 
 def run(args: argparse.Namespace) -> int:
     from .._edit import remove
-    from .._project import upgrade_from_args
 
     settings = settings_from_args(args)
     group = "dev" if args.dev else args.group

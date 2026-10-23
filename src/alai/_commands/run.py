@@ -7,9 +7,20 @@ from __future__ import annotations
 
 import argparse
 
-from .._args import HelpFormatter, add_global_args, add_settings_args, settings_from_args
-from .lock import EXIT_STALE, add_upgrade_args
-from .sync import add_check_args, add_group_args, add_reinstall_args, reinstall_from_args
+from .._args import (
+    HelpFormatter,
+    add_check_args,
+    add_global_args,
+    add_group_args,
+    add_reinstall_args,
+    add_settings_args,
+    add_upgrade_args,
+    reinstall_from_args,
+    selected_groups,
+    settings_from_args,
+    upgrade_from_args,
+)
+from .._common import EXIT_STALE
 
 
 def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -55,15 +66,25 @@ def run(args: argparse.Namespace) -> int:
     from .._project import load_project
     from .._sync import sync_project
 
-    why = "alai run points Ansible at the collections it lists"
     settings = settings_from_args(args)
-    if args.no_sync:
-        _, manifest = load_project(settings, why)
-    else:
-        synced = sync_project(args, settings, why, exact=args.exact, reinstall=reinstall_from_args(args), brief=True)
-        if synced is None:
+    raw, manifest = load_project(settings, "alai run points Ansible at the collections it lists")
+    if not args.no_sync:
+        project, groups = selected_groups(args, manifest.groups)
+        wanted = sync_project(
+            settings,
+            raw,
+            manifest,
+            project=project,
+            groups=groups,
+            upgrade=upgrade_from_args(args),
+            locked=args.locked,
+            frozen=args.frozen,
+            exact=args.exact,
+            reinstall=reinstall_from_args(args),
+            brief=True,
+        )
+        if wanted is None:
             return EXIT_STALE
-        manifest, wanted = synced
         if not args.exact and not args.inexact:
             warn_unlisted(settings, wanted, "alai run --exact or alai sync removes them")
 

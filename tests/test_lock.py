@@ -290,7 +290,7 @@ class TestParse:
         ],
     )
     def test_invalid_tables(self, table: dict[str, object], match: str) -> None:
-        with pytest.raises(Exception, match=match):
+        with pytest.raises(LockError, match=match):
             _ = parse_lock(table, "alai.lock")
 
     def test_duplicate(self) -> None:

@@ -12,13 +12,12 @@ import os
 import sys
 
 from . import _output
-from ._args import terminal_width
 from ._common import ConfigError, Record
 from ._config import Settings
 from ._install import Installed, installed, namespace_links
 from ._lock import IndexSource, Lock, LockedCollection, LockedRoot, lock_path, read_lock
 from ._manifest import parse_manifest
-from ._output import BLUE, BOLD, CYAN, DIM, GREEN, RED, YELLOW, home_path, status, styled
+from ._output import BLUE, BOLD, CYAN, DIM, GREEN, RED, YELLOW, home_path, status, styled, terminal_width
 from ._semver import Version
 
 LOCKED = "locked"

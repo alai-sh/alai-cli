@@ -12,8 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from alai._common import ConfigError
-from alai._config import read_toml, read_toml_document
+from alai._common import ConfigError, read_toml, read_toml_document
 from alai._native import TomlDocument, TomlEditError, TomlError, toml_dumps, toml_loads, toml_read
 
 P = ("project", "collections")

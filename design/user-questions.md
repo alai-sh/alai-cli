@@ -41,6 +41,22 @@ it's too long for one.
 **Ask:** does anyone keep short one-line lists in `alai.toml` and mind
 them being spread out?
 
+## What `remove --group` leaves installed
+
+**Today:** `alai remove --group test d.d` removes d.d from the group and
+then syncs the project with its default groups alone, as `alai sync`
+would, so the exact sync uninstalls the group's other collections too,
+while `alai add --group test` installs the group it adds to (2026-10-23).
+That's what uv 0.13.5 does. The reasoning is in
+[manifest-editing.md](manifest-editing.md#the-commands).
+
+**The alternatives:** sync the group being edited as well, as `add` does,
+so only the removed collection leaves the directory; or sync nothing but
+the removed collection's own uninstall.
+
+**Ask:** does anyone remove one collection from a group they're working in
+and expect the rest of the group to stay installed?
+
 ## How much a collection may unpack to
 
 **Today:** a collection tarball that unpacks to more than 512 MiB is

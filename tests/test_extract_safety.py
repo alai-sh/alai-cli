@@ -87,7 +87,7 @@ def extract(
     _ = build_tarball(tarball, members)
     try:
         dest = str(sandbox / via / "collection")
-        _artifacts.extract(str(tarball), dest, "ns.coll", Version("1.0.0"), limit=limit)
+        _artifacts.extract(str(tarball), dest, "ns.coll 1.0.0", expected=("ns.coll", Version("1.0.0")), limit=limit)
     finally:
         assert outside(sandbox) == before
     return everything(sandbox / "work" / "collection")
@@ -300,6 +300,25 @@ class TestListing:
 
         refused(sandbox, members, "FILES.json lists a more than once, differently")
 
+    def test_file_without_a_checksum(self, sandbox: Path) -> None:
+        entry = {"name": "a", "ftype": "file", "chksum_type": None, "chksum_sha256": None}
+
+        refused(sandbox, collection(tar_file("a", b"a"), files=[entry]), r"FILES\.json has no checksum for a")
+
+    def test_unreadable_entry(self, sandbox: Path) -> None:
+        members = collection(tar_file("a", b"a"), files=[{"name": "a", "ftype": "fifo"}])
+
+        refused(sandbox, members, r"FILES\.json has an unreadable entry")
+
+    def test_long_name(self, sandbox: Path) -> None:
+        # Longer than ustar's 100 bytes, so tarfile stores it in a pax header.
+        name = "plugins/" + "m" * 150 + ".py"
+        members = collection(
+            tar_dir("plugins"), tar_file(name, b"x"), files=[listed_dir("plugins"), listed(name, b"x")]
+        )
+
+        assert extract(sandbox, members)[name] == "file 644 b'x'"
+
     @pytest.mark.parametrize("name", ["MANIFEST.json", "FILES.json"])
     def test_lists_itself_or_the_manifest(self, sandbox: Path, name: str) -> None:
         # Neither can be listed with a checksum that matches, as each depends on the other's content.
@@ -343,6 +362,23 @@ class TestListing:
         members = collection(tar_dir("t"), tar_hardlink("d", "t"), files=[listed_dir("t"), listed_dir("d")])
 
         refused(sandbox, members, "d in the artifact isn't a directory")
+
+
+class TestManifest:
+    """MANIFEST.json must name the collection and version the lock has."""
+
+    @pytest.mark.parametrize(
+        ("manifest", "found"),
+        [
+            (manifest_json("ns.other"), "ns.other 1.0.0"),
+            (manifest_json(version="2.0.0"), "ns.coll 2.0.0"),
+            (b"{}", "null.null null"),
+        ],
+    )
+    def test_another_collection(self, sandbox: Path, manifest: bytes, found: str) -> None:
+        members = [tar_file("MANIFEST.json", manifest), tar_file("FILES.json", files_json())]
+
+        refused(sandbox, members, rf"MANIFEST\.json is for {re.escape(found)}")
 
 
 class TestAmbiguousMembers:
@@ -593,6 +629,16 @@ class TestSymlinks:
 
         refused(sandbox, members, "l in the artifact doesn't match its checksum")
 
+    def test_before_its_target(self, sandbox: Path) -> None:
+        # A build stores members in name order, so the link comes first: its checksum is of a file not yet extracted.
+        members = collection(
+            tar_symlink("a", "z.txt"), tar_file("z.txt", b"z"), files=[listed("a", b"z"), listed("z.txt", b"z")]
+        )
+
+        tree = extract(sandbox, members)
+
+        assert (tree["a"], tree["z.txt"]) == ("-> z.txt", "file 644 b'z'")
+
     def test_dest_behind_a_symlink(self, sandbox: Path) -> None:
         # Extracted through a link to the work directory, so no directory's path is its real one: the same tree,
         # written through a link inside, and still nothing through a chain leading out.
@@ -712,7 +758,9 @@ class TestUnpackedSize:
         dest = str(sandbox / "work" / "collection")
 
         with pytest.raises(ArtifactError, match="can't extract the artifact"):
-            _artifacts.extract(str(tarball), dest, "ns.coll", Version("1.0.0"), limit=1 << 20)
+            _artifacts.extract(
+                str(tarball), dest, "ns.coll 1.0.0", expected=("ns.coll", Version("1.0.0")), limit=1 << 20
+            )
 
     def test_header_claiming_a_huge_files_json(self, sandbox: Path) -> None:
         # FILES.json's header saying 1 TiB: only so much is set aside for it beforehand, so it's refused as corrupt
@@ -727,7 +775,9 @@ class TestUnpackedSize:
         dest = str(sandbox / "work" / "collection")
 
         with pytest.raises(ArtifactError, match="can't extract the artifact"):
-            _artifacts.extract(str(tarball), dest, "ns.coll", Version("1.0.0"), limit=1 << 20)
+            _artifacts.extract(
+                str(tarball), dest, "ns.coll 1.0.0", expected=("ns.coll", Version("1.0.0")), limit=1 << 20
+            )
 
     def test_hardlink_copy_counts(self, sandbox: Path) -> None:
         # The tarball holds BIG once, under the limit; the hard link's copy of it is a second BIG, over it.
@@ -798,7 +848,7 @@ def test_umask(sandbox: Path) -> None:
 
     old = os.umask(0o077)
     try:
-        _artifacts.extract(str(tarball), str(dest), "ns.coll", Version("1.0.0"))
+        _artifacts.extract(str(tarball), str(dest), "ns.coll 1.0.0", expected=("ns.coll", Version("1.0.0")))
     finally:
         _ = os.umask(old)
 

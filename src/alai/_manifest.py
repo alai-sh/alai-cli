@@ -15,8 +15,8 @@ import os
 import re
 import typing as _t
 
-from ._common import NAME_RE, ConfigError, Record
-from ._config import Project, RawManifest, raw_manifest, read_toml
+from ._common import NAME_RE, ConfigError, Record, file_url_to_path, read_toml
+from ._config import Project, RawManifest, raw_manifest
 from ._pep440 import SpecifierSet
 from ._semver import Version, VersionReq
 
@@ -372,17 +372,16 @@ def file_url_path(url: str) -> str:
     it names another host, or has a ``#`` part, which uv ignores but a path source has no keys for: one that's dropped
     without a word would install something other than what was asked for."""
     import urllib.parse
-    import urllib.request
 
-    parts = urllib.parse.urlsplit(url)
-    if parts.netloc not in ("", "localhost"):
-        raise ConfigError(f"{url}: a file URL can't name another host")
-    if parts.fragment:
+    if urllib.parse.urlsplit(url).fragment:
         raise ConfigError(
             f"{url}: a file URL takes nothing after a #; a directory's version, if its galaxy.yml has a placeholder, "
             + "goes in its [project.sources] entry"
         )
-    return urllib.request.url2pathname(parts.path)
+    try:
+        return file_url_to_path(url)
+    except ValueError as e:
+        raise ConfigError(f"{url}: {e}") from None
 
 
 def is_path(text: str) -> bool:
@@ -392,6 +391,12 @@ def is_path(text: str) -> bool:
     name, as ansible-galaxy reads it, even beside a directory of that name. A URL has a ``/`` too: ``is_url`` comes
     first."""
     return "/" in text or text in (".", "..") or text.startswith("~") or text.endswith(".tar.gz")
+
+
+def is_source(text: str) -> bool:
+    """Whether a requirement given on the command line is a git repository, a tarball's URL, or a directory or
+    tarball's path, rather than a collection name."""
+    return is_git(text) or is_url(text) or is_path(text)
 
 
 def collection_name(text: str) -> str:

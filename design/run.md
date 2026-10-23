@@ -38,7 +38,15 @@ fills in the details.
   ansible-test needs, say), that's a design problem to solve, not a reason
   for `alai run` to do more than `alai env` can say. No activation script.
 - **`alai run` syncs first**, as `uv run` does, with an opt-out
-  (`--no-sync`, and `--locked`/`--frozen` as elsewhere).
+  (`--no-sync`, and `--locked`/`--frozen` as elsewhere). `--no-sync` means
+  what it means to uv on each command: on `add` and `remove`, lock but
+  don't install (`uv add --no-sync` locked); on `run`, neither lock nor
+  install (`uv run --no-sync` left a stale `uv.lock` alone; both uv
+  0.13.5, 2026-10-23). One difference: `alai run --no-sync --locked` (or
+  `--frozen`) is a usage error, where uv accepts the pair and `--locked`
+  then checks nothing (`uv run --no-sync --locked` ran with a stale lock
+  and exited 0), so a CI job that wrote them together would think it was
+  checking the lock.
 - **Editor setup is printed, never written.** alai doesn't edit
   `.vscode/settings.json`, `launch.json` or an env file: merging into
   existing files, or replacing them, is the user's call. It prints what to
@@ -200,6 +208,14 @@ What was tried before deciding, on 2026-10-21 with ansible-core 2.21.5:
 
 ## Next
 
+- **`alai env --locked`**, exiting 1 where `alai env` now only warns: no
+  `alai.lock`, one that's out of date, or locked collections not installed
+  (decided with the user, 2026-10-23). `alai env` keeps exiting 0 by
+  default: its output is right whatever the lock says, and in `eval
+  "$(alai env)"` the shell drops the status anyway, so a non-zero default
+  would only break scripts that redirect it. The check is what `alai sync
+  --check` ([install.md](install.md#not-done-yet)) answers for CI, so the
+  two should share it.
 - Propose the [upstream fixes](collection-development.md#upstream-fixes)
   to ansible-test.
 - Check ansible-lint and the VS Code Ansible extension against
