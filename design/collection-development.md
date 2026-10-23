@@ -453,7 +453,7 @@ to the editor's port. Not tried with an editor attached.
 - **`alai add` and `alai remove`** in a collection project only edit
   groups (`--group`); without it they're an error. Editing `galaxy.yml`'s
   `dependencies` would need a YAML editor that keeps its formatting, as
-  `_toml_edit` does for `alai.toml`; instead, the plan is the collection
+  `toml_edit` does for `alai.toml`; instead, the plan is the collection
   defined in `alai.toml` ([README.md](README.md#roadmap)).
 - **Cleaning trees** whose checkout has moved or gone, with the rest of
   `alai cache clean`; nothing records which checkout a tree belongs to

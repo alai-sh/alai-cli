@@ -8,8 +8,10 @@ from pathlib import Path
 import pytest
 from test_sync_command import edit, edited, installed, lines
 
+from alai import _edit
 from alai._cli import EXIT_ERROR, main
 from alai._commands.lock import EXIT_STALE
+from alai._native import TomlDocument, TomlEditError
 
 # The index (from test_sync_command): a.a 1.0.0 and 2.0.0 (which needs b.b>=1.0.0), b.b 1.0.0 and 1.1.0, c.c and d.d.
 
@@ -62,21 +64,22 @@ class TestAdd:
 
         assert main(["add", "b.b<1.1"]) == 0
 
-        assert toml(project) == '[project]\ncollections = ["b.b<1.1"]  # pinned\n'
+        # Laid out one per line, as uv lays out an array it changes, the comment kept after it.
+        assert toml(project) == '[project]\ncollections = [\n    "b.b<1.1",\n]  # pinned\n'
 
     def test_appended_when_unsorted(self, project: Path) -> None:
         write(project, '[project]\ncollections = ["d.d", "c.c"]\n')
 
         assert main(["add", "a.a"]) == 0
 
-        assert toml(project) == '[project]\ncollections = ["d.d", "c.c", "a.a>=2.0.0"]\n'
+        assert toml(project) == '[project]\ncollections = [\n    "d.d",\n    "c.c",\n    "a.a>=2.0.0",\n]\n'
 
     def test_group(self, project: Path) -> None:
         write(project)
 
         assert main(["add", "--group", "docs", "d.d"]) == 0
 
-        assert toml(project) == TOML + '\n[project.groups.docs]\ncollections = ["d.d>=1.0.0"]\n'
+        assert toml(project) == TOML + '\n[project.groups.docs]\ncollections = [\n    "d.d>=1.0.0",\n]\n'
         # The group added to is installed, though it isn't a default one.
         assert set(installed(project)) == {"c.c", "d.d"}
 
@@ -149,7 +152,8 @@ class TestRemove:
 
         assert main(["remove", "c.c", "a.a"]) == 0
 
-        assert toml(project) == '[project]\ncollections = ["d.d"]\n'
+        # Four spaces, where uv indents by the one after the bracket once the first item is gone.
+        assert toml(project) == '[project]\ncollections = [\n    "d.d",\n]\n'
 
     def test_from_a_group(self, project: Path) -> None:
         write(project, TOML + '\n[project.groups.dev]\ncollections = ["d.d"]\n')
@@ -325,7 +329,7 @@ class TestLocked:
         assert main(["add", "--locked", "c.c>=1.0.0"]) == 0
 
         # alai.toml takes the requirement as given, and alai.lock keeps its own text, as uv keeps uv.lock's.
-        assert toml(project) == '[project]\ncollections = ["c.c>=1.0.0"]\n'
+        assert toml(project) == '[project]\ncollections = [\n    "c.c>=1.0.0",\n]\n'
         assert (project / "alai.lock").read_bytes() == before
 
     def test_stale_lock(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -416,12 +420,36 @@ class TestErrors:
         assert message in capsys.readouterr().err
         assert toml(project) == TOML
 
-    def test_edit_refused(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_inline_table(self, project: Path) -> None:
         write(project, 'project = { collections = ["c.c"] }\n')
+
+        assert main(["add", "d.d"]) == 0
+
+        assert toml(project) == 'project = { collections = [\n    "c.c",\n    "d.d>=1.0.0",\n] }\n'
+
+    def test_edit_refused(
+        self, project: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # An edit the editor won't make, such as one whose text wouldn't read back as intended, names what to edit
+        # by hand.
+        class Refusing:
+            def __init__(self, text: str) -> None:
+                self.doc = TomlDocument(text)
+
+            def __getattr__(self, name: str) -> object:
+                return getattr(self.doc, name)
+
+            def insert(self, path: tuple[str, ...], index: int, value: str) -> None:
+                raise TomlEditError("editing project.collections would change more than it should")
+
+        monkeypatch.setattr(_edit, "read_toml_document", lambda path: Refusing(Path(path).read_text()))
+        write(project, '[project]\ncollections = ["c.c"]\n')
 
         assert main(["add", "d.d"]) == EXIT_ERROR
 
-        assert "add the collections in project.collections by hand" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "would change more than it should); add the collections in project.collections by hand" in err
+        assert toml(project) == '[project]\ncollections = ["c.c"]\n'
 
     @pytest.mark.parametrize("argv", [["add", "--group", "x", "--dev", "c.c"], ["add", "--no-sync", "--frozen", "c.c"]])
     def test_exclusive(self, project: Path, argv: list[str]) -> None:

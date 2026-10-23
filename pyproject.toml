@@ -30,7 +30,6 @@ dependencies = [
     # galaxy.yml's manifest directives, for installing a collection from its source directory, as ansible-galaxy
     # uses it; the floor is the release tested.
     "distlib >= 0.4.4",
-    "tomli >= 1.1.0; python_version < '3.11'",
     # galaxy.yml and meta/runtime.yml, read with the same parser ansible-core uses.
     "pyyaml >= 6.0",
     # The OS trust store for TLS; the floor is the release tested.
@@ -57,8 +56,6 @@ dev = [
     "tox-uv",
     # Type stubs for PyYAML, for basedpyright.
     "types-pyyaml",
-    # Lets basedpyright check the Python 3.10 import path.
-    "tomli >= 1.1.0",
 ]
 docs = [
     # zensical needs Python 3.11 or later; the marker lets uv still lock this group for 3.10.

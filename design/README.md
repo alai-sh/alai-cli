@@ -79,7 +79,7 @@ those items; change it with them.
 | [versions.md](versions.md) | Collection and ansible-core versions and requirement syntax, and how they were checked against ansible-core |
 | [environments.md](environments.md) | `requires_ansible` as a range versus an ansible-core pin, several environments per project, and how one lock covers a range: future work |
 | [resolver.md](resolver.md) | Choosing one version of every collection: PubGrub in the native extension, where each collection comes from, which versions are candidates, `requires_ansible`, failures explained in uv's words, and the measurements against resolvelib that decided it |
-| [manifest-editing.md](manifest-editing.md) | `alai add` and `alai remove`, and the surgical, checked editor they change `alai.toml` with |
+| [manifest-editing.md](manifest-editing.md) | `alai add` and `alai remove`, and the checked `toml_edit` editor they change `alai.toml` with, laying arrays out as uv does |
 | [requirements-file.md](requirements-file.md) | Reading ansible-galaxy's `requirements.yml` for `-r`: its format, what uv does with sources in `requirements.txt`, the mapping proposed, and open questions. Shelved |
 | [install.md](install.md) | Installing locked collections: downloading artifacts, the extracted-collection cache, extraction as ansible-galaxy does it, what counts as installed, link modes and exact syncing |
 | [index-client.md](index-client.md) | Fetching and caching the index: the HTTP library, cache layout, revalidation, proxies, errors, and what `index.alai.sh` does |

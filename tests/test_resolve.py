@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import collections.abc as _c
-import sys
 from pathlib import Path
 
 import pytest
@@ -17,19 +16,15 @@ from alai._fetch import Fetcher
 from alai._index import IndexClient
 from alai._lock import IndexSource, Lock, LockedCollection
 from alai._manifest import Manifest, parse_manifest
+from alai._native import toml_loads
 from alai._pep440 import SpecifierSet
 from alai._pep440 import Version as AnsibleVersion
 from alai._resolve import ResolutionError, admits_lower_bound, narrower_than, resolve
 from alai._semver import Version
 
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib
-
 
 def manifest(toml: str) -> Manifest:
-    return parse_manifest(raw_manifest(tomllib.loads(toml), "alai.toml"))
+    return parse_manifest(raw_manifest(toml_loads(toml), "alai.toml"))
 
 
 @pytest.fixture

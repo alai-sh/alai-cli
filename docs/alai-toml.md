@@ -374,7 +374,20 @@ must a git repository's, and `alai.lock` pins it by its commit: see
 [Collection sources](collection-sources.md#a-git-repository).
 
 Collection names contain a dot, so they're quoted, as in
-`[project.overrides]`.
+`[project.overrides]`. alai reads TOML 1.1, so a long entry can be spread
+over lines, with a trailing comma if you like:
+
+```toml
+[project.sources]
+"corp.win" = {
+    git = "https://git.example.com/corp/windows.git",
+    subdirectory = "collections/win",
+    rev = "v3.0.0",
+}
+```
+
+Tools that only read TOML 1.0, such as Python's `tomllib` before 3.15,
+can't read a file written that way.
 
 ## Requirements
 

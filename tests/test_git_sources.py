@@ -11,7 +11,6 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import threading
 import time
 from pathlib import Path
@@ -24,12 +23,8 @@ from alai._common import ConfigError
 from alai._git import _hint  # pyright: ignore[reportPrivateUsage]
 from alai._lock import GitCommitSource, read_lock, render_lock
 from alai._manifest import GitSource, parse_git
+from alai._native import toml_loads
 from alai._semver import Version
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib
 
 
 class Repo:
@@ -116,7 +111,7 @@ def record(project: Path, name: str = "ns.src") -> dict[str, object] | None:
 
 
 def entry(project: Path, name: str = "ns.src") -> dict[str, object]:
-    data = tomllib.loads((project / "alai.lock").read_text())
+    data = toml_loads((project / "alai.lock").read_text())
     return next(c for c in data["collection"] if c["name"] == name)
 
 
@@ -135,7 +130,7 @@ class TestLock:
 
         assert main(["lock", "-q"]) == 0
 
-        data = tomllib.loads((project / "alai.lock").read_text())
+        data = toml_loads((project / "alai.lock").read_text())
         assert data["sources"] == {"ns.src": {"git": repo.url, "rev": "v1.0.0"}}
         # An annotated tag is locked as the commit it points at, not the tag object.
         assert entry(project) == {
@@ -553,7 +548,7 @@ class TestAddRemove:
 
         # As uv writes it: the repository, the directory in it, then the revision.
         assert (project / "alai.toml").read_text() == (
-            '[project]\ncollections = ["ns.src"]\n\n[project.sources]\n'
+            '[project]\ncollections = [\n    "ns.src",\n]\n\n[project.sources]\n'
             + f'"ns.src" = {{ git = "{repo.url}", subdirectory = "chocolatey", rev = "v1" }}\n'
         )
         assert entry(project)["source"] == {

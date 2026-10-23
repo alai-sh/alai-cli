@@ -9,18 +9,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import sys
 from pathlib import Path
 
 import pytest
 
 from alai._cli import EXIT_ERROR, main
 from alai._lock import DirectorySource, EditableSource, parse_lock, read_lock, render_lock
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib
+from alai._native import toml_loads
 
 
 def source(
@@ -73,7 +68,7 @@ class TestLock:
 
         assert main(["lock", "-q"]) == 0
 
-        data = tomllib.loads((project / "alai.lock").read_text())
+        data = toml_loads((project / "alai.lock").read_text())
         assert data["sources"] == {"ns.src": {"path": "../src"}}
         entries = {c["name"]: c for c in data["collection"]}
         assert sorted(entries) == ["a.a", "b.b", "ns.src"]
@@ -211,7 +206,7 @@ class TestLock:
 
         text = render_lock(parse_lock(table, "alai.lock"))
 
-        assert tomllib.loads(text) == {**table, "project": {"requirements": []}}
+        assert toml_loads(text) == {**table, "project": {"requirements": []}}
 
 
 class TestRequiresAnsible:
@@ -655,7 +650,8 @@ class TestAddRemove:
         assert main(["add", "-q", "../../src"]) == 0
 
         assert (project / "alai.toml").read_text() == (
-            '[project]\ncollections = ["c.c", "ns.src"]\n\n[project.sources]\n"ns.src" = { path = "../src" }\n'
+            '[project]\ncollections = [\n    "c.c",\n    "ns.src",\n]\n\n'
+            + '[project.sources]\n"ns.src" = { path = "../src" }\n'
         )
         assert (installed_at(project) / "MANIFEST.json").exists()
 

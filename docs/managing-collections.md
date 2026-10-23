@@ -121,27 +121,22 @@ the name of the collection to upgrade, which needn't be one being added:
 
 [Upgrading a locked collection while adding another](casts/add-upgrade.cast){ .alai-cast }
 
-Only the one array changes: every other line of `alai.toml`, comments and
-layout included, is left as it is. A comment on a removed collection's line
-stays, on a line of its own. A new collection goes in order when the list is
-already sorted, and at the end otherwise. If resolving fails, nothing is
-written.
+Only the one array changes, laid out as `uv add` lays one out: one
+collection per line, each with a trailing comma, comments kept on the lines
+they were on. Every other line of `alai.toml`, comments and layout
+included, is left as it is, and a file with Windows (CRLF) line endings
+keeps them. A comment on a removed collection's line stays, on a line of
+its own. A new collection goes in order when the list is already sorted,
+and at the end otherwise. If resolving fails, nothing is written.
 
 !!! warning "Check the diff"
 
     Nothing outside the one array changes, and the result is always valid
-    TOML, but comments and layout inside it can move: a comment on its own
-    line can end up above a different entry, a trailing comma can be added,
-    and entries that shared a line can be joined. Review
-    `git diff alai.toml` after `alai add` or `alai remove`, especially in a
-    list with comments.
-
-!!! note "Arrays alai can't edit"
-
-    An array written inside an inline table, such as
-    `project = { collections = [...] }`, can't be edited this way: `alai add`
-    and `alai remove` say so and change nothing, and the collections need
-    adding or removing by hand.
+    TOML, but the array's own layout can: one written on a single line is
+    spread one collection per line on its first edit, and a comment on its
+    own line stays where it is, so a collection added below it ends up
+    under it. Review `git diff alai.toml` after `alai add` or
+    `alai remove`, especially in a list with comments.
 
 ## Collections from a directory
 

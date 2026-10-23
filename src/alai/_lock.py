@@ -3,8 +3,8 @@
 
 """The lockfile, ``alai.lock``: what ``alai lock`` resolved, for ``alai sync`` to install.
 
-The format and why it's shaped this way are in ``design/lockfile.md``. It's TOML, read with ``tomllib`` and written
-by the small emitter here, which keeps the layout fixed so changes to a lock are small diffs.
+The format and why it's shaped this way are in ``design/lockfile.md``. It's TOML, read and written by the native
+extension's ``toml_edit``, with the layout fixed so changes to a lock are small diffs.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import os
 import re
 import secrets
 
+from . import _native
 from ._common import Error, Record, as_table
 from ._config import RawManifest, read_toml
 from ._manifest import (
@@ -40,7 +41,6 @@ _HEADER = (
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 GIT_COMMIT_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 """A full git commit hash, SHA-1 or SHA-256."""
-_BARE_KEY_RE = re.compile(r"[A-Za-z0-9_-]+")
 # An array longer than this goes one item per line, so adding an item changes one line of the diff.
 _INLINE_ARRAY_WIDTH = 80
 
@@ -566,57 +566,56 @@ def parse_lock(table: _c.Mapping[str, object], path: str) -> Lock:
 
 def render_lock(lock: Lock) -> str:
     """The lock as TOML, laid out the same way every time."""
-    out = [_HEADER, f"version = {LOCK_VERSION}\n"]
+    doc: dict[str, object] = {"version": LOCK_VERSION}
     manifest = lock.manifest
 
     if manifest.overrides or manifest.ignore_requires_ansible:
-        out.append("\n[overrides]\n")
-        out.extend(f"{_key(name)} = {_string(req)}\n" for name, req in sorted(manifest.overrides.items()))
+        overrides: dict[str, object] = dict(sorted(manifest.overrides.items()))
         if manifest.ignore_requires_ansible:
-            out.append(f"ignore_requires_ansible = {_array(manifest.ignore_requires_ansible)}\n")
+            overrides["ignore_requires_ansible"] = list(manifest.ignore_requires_ansible)
+        doc["overrides"] = overrides
 
     if manifest.sources:
-        out.append("\n[sources]\n")
-        out.extend(f"{_key(name)} = {_inline(table)}\n" for name, table in sorted(manifest.sources.items()))
+        doc["sources"] = {name: _inline(table) for name, table in sorted(manifest.sources.items())}
 
-    out.append("\n[project]\n")
+    project: dict[str, object] = {}
     if manifest.requires_ansible is not None:
-        out.append(f"requires_ansible = {_string(manifest.requires_ansible)}\n")
-    out.append(f"requirements = {_array(manifest.collections)}\n")
-    out.extend(
-        f"groups.{_key(name)}.requirements = {_array(manifest.groups[name])}\n" for name in sorted(manifest.groups)
-    )
+        project["requires_ansible"] = manifest.requires_ansible
+    project["requirements"] = list(manifest.collections)
+    if manifest.groups:
+        project["groups"] = {name: {"requirements": list(manifest.groups[name])} for name in sorted(manifest.groups)}
+    doc["project"] = project
 
+    collections: list[dict[str, object]] = []
     root = lock.root
     for c in lock.collections:
         if root is not None and root.name < c.name:
-            out.append(_render_root(root))
+            collections.append(_root_table(root))
             root = None
-        out.append("\n[[collection]]\n")
-        out.append(f"name = {_string(c.name)}\n")
-        out.append(f"version = {_string(c.version.text)}\n")
-        out.append(f"source = {_inline(c.source.table())}\n")
+        table: dict[str, object] = {"name": c.name, "version": c.version.text, "source": _inline(c.source.table())}
         if c.cksum is not None:
-            out.append(f"cksum = {_string(c.cksum)}\n")
+            table["cksum"] = c.cksum
         if c.size is not None:
-            out.append(f"size = {c.size}\n")
+            table["size"] = c.size
         if c.requires_ansible is not None:
-            out.append(f"requires_ansible = {_string(c.requires_ansible)}\n")
+            table["requires_ansible"] = c.requires_ansible
         if c.requirements is not None:
-            out.append(f"requirements = {_array(c.requirements)}\n")
-        out.append(f"dependencies = {_array(sorted(c.dependencies))}\n")
+            table["requirements"] = list(c.requirements)
+        table["dependencies"] = sorted(c.dependencies)
+        collections.append(table)
     if root is not None:
-        out.append(_render_root(root))
-    return "".join(out)
+        collections.append(_root_table(root))
+    if collections:
+        doc["collection"] = collections
+    return _native.toml_dumps(doc, _HEADER, _INLINE_ARRAY_WIDTH)
 
 
-def _render_root(root: LockedRoot) -> str:
-    out = ["\n[[collection]]\n", f"name = {_string(root.name)}\n", f"version = {_string(root.version.text)}\n"]
-    out.append(f"source = {{ editable = {_string(root.path)} }}\n")
+def _root_table(root: LockedRoot) -> dict[str, object]:
+    table: dict[str, object] = {"name": root.name, "version": root.version.text, "source": {"editable": root.path}}
     if root.requires_ansible is not None:
-        out.append(f"requires_ansible = {_string(root.requires_ansible)}\n")
-    out.append(f"dependencies = {_array(sorted(root.dependencies))}\n")
-    return "".join(out)
+        table["requires_ansible"] = root.requires_ansible
+    table["dependencies"] = sorted(root.dependencies)
+    return table
 
 
 def write_lock(path: str, lock: Lock) -> bool:
@@ -825,35 +824,8 @@ def _t_list(value: list[object]) -> list[object]:
     return value
 
 
-def _string(value: str) -> str:
-    """A TOML basic string."""
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    escaped = re.sub(r"[\x00-\x1f\x7f]", lambda m: f"\\u{ord(m.group()):04x}", escaped)
-    return f'"{escaped}"'
-
-
-def _key(name: str) -> str:
-    """A TOML key: bare when it can be, quoted otherwise, as a collection name with its dot must be."""
-    return name if _BARE_KEY_RE.fullmatch(name) else _string(name)
-
-
-def _inline(table: _c.Mapping[str, object]) -> str:
-    """A TOML inline table of string and boolean values, keys in a fixed order, the source's kind first: ``{ index =
-    "internal" }``, ``{ path = "../col", editable = true }``."""
+def _inline(table: _c.Mapping[str, object]) -> dict[str, object]:
+    """A source as an inline table, its keys in a fixed order, the source's kind first: ``{ index = "internal" }``,
+    ``{ path = "../col", editable = true }``."""
     order = ["index", "path", "url", "git", "directory", "editable", "rev", "subdirectory", "commit"]
-    keys = sorted(table, key=lambda k: (order.index(k) if k in order else len(order), k))
-    return "{ " + ", ".join(f"{_key(k)} = {_value(table[k])}" for k in keys) + " }"
-
-
-def _value(value: object) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    return _string(str(value))
-
-
-def _array(items: _c.Iterable[str]) -> str:
-    strings = [_string(i) for i in items]
-    inline = f"[{', '.join(strings)}]"
-    if len(inline) <= _INLINE_ARRAY_WIDTH:
-        return inline
-    return "[\n" + "".join(f"    {s},\n" for s in strings) + "]"
+    return {k: table[k] for k in sorted(table, key=lambda k: (order.index(k) if k in order else len(order), k))}

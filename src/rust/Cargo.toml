@@ -33,3 +33,6 @@ serde_json = "1"
 # AArch64 code loads the round constants (RustCrypto/hashes#922).
 sha2 = "0.11.1"
 tar = { version = "0.4", default-features = false }
+# alai.toml, the config files and alai.lock: read as TOML 1.1, alai.lock written, and alai.toml edited keeping the rest
+# of its text, as cargo and uv use it (see design/manifest-editing.md).
+toml_edit = "0.25.17"

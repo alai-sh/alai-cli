@@ -1,8 +1,10 @@
 # Copyright: (c) 2026, Jordan Borean (@jborean93) <jborean93@gmail.com>
 # MIT License (see LICENSE or https://opensource.org/licenses/MIT)
 
-# alai's native code, built from src/rust/ by maturin. Each releases the GIL while it works.
+# alai's native code, built from src/rust/ by maturin. Each releases the GIL while it works, but for the TOML
+# functions, which build Python objects as they go.
 
+import collections.abc as _c
 import os
 
 class NoSolution(Exception):
@@ -106,3 +108,79 @@ def resolve(
     and ``root_unsat`` are the words for the roots: ``the project depends on`` and ``the project's requirements are
     unsatisfiable``.
     """
+
+class TomlError(ValueError):
+    """Text that isn't valid TOML: ``str()`` says why and where, ``... (at line 3, column 7)``, the column in
+    characters, as ``tomllib`` says it."""
+
+class TomlEditError(Exception):
+    """An edit ``TomlDocument`` can't make, or one whose text, read back, wouldn't be the document with only that
+    change made: ``str()`` says which key and why."""
+
+def toml_loads(text: str, /) -> dict[str, object]:
+    """The TOML 1.1 document ``text`` as ``tomllib.loads`` gives it, raising ``TomlError``. A byte order mark is
+    skipped, and a CRLF inside a multi-line string kept, where ``tomllib`` refuses the one and reads the other as
+    ``\\n``."""
+
+def toml_read(path: str | os.PathLike[str], /) -> dict[str, object]:
+    """The TOML file at ``path``, read as ``toml_loads`` reads text, with the GIL released while it's read. A file that
+    isn't UTF-8 is a ``TomlError``, ``not UTF-8 (at line 3, column 7)``; one that can't be read an ``OSError`` with
+    the path."""
+
+def toml_dumps(table: _c.Mapping[str, object], header: str, width: int, /) -> str:
+    """``table`` as TOML, laid out the same way every time, with ``header`` (comment lines) before its first key.
+
+    In ``table``, a dict is a ``[table]`` and a non-empty list of dicts an ``[[array]]`` of them, each after a blank
+    line, and anything else a key, written before them. In a table, a dict of strings, booleans and numbers is an
+    inline table, ``{ k = "v" }``, and any other a dotted key, ``a.b.c = ...``. An array is on one line if that's at
+    most ``width`` characters, else one item per line with a trailing comma. Keys keep the dicts' order.
+    """
+
+class TomlDocument:
+    """A TOML document being edited, as ``uv add`` and ``uv remove`` edit ``pyproject.toml``: only what's changed is
+    rewritten, an array being edited is laid out one item per line with a trailing comma, comments kept with the
+    lines they were on, and a document with CRLF lines keeps them.
+
+    Every edit is checked: its text, read back, must be the document as it was with only that change made, or the edit
+    raises ``TomlEditError`` and the document is left as the last good edit had it. A path is a key path, such as
+    ``("project", "groups", "test", "collections")``, through tables, dotted keys or inline tables alike.
+    """
+
+    def __init__(self, text: str, /) -> None:
+        """Read ``text``, raising ``TomlError``."""
+
+    @staticmethod
+    def read(path: str | os.PathLike[str], /) -> TomlDocument:
+        """The TOML file at ``path``, read as ``toml_read`` reads one, its bytes as they are, so its newlines are
+        kept."""
+
+    def __str__(self) -> str:
+        """The text: as given until an edit is made."""
+
+    def data(self) -> dict[str, object]:
+        """The document as ``toml_loads`` gives it, with the edits made."""
+
+    def values(self, path: _c.Sequence[str], /) -> list[str] | None:
+        """The array of strings at ``path``, None if there's no such key, or ``TomlEditError`` if it isn't one."""
+
+    def insert(self, path: _c.Sequence[str], index: int, value: str, /) -> None:
+        """Insert ``value`` at ``index`` in the array at ``path``."""
+
+    def replace(self, path: _c.Sequence[str], index: int, value: str, /) -> None:
+        """Replace the item at ``index`` in the array at ``path`` with ``value``, keeping its comments."""
+
+    def remove(self, path: _c.Sequence[str], index: int, /) -> None:
+        """Remove the item at ``index`` from the array at ``path``, leaving a comment on its line on a line of its own,
+        and an emptied array ``[]``."""
+
+    def create(self, path: _c.Sequence[str], items: _c.Sequence[str], /) -> None:
+        """Set the key at ``path`` to an array of ``items``, creating the tables it's in: the one holding it with a
+        header, such as ``[project.groups.test]``, after the last table before it in the document's order, and those
+        above it without one."""
+
+    def set_table(self, path: _c.Sequence[str], value: _c.Mapping[str, str | bool], /) -> None:
+        """Set the key at ``path`` to an inline table of ``value``, in its order: in place, keeping a comment after it,
+        or at the end of its table, created as ``create`` creates one."""
+
+    def remove_key(self, path: _c.Sequence[str], /) -> None:
+        """Remove the key at ``path`` and the comments on its line and above it, leaving its table, even if empty."""
