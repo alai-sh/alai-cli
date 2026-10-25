@@ -67,6 +67,10 @@ resolver moved from resolvelib to PubGrub in that extension
 ([resolver.md](resolver.md)), with what's left of those in each note's
 "Not done yet".
 
+Moved out: plugin documentation, `alai doc`, built here first and kept as
+a project of its own for later in `../alai-doc` (2026-10-25); what alai
+would give it is in [find.md](find.md#not-done-yet).
+
 Shelved: `-r requirements.yml` ([requirements-file.md](requirements-file.md));
 what to ask users about it is in [user-questions.md](user-questions.md).
 Smaller items wait in each note's "Not done yet".

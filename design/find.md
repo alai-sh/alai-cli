@@ -128,7 +128,8 @@ searches locally is the reason the index has one.
   collection's `path` in JSON, absolute; `null` for `ansible.builtin`, as alai
   doesn't look up where ansible-core is. Not the plugin file's path: a
   filter or test's file needn't share its name, so finding it means parsing
-  the collection's Python, which a later `alai doc` will do anyway. Not in
+  the collection's Python, which alai-doc will do anyway (see
+  [Not done yet](#not-done-yet)). Not in
   the list, where it would repeat on every row of a collection.
 - **The details lead with a verdict, `Installed`** (2026-10-21; first
   named `Usable`, renamed by the user once the Route carried each
@@ -197,7 +198,8 @@ searches locally is the reason the index has one.
   whole. JSON keeps the markup as the index gives it, being facts.
 - **No pager, no TUI.** `--limit` keeps the list short and it stays usable
   in pipes. A picker can be built on it with fzf, taking the FQCN column
-  and previewing with `alai find FQCN`; a built-in one isn't planned.
+  and previewing with `alai find FQCN`; a built-in one isn't planned
+  here, as plugin documentation is to be a project of its own (below).
 - **No rich**, as [output.md](output.md) decides: the rule, panel and
   aligned rows are a few lines over `_output.styled`.
 - **`--output-format json` gives facts, not conclusions** (2026-10-21):
@@ -404,19 +406,49 @@ into `ansible.builtin`, which the index lacked until it was synced.
 
 ## Not done yet
 
-- **Full documentation** (`alai doc FQCN`, or a `--doc` on `find`), from
-  the planned per-artifact docs file in the spec, or from the artifact
-  itself once downloaded, shown through a pager as `ansible-doc` does.
-  Keep the details panel's rendering separate from listing so it can be
-  reused there or in a picker's preview.
+- **Full documentation** is to be a project of its own, alai-doc, kept in
+  `../alai-doc` beside this repository (2026-10-25): a first version was
+  built here as `alai doc`, then moved out, as most of what it needs is
+  alai's core. Its README has the design and the plan: it calls alai as a
+  subprocess, through `alai find --output-format json` and a new command
+  printing where a collection's files are (installed, locked, cached, or
+  downloaded into the cache), something like
+  `alai collection path NAME --output-format json`. Keep `find`'s JSON
+  stable enough for it.
 - **Routing from installed collections.** Routing comes from the index,
   so from each collection's latest version; an installed older version
   may route differently. Reading `meta/runtime.yml` from disk for installed
   collections would fix it. A documented limitation for now (2026-10-21).
 - **Installed collections that aren't on any index** (source checkouts,
-  path, tarball and git sources) have no plugins listed.
-  alai-plugin-extractor can list them statically, but it's a new
-  dependency, so it waits. A documented limitation.
+  path, tarball and git sources), and a collection project's own
+  collection, have no plugins listed. A documented limitation. The plan
+  (2026-10-24, weighed with the user and left for later), which takes
+  alai-plugin-extractor as a new dependency, or its code moved into alai:
+  - **List each local collection's plugins** with the extractor: installed
+    ones and the collection project's checkout, their names, types, short
+    descriptions and routing. Listing costs about what reading the docs
+    does, as parsing the Python is most of it (measured 2026-10-24:
+    `community.general` 0.9 s, `fortinet.fortios` 1.5 s, `ansible.posix`
+    0.05 s), against `find`'s 0.1-0.3 s.
+  - **Cache just those fields**, per collection, keyed by the installed
+    `MANIFEST.json`'s SHA-256: a cache of everything extracted, docs
+    included, would cost 10-30 ms a collection to load on every `find`. A
+    checkout has no `MANIFEST.json`, so key it by its plugin files' sizes
+    and modification times, or working in a large one (`community.general`
+    itself) costs about a second every time.
+  - **A second, small source in `Catalog`**, in Python beside the native
+    scan of `plugins.jsonl`, with the same search interface. A local
+    collection's lines replace the index's for it, as the installed
+    version is what runs, which also fixes routing from installed
+    collections (above).
+  - **Fit `find`'s rules**: ranking and markers read `since` and `until`,
+    so a local line's `since` is the installed version. On Python 3.10 and
+    3.11, which the extractor doesn't run on, local collections are
+    skipped, with a dim line saying so.
+  - The first `find` in a project with many installed collections reads
+    each once, several seconds where `find` now takes a fraction of one,
+    so it shows progress; after that, a few milliseconds each.
+  About 200-300 lines, and as much again in tests and docs.
 - **`ansible.builtin` is one ansible-core release's**, the one the index
   was generated from (the spec says one release, and `plugins.jsonl`
   doesn't say which), not the installed ansible-core's, and every line is
