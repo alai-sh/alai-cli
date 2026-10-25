@@ -204,7 +204,8 @@ class Suspended:
 
 def _encodes(text: str) -> bool:
     try:
-        _ = text.encode(sys.stderr.encoding or "ascii")
+        # getattr, as something standing in for stderr, such as a full-screen app's capture of it, may have none.
+        _ = text.encode(getattr(sys.stderr, "encoding", None) or "ascii")
     except (UnicodeEncodeError, LookupError):
         return False
     return True
