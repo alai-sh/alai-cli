@@ -236,7 +236,7 @@ class TestSync:
 
         text = (project / "alai.lock").read_text()
         data = toml_loads(text)
-        assert data["project"] == {"requires_ansible": ">=2.15", "requirements": ["a.a>=1.0.0", "c.c"]}
+        assert data["project"] == {"requires_ansible": ">=2.15", "collections": ["a.a>=1.0.0", "c.c"]}
         assert [c["name"] for c in data["collection"]] == ["a.a", "b.b", "c.c", "ns.col"]
         assert data["collection"][-1] == {
             "name": "ns.col",

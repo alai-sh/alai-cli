@@ -649,7 +649,7 @@ rather than one file taking precedence over the other
   might be, a file that doesn't match, or one listed that's missing, is an
   error; such a directory still works editable, which reads only its
   metadata.
-- **The checks follow the file**: the lock's `requirements` snapshot comes
+- **The checks follow the file**: the lock's `collections` snapshot comes
   from `MANIFEST.json`'s dependencies, `lock --check` names the file
   (`MANIFEST.json dependencies: added d.d`), and the install record's
   `cache_keys` hashes `galaxy.yml`, `MANIFEST.json` and

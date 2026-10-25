@@ -35,7 +35,7 @@ class TestLock:
             "name": "ns.src",
             "version": "1.0.0",
             "source": {"directory": "../src"},
-            "requirements": ["a.a>=2.0.0"],
+            "collections": ["a.a>=2.0.0"],
             "dependencies": ["a.a"],
         }
         lock = read_lock(str(project / "alai.lock"))
@@ -150,6 +150,7 @@ class TestLock:
     def test_round_trip(self) -> None:
         table = {
             "version": 1,
+            "revision": 1,
             "sources": {"ns.src": {"path": "../src", "editable": True}},
             "collection": [
                 {
@@ -157,7 +158,7 @@ class TestLock:
                     "version": "1.0.0",
                     "source": {"directory": "/abs/src"},
                     "requires_ansible": ">=2.16",
-                    "requirements": [],
+                    "collections": [],
                     "dependencies": [],
                 }
             ],
@@ -165,7 +166,7 @@ class TestLock:
 
         text = render_lock(parse_lock(table, "alai.lock"))
 
-        assert toml_loads(text) == {**table, "project": {"requirements": []}}
+        assert toml_loads(text) == {**table, "project": {"collections": []}}
 
 
 class TestRequiresAnsible:

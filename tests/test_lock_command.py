@@ -30,7 +30,7 @@ class TestLock:
         assert lines(err) == ["Resolved 2 collections"]
         text = (project / "alai.lock").read_text()
         assert 'name = "a.a"\nversion = "2.0.0"' in text
-        assert '[project]\nrequirements = ["a.a"]' in text
+        assert '[project]\ncollections = ["a.a"]' in text
 
     def test_unchanged(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         write_project(project, ["a.a"])

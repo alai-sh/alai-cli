@@ -150,14 +150,14 @@ class TestDumps:
         table = {
             "version": 1,
             "sources": {"a.b": {"index": "x", "editable": True}},
-            "project": {"requirements": ["c.c"], "groups": {"test": {"requirements": []}}},
+            "project": {"collections": ["c.c"], "groups": {"test": {"collections": []}}},
             "collection": [{"name": "x", "size": 3}, {"name": "y"}],
         }
 
         assert toml_dumps(table, "# head\n", 80) == (
             "# head\nversion = 1\n\n"
             + '[sources]\n"a.b" = { index = "x", editable = true }\n\n'
-            + '[project]\nrequirements = ["c.c"]\ngroups.test.requirements = []\n\n'
+            + '[project]\ncollections = ["c.c"]\ngroups.test.collections = []\n\n'
             + '[[collection]]\nname = "x"\nsize = 3\n\n[[collection]]\nname = "y"\n'
         )
 
