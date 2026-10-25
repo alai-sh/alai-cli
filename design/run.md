@@ -37,6 +37,15 @@ fills in the details.
   get the same result. If a need turns up that isn't (a working directory
   ansible-test needs, say), that's a design problem to solve, not a reason
   for `alai run` to do more than `alai env` can say. No activation script.
+  A variable that extends one already set, such as `PATH` with a managed
+  Python environment's `bin` in front ([environments.md](environments.md)),
+  is printed as its whole value, worked out from the environment `alai env`
+  runs in, with alai's entry taken out first so evaluating it twice doesn't
+  add it twice (decided with the user, 2026-10-25). Every output format
+  then says the same, where `$PATH` would be expanded by shells but not by
+  `$GITHUB_ENV`, and only by some editors' env files. For `eval` and direnv
+  it's no different; a `dotenv` file is a snapshot of the `PATH` it was
+  written with, which the docs must say once alai prints one.
 - **`alai run` syncs first**, as `uv run` does, with an opt-out
   (`--no-sync`, and `--locked`/`--frozen` as elsewhere). `--no-sync` means
   what it means to uv on each command: on `add` and `remove`, lock but

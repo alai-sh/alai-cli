@@ -61,7 +61,7 @@ class TestLock:
             "version": "1.0.0",
             "source": {"git": repo.url, "rev": "v1.0.0", "commit": commit},
             "requires_ansible": ">=2.16",
-            "requirements": ["a.a>=2.0.0"],
+            "collections": ["a.a>=2.0.0"],
             "dependencies": ["a.a"],
         }
         lock = read_lock(str(project / "alai.lock"))

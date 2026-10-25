@@ -70,7 +70,7 @@ class TestPath:
             "cksum": cksum,
             "size": size,
             "requires_ansible": ">=2.16",
-            "requirements": ["a.a>=2.0.0"],
+            "collections": ["a.a>=2.0.0"],
             "dependencies": ["a.a"],
         }
         lock = read_lock(str(project / "alai.lock"))
@@ -179,7 +179,7 @@ class TestUrl:
         data = toml_loads((project / "alai.lock").read_text())
         entry = next(c for c in data["collection"] if c["name"] == "ns.src")
         assert entry["source"] == {"url": url} and entry["cksum"] == cksum and entry["size"] == size
-        assert entry["requirements"] == ["c.c"]
+        assert entry["collections"] == ["c.c"]
         assert install_record(project / "collections", "ns.src") == {"source": {"url": url}, "cksum": cksum}
         assert downloads(server) == 1
 
