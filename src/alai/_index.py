@@ -40,6 +40,8 @@ _Prefetch = _t.Literal["collections", "plugins"]
 _USUAL_PATHS: dict[_Prefetch, str] = {"collections": "collections.json", "plugins": "plugins.jsonl"}
 """Where the spec's layout, and ``index.alai.sh``, keep the listing and the plugin index, relative to the root."""
 _DL_PLACEHOLDERS = ("{sha256-checksum}", "{sha256-prefix}", "{namespace}", "{name}", "{version}")
+_HASHED = ("{sha256-checksum}", "{sha256-prefix}")
+"""The index template's placeholders for an index file's SHA-256, from ``collections.json``."""
 
 
 class IndexDataError(Error):
@@ -49,14 +51,14 @@ class IndexDataError(Error):
 class IndexConfig(Record):
     """An index's ``config.json``, with its paths made absolute."""
 
-    __slots__ = ("collections_url", "dl", "format", "index_url", "plugins_url", "root")
+    __slots__ = ("collections_url", "dl", "format", "index", "plugins_url", "root")
 
     def __init__(
         self,
         *,
         root: str,
         format: int,  # noqa: A002
-        index_url: str,
+        index: str,
         collections_url: str,
         dl: str,
         plugins_url: str | None = None,
@@ -64,13 +66,19 @@ class IndexConfig(Record):
         self.root = root
         """The index root URL, after following any ``moved-to``."""
         self.format = format
-        self.index_url = index_url
-        """The directory holding ``<namespace>/<name>.jsonl``, ending in ``/``."""
+        self.index = index
+        """The index file URL template, as given, relative to ``root``: ``index/{namespace}/{name}.jsonl``, or one by
+        SHA-256 such as ``index/{sha256-prefix}/{sha256-checksum}.jsonl``."""
         self.collections_url = collections_url
         self.dl = dl
         """The artifact URL template."""
         self.plugins_url = plugins_url
         """The plugin index, ``plugins.jsonl``, or None if the index has none."""
+
+    @property
+    def hashed(self) -> bool:
+        """Whether index files are found by their SHA-256, which only ``collections.json`` gives."""
+        return any(p in self.index for p in _HASHED)
 
 
 class Listed(Record):
@@ -162,8 +170,10 @@ class IndexClient:
     name, so renaming an index in ``alai.toml`` doesn't lose the cache and two names for one URL share it.
 
     ``collections.json`` is fetched alongside ``config.json``, from where the cached config says it is (or, with
-    none cached, where the spec's layout puts it), and gives each index file's SHA-256: a cached file that matches is used without a request (the spec's "Cached index
-    files"), so a run where nothing changed costs those two requests.
+    none cached, where the spec's layout puts it), and gives each index file's SHA-256: a cached file that matches is
+    used without a request (the spec's "Cached index files"), so a run where nothing changed costs those two requests.
+    Index files are cached by collection, not URL, so an index whose template finds them by SHA-256 keeps one copy of
+    each rather than one for every change.
     """
 
     def __init__(
@@ -183,6 +193,9 @@ class IndexClient:
         self._lock = threading.Lock()
         self._config: IndexConfig | None = None
         self._collections: dict[str, Listed] | None = None
+        self._relisted = False
+        """Whether ``collections.json`` has been fetched again past any cache, for an index file it named by SHA-256
+        that's gone."""
         self._files: dict[str, IndexFile | None] = {}
 
     def config(self) -> IndexConfig:
@@ -226,10 +239,12 @@ class IndexClient:
         config = self.config()
         listing = self.collections()
         for name in names:
-            url = self._file_url(config, name)
-            cache_path = self._cache_path(config.root, url)
-            if self._current(listing.get(name), cache_path) is None:
-                _ = self._fetcher.fetch(url, cache_path)
+            listed = listing.get(name)
+            if config.hashed and (listed is None or listed.sha256 is None):
+                continue  # Not in the index, or an error ``versions`` reports.
+            cache_path = self._file_cache_path(config.root, name)
+            if self._current(listed, cache_path) is None:
+                _ = self._fetcher.fetch(index_file_url(config, name, listed and listed.sha256), cache_path, what=name)
 
     def versions(self, name: str) -> IndexFile | None:
         """The index file for collection ``name``, or None if the index doesn't have it."""
@@ -238,23 +253,65 @@ class IndexClient:
                 return self._files[name]
         config = self.config()
         listed = self.collections().get(name)
-        url = self._file_url(config, name)
-        cache_path = self._cache_path(config.root, url)
+        cache_path = self._file_cache_path(config.root, name)
 
-        data = self._current(listed, cache_path)
-        if data is not None:
-            trace(f"{url}: the cached copy matches collections.json")
+        if config.hashed and listed is None:
+            # Only the listing says where a collection's file is, so one it doesn't list isn't in the index.
+            url, data = None, None
         else:
-            data = self._fetcher.get(url, cache_path)
-            if data is not None and listed and listed.sha256 and _sha256(data) != listed.sha256:
-                # A cache on the way kept the old file, or the listing is the older of the two.
-                trace(f"{url}: doesn't match collections.json, fetching again past any cache")
-                data = self._fetcher.refresh(url, cache_path)
-                if data is not None and _sha256(data) != listed.sha256:
-                    debug(f"{url} still doesn't match {config.collections_url}; using it as served")
-        result = None if data is None else parse_index_file(data, name, url)
+            url = index_file_url(config, name, listed and listed.sha256)
+            data = self._current(listed, cache_path)
+            if data is not None:
+                trace(f"{url} ({name}): the cached copy matches collections.json")
+            elif config.hashed:
+                url, data = self._fetch_hashed(config, name, url, cache_path)
+            else:
+                data = self._fetcher.get(url, cache_path, what=name)
+                if data is not None and listed and listed.sha256 and _sha256(data) != listed.sha256:
+                    # A cache on the way kept the old file, or the listing is the older of the two.
+                    trace(f"{url} ({name}): doesn't match collections.json, fetching again past any cache")
+                    data = self._fetcher.refresh(url, cache_path, what=name)
+                    if data is not None and _sha256(data) != listed.sha256:
+                        debug(f"{url} still doesn't match {config.collections_url}; using it as served")
+        result = None if data is None or url is None else parse_index_file(data, name, url)
         with self._lock:
             return self._files.setdefault(name, result)
+
+    def _fetch_hashed(
+        self, config: IndexConfig, name: str, url: str, cache_path: str | None
+    ) -> tuple[str | None, bytes | None]:
+        """Fetch an index file found by its SHA-256, returning its URL and body, or None for both if the index no
+        longer has the collection. Such a file never changes, so one that doesn't match its SHA-256 is an error, not a
+        stale copy. One that's gone means this listing is older than the host keeps replaced files for, so the
+        listing is fetched again past any cache, once a run, and the file it names now tried."""
+        data = self._fetcher.get(url, cache_path, what=name)
+        if data is None:
+            trace(f"{url} ({name}): not found, fetching {config.collections_url} again past any cache")
+            listed = self._relist(config).get(name)
+            if listed is None:
+                return None, None
+            url = index_file_url(config, name, listed.sha256)
+            data = self._fetcher.get(url, cache_path, what=name)
+            if data is None:
+                raise IndexDataError(f"{url} not found, though {config.collections_url} lists {name}")
+        else:
+            listed = self.collections().get(name)
+        # Offline, the cached copy is used as it is, as for an index whose files are found by name.
+        if listed is not None and not self._fetcher.offline and _sha256(data) != listed.sha256:
+            raise IndexDataError(f"{url} doesn't match its sha256 in {config.collections_url}")
+        return url, data
+
+    def _relist(self, config: IndexConfig) -> dict[str, Listed]:
+        """``collections.json``, fetched again past any cache if it hasn't been this run."""
+        with self._lock:
+            if not self._relisted or self._collections is None:
+                url = config.collections_url
+                data = self._fetcher.refresh(url, self._cache_path(config.root, url))
+                if data is None:
+                    raise IndexDataError(f"{url} not found")
+                self._collections = parse_collections(data, url)
+                self._relisted = True
+            return self._collections
 
     def _current(self, listed: Listed | None, cache_path: str | None) -> bytes | None:
         """The cached copy of an index file if its SHA-256 is the one ``collections.json`` lists, else None."""
@@ -305,9 +362,11 @@ class IndexClient:
             root = target
         raise IndexDataError(f"{self.index.url}: more than {_MAX_MOVES} moved-to hops")
 
-    def _file_url(self, config: IndexConfig, name: str) -> str:
+    def _file_cache_path(self, root: str, name: str) -> str | None:
+        """Where collection ``name``'s index file is cached, whatever its URL: ``index/<namespace>/<name>.jsonl`` under
+        the index's cache directory."""
         namespace, short = collection_name(name).split(".")
-        return f"{config.index_url}{namespace}/{short}.jsonl"
+        return self._cache_path(root, f"{root}index/{namespace}/{short}.jsonl")
 
     def _cache_path(self, root: str, url: str) -> str | None:
         """Where ``url``'s response is cached: its path under the index's own cache directory."""
@@ -335,13 +394,23 @@ def parse_config(data: bytes, root: str, url: str) -> tuple[IndexConfig, str | N
     paths = formats[str(number)]  # pyright: ignore[reportUnknownVariableType]
     if not isinstance(paths, dict):
         raise IndexDataError(f"{url}: 'formats.{number}' must be an object")
-    index_path = paths.get("index")  # pyright: ignore[reportUnknownVariableType]
+    index = paths.get("index")  # pyright: ignore[reportUnknownVariableType]
     collections_path = paths.get("collections")  # pyright: ignore[reportUnknownVariableType]
-    if not isinstance(index_path, str) or not isinstance(collections_path, str):
+    if not isinstance(index, str) or not isinstance(collections_path, str):
         raise IndexDataError(f"{url}: 'formats.{number}' must have 'index' and 'collections' paths")
+    if not ("{namespace}" in index and "{name}" in index) and "{sha256-checksum}" not in index:
+        raise IndexDataError(
+            f"{url}: 'formats.{number}.index' must be a URL template naming each file, with {{namespace}} and {{name}},"
+            + " or {sha256-checksum}"
+        )
     plugins_path = paths.get("plugins")  # pyright: ignore[reportUnknownVariableType]
     if plugins_path is not None and not isinstance(plugins_path, str):
         raise IndexDataError(f"{url}: 'formats.{number}.plugins' must be a path")
+    # The template's values are names and hex, which can't change where it leads, so any stand in for them.
+    sample = _fill(index, "ns.name", "0" * 64)
+    for key, path in (("index", sample), ("collections", collections_path), ("plugins", plugins_path)):
+        if path is not None:
+            _check_scheme(root, urllib.parse.urljoin(root, path), f"{url}: 'formats.{number}.{key}'")
 
     dl = obj.get("dl")
     if not isinstance(dl, str) or not any(p in dl for p in _DL_PLACEHOLDERS):
@@ -350,11 +419,10 @@ def parse_config(data: bytes, root: str, url: str) -> tuple[IndexConfig, str | N
     if moved_to is not None and not isinstance(moved_to, str):
         raise IndexDataError(f"{url}: 'moved-to' must be a URL or null")
 
-    index_url = urllib.parse.urljoin(root, index_path)
     config = IndexConfig(
         root=root,
         format=number,
-        index_url=index_url if index_url.endswith("/") else f"{index_url}/",
+        index=index,
         collections_url=urllib.parse.urljoin(root, collections_path),
         dl=dl,
         plugins_url=urllib.parse.urljoin(root, plugins_path) if plugins_path else None,
@@ -414,6 +482,16 @@ def parse_index_file(data: bytes, name: str, url: str) -> IndexFile:
         seen.add(version.text)
         versions.append(line)
     return IndexFile(name, tuple(versions), newer=newer, invalid=tuple(invalid))
+
+
+def index_file_url(config: IndexConfig, name: str, sha256: str | None = None) -> str:
+    """Where collection ``name``'s index file is, from the index template: filled in, then resolved against the index
+    root. ``sha256`` is its entry's in ``collections.json``, which a template by SHA-256 needs."""
+    if config.hashed and sha256 is None:
+        raise IndexDataError(
+            f"{config.collections_url}: {name} has no sha256, which {config.root}config.json's index template needs"
+        )
+    return urllib.parse.urljoin(config.root, _fill(config.index, name, sha256 or ""))
 
 
 def artifact_url(config: IndexConfig, name: str, version: Version, cksum: str) -> str:
@@ -499,6 +577,27 @@ def _collection_name(text: str) -> str:
     if text not in _NAMES:
         _NAMES.add(collection_name(text))
     return text
+
+
+def _fill(template: str, name: str, sha256: str) -> str:
+    namespace, short = collection_name(name).split(".")
+    return (
+        template.replace("{namespace}", namespace)
+        .replace("{name}", short)
+        .replace("{sha256-checksum}", sha256)
+        .replace("{sha256-prefix}", sha256[:2])
+    )
+
+
+def _check_scheme(root: str, target: str, what: str) -> None:
+    """Refuse a path in ``config.json`` that leads from an ``https`` index to anything else, or from one that isn't on
+    disk to a local file. An index on disk can point anywhere."""
+    scheme = urllib.parse.urlsplit(target).scheme
+    allowed = {"file", "http", "https"} if root.startswith("file:") else {"http", "https"}
+    if root.startswith("https:"):
+        allowed = {"https"}
+    if scheme not in allowed:
+        raise IndexDataError(f"{what}: refusing {target}, from an index at {root}")
 
 
 def _sha256(data: bytes) -> str:

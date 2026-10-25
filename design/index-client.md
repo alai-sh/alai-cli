@@ -58,16 +58,24 @@ from a machine ~250 ms (TCP plus TLS) from Cloudflare.
   `collections.json`: a few kilobytes per lock, not worth a C extension.
 - **The cache is keyed by index URL**, under
   `<cache_dir>/index/<host>-<sha256 of the root, 16 hex>/`, with the index's
-  own paths below that (`config.json`, `index/community/general.jsonl`), as
-  Cargo keys `registry/index/<host>-<hash>`. Renaming an index in `alai.toml`
-  keeps its cache, and two names for one URL share it. `file://` indexes
-  aren't cached.
+  own paths below that (`config.json`, `collections.json`), as Cargo keys
+  `registry/index/<host>-<hash>`. Renaming an index in `alai.toml` keeps its
+  cache, and two names for one URL share it. `file://` indexes aren't
+  cached. Index files are the exception: each is cached by collection, at
+  `index/<namespace>/<name>.jsonl`, whatever URL the template gives
+  (2026-10-25). Keyed by URL, an index that finds its files by SHA-256 would
+  leave one copy behind for every change to a collection, and need a cache
+  pruning step to clear them; keyed by collection, a new copy replaces the
+  old one, and the cache holds one file per collection ever used, as it did
+  before.
 - **A cache file is one JSON line of metadata (`v`, `url`, `etag`), then the
   body** after decompression. It's written to a temporary file beside it and
   renamed into place, so a concurrent alai never reads half a file. An
   unreadable file, or one with another `v`, is a miss. The ETag is stored as
   received: Cloudflare weakens it (`W/"…"`) on compressed responses, and
-  `If-None-Match` compares weakly, so it revalidates either way.
+  `If-None-Match` compares weakly, so it revalidates either way. It's only
+  sent to the URL it came from (2026-10-25), since an index file's cached
+  copy may be from the URL its old SHA-256 gave.
 - **The cache is trusted, so who can write it matters** (2026-10-20). A
   cached `collections.json` whose `ETag` still matches is used after a 304,
   so anyone able to rewrite it, and the index files it hashes, chooses which
@@ -107,7 +115,8 @@ from a machine ~250 ms (TCP plus TLS) from Cloudflare.
   one run is the worst case, never stuck. Without `sha256` in the listing,
   every index file is revalidated, as before. Measured on `index.alai.sh`
   with 10 collections: a warm run went from ~0.9 s to ~0.45 s, Python start-up
-  included.
+  included. That's for an index whose template finds files by name; for one
+  that finds them by SHA-256, see the next decision.
 - **What was rejected for that, and why.** The index side of the scheme
   (the `sha256` field, the publishing order, purging and query strings) is
   in the index spec, in galaxy-sync's `docs/index-spec/README.md`: the
@@ -142,16 +151,72 @@ from a machine ~250 ms (TCP plus TLS) from Cloudflare.
     `Cache-Control: no-cache`, `max-age=0` and `Pragma: no-cache` from
     clients (tested: still a `HIT`, with `Age`). A new cache key, like the
     `?r=` retry's, is the only thing a client can do.
-- **The publisher keeps `max-age=60` and purges what it changes** (decided
-  with galaxy-sync on 2026-10-19). Purging Cloudflare after writing changed
-  files, before writing the listing, shrinks the window in which the retry
-  is needed from 60 s to the purge's propagation time. Raising `max-age`
-  would also raise it for proxies and browsers after Cloudflare, which no
-  purge reaches. A longer lifetime for Cloudflare alone, through a Cache
-  Rule, would cut edge-to-R2 reads but needs purges that survive a failed
-  run first; it's deferred until reads approach R2's free tier. None of this
-  changes the client: the hash check and retry are correct with any
-  lifetime.
+- **The index template** (2026-10-25). `formats.<n>.index` in
+  `config.json` is a URL template for each collection's index file, like
+  `dl`, rather than a directory: `index/{namespace}/{name}.jsonl` for an
+  index whose files are found by name, or
+  `index/{sha256-prefix}/{sha256-checksum}.jsonl` for one whose files are
+  found by the SHA-256 `collections.json` lists, which is what `index.alai.sh`
+  is to use. It has to name each file: `{namespace}` and `{name}`, or
+  `{sha256-checksum}`; `{sha256-prefix}` alone doesn't. It's filled in, then
+  resolved against the index root as RFC 3986 has it, so it can be relative
+  or absolute, on another host, and a leading `/` is from the host's root.
+  Format 1 was changed in place rather than adding a format 2, as no index
+  but `index.alai.sh` exists and only alai reads it. SHA-256 only: the
+  placeholders and the listing's field name the algorithm, so another would
+  be a new field and placeholders in a new format, not a setting every
+  client has to handle (artifacts are SHA-256 too, as Galaxy's are).
+- **Paths in `config.json` can't lead anywhere** (2026-10-25). The index
+  template, `collections` and `plugins` are refused if they lead from an
+  `https` index to anything but `https`, or from an index that isn't on
+  disk to a `file://` URL, so a remote index can't make alai read local
+  files. An index on disk can point at a remote one. The same rule as
+  redirects and `moved-to`.
+- **Index files found by SHA-256 never change** (2026-10-25). A cached copy
+  that matches the listing is used with no request, as for any index file.
+  Otherwise the file at its URL is fetched with no `If-None-Match`, and if
+  it doesn't match the SHA-256 in its own URL, that's an error: it can't be
+  a stale copy, so there's no `?r=` retry. A collection the listing doesn't
+  have isn't in the index, without a request, as only the listing says
+  where its file is, and an entry with no `sha256` is an error for that
+  collection. A 404 means the listing is older than the host keeps replaced
+  files for, so `collections.json` is fetched again past any cache (`?r=`),
+  at most once a run, and the file it names now is tried; still gone is an
+  error. Offline, the cached copy is used as it is, as for files found by
+  name. As the URL names only a hash, `-vv`'s trace lines for an index file
+  name its collection, `GET <url> (community.general): 200, …`; the
+  fetcher takes what a request is for (`what=`) for its trace.
+- **Why `index.alai.sh` finds its files by SHA-256** (2026-10-25). A cold
+  `alai add community.general` resolved in about 3 s on the first run after
+  a pause and in 0.45 s straight after it. The index files were served with
+  `Cache-Control: public, max-age=60`, which Cloudflare also took as its own
+  lifetime, so more than a minute after anyone near a Cloudflare location
+  last asked, each file was `REVALIDATED` with R2: 0.61 to 0.72 s, against
+  0.26 to 0.29 s for a `HIT`. A resolve learns which files it needs from the
+  ones before (`community.general`, then `ansible.netcommon`,
+  `kubernetes.core`, `cloud.common`, `ansible.utils`), so five of those in a
+  row made the 3 s. A file named by its SHA-256 never changes, so it can be
+  cached for a year everywhere, as artifacts are, and the first request
+  after a pause is a `HIT`. Only `config.json` and `collections.json` change,
+  and a stale listing is old but consistent, as the files it names are kept
+  for days, so galaxy-sync stopped purging Cloudflare altogether
+  (2026-10-26): a change reaches clients up to 10 minutes after its sync,
+  and no request waits for R2 after one. Considered, as header changes
+  alone:
+  - **`stale-while-revalidate` alone.** Cloudflare now serves the expired
+    copy at once and revalidates in the background, so the wait goes, but
+    R2 is still asked once a minute per location for every file in use, and
+    the purge ordering still has to hold.
+  - **`s-maxage`, a longer lifetime for shared caches only.** Fewer R2
+    reads, but a missed purge (an expired token, a Cloudflare API error, a
+    run killed between writing and purging, which nothing records) leaves
+    files stale for the whole lifetime, so purges would need retrying from
+    state; it also applies to company proxies, which no purge reaches.
+  - **A Cloudflare Cache Rule** for the longer lifetime: Cloudflare only,
+    but configured outside any repository, with the same purge problem.
+  A template keeps the choice with each host: one that generates files on
+  request, or rewrites another index's, keeps the name layout and works as
+  before, and none of this changes what a client does beyond the template.
 - **404, 410 and 451 mean "not found"** and remove the cached copy. 401 is
   "credentials required". Anything else is an error. Connection errors, 429
   and 5xx are retried three times with backoff (0.5 s, 1 s, 2 s).
@@ -248,9 +313,44 @@ from a machine ~250 ms (TCP plus TLS) from Cloudflare.
 
 ## What `index.alai.sh` does today
 
-- Served over HTTP/2 by Cloudflare from R2, with `ETag`,
-  `Cache-Control: public, max-age=60` and 304 on `If-None-Match`, as the spec
-  asks. `config.json` offers format 1 with a plugin index.
+- Served over HTTP/2 by Cloudflare from R2, with `ETag` and 304 on
+  `If-None-Match`, as the spec asks. `config.json` offers format 1 with a
+  plugin index and the template
+  `index/{sha256-prefix}/{sha256-checksum}.jsonl` (since galaxy-sync's sync
+  of 2026-10-25). Index files are served with
+  `public, max-age=31536000, immutable`; `config.json`, `collections.json`,
+  `plugins.jsonl` and the conflict records with
+  `public, max-age=600, stale-while-revalidate=86400`, and nothing is
+  purged, so a change reaches clients up to 10 minutes after the sync that
+  made it. Checked on 2026-10-26: every file `collections.json` names
+  exists and has the immutable header, `community.general`'s hashed to its
+  listed `sha256` and was a `HIT` from its second request.
+- **A cold resolve after a pause is fast now** (2026-10-26, a cold
+  `alai -vv add community.general` from a home with nothing cached):
+  resolving took 567 ms more than 10 minutes after the last request, where
+  it had taken about 3 s, and about 0.5 s straight after another run. The
+  first run against files never fetched through that Cloudflare location
+  still took 2.3 s, as each was a `MISS`; being immutable, they stay cached
+  there until Cloudflare evicts them.
+- **`stale-while-revalidate` didn't take effect alongside `s-maxage`.**
+  Past the 10-minute `s-maxage`, `config.json` and `collections.json` came
+  back `REVALIDATED` with 0.64 to 0.68 s to the first byte, so Cloudflare
+  waited for R2 rather than answering from its copy (`UPDATING`): it treats
+  `s-maxage` as `proxy-revalidate`, which never serves an expired copy
+  ([Cloudflare's Cache-Control directives](https://developers.cloudflare.com/cache/concepts/cache-control/)).
+  As alai fetches the two at once, that was one round trip on the first
+  resolve after a pause. galaxy-sync moved to the header above
+  (2026-10-26), and the files already written were copied onto themselves
+  to take it, as `config.json` is rarely written. It also stopped purging,
+  which removed Cloudflare's copy after nearly every sync, so the next
+  request waited for R2 anyway. Checked afterwards (2026-10-26): 701 s
+  after Cloudflare cached them, `config.json` and `collections.json` came
+  back `UPDATING` in 0.30 to 0.37 s to the first byte, from Cloudflare's
+  copy, then `HIT` with `age: 0` once it had fetched them again behind it,
+  and a cold `alai add community.general` resolved in 484 ms.
+- The old index files by name, `index/<namespace>/<name>.jsonl`, are still
+  served until galaxy-sync's pruning deletes them, 7 days after the
+  migration; nothing reads them.
 - **It returns 403 to urllib's default `User-Agent`** (`Python-urllib/3.x`),
   most likely Cloudflare's bot protection; httpx, urllib3, requests and curl
   defaults get 200. alai sends its own `User-Agent`, but scripts reading the

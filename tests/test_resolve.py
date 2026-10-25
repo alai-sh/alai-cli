@@ -7,7 +7,7 @@ import collections.abc as _c
 from pathlib import Path
 
 import pytest
-from index_data import cksum, make_index, v
+from index_data import cksum, index_path, make_index, v
 from index_server import serve
 
 from alai import _resolve
@@ -41,8 +41,15 @@ class Indexes:
         """In the order added, which is the order they're searched."""
         self.urls: dict[str, str] = {}
 
-    def add(self, name: str, collections: dict[str, list[dict[str, object]]], **kwargs: dict[str, str]) -> Indexes:
-        url = make_index(self.tmp_path / name, collections, **kwargs)
+    def add(
+        self,
+        name: str,
+        collections: dict[str, list[dict[str, object]]],
+        *,
+        hashed: bool = True,
+        **kwargs: dict[str, str],
+    ) -> Indexes:
+        url = make_index(self.tmp_path / name, collections, hashed=hashed, **kwargs)
         self.urls[name] = url
         self.clients.append(IndexClient(Index(name, url), self.fetcher, str(self.tmp_path / "cache")))
         return self
@@ -113,7 +120,9 @@ class TestBasic:
         assert result.warnings == ()
 
     def test_backtracks_past_a_listed_but_missing_dependency(self, indexes: Indexes, tmp_path: Path) -> None:
-        indexes.add("alai", {"a.a": [v("1.0.0"), v("2.0.0", {"c.c": "*"})], "c.c": [v("1.0.0")]})
+        # By name, where the listing and a file can be a sync apart. By SHA-256 the file is written before the
+        # listing names it and kept, so one still missing is an index error (test_index.py).
+        indexes.add("alai", {"a.a": [v("1.0.0"), v("2.0.0", {"c.c": "*"})], "c.c": [v("1.0.0")]}, hashed=False)
         (tmp_path / "alai" / "index" / "c" / "c.jsonl").unlink()
 
         result = resolve(manifest(PROJECT), indexes.clients)
@@ -169,8 +178,9 @@ class TestFailures:
             _ = resolve(manifest(PROJECT), indexes.clients)
 
     def test_listed_but_missing(self, indexes: Indexes, tmp_path: Path) -> None:
-        # The listing says the index has it, but the file isn't there: they're a sync apart.
-        indexes.add("alai", {"a.a": [v("1.0.0", {"c.c": "*"})], "c.c": [v("1.0.0")]})
+        # The listing says the index has it, but the file isn't there: they're a sync apart, which only an index by
+        # name can be (see test_backtracks_past_a_listed_but_missing_dependency).
+        indexes.add("alai", {"a.a": [v("1.0.0", {"c.c": "*"})], "c.c": [v("1.0.0")]}, hashed=False)
         (tmp_path / "alai" / "index" / "c" / "c.jsonl").unlink()
 
         with pytest.raises(
@@ -848,4 +858,4 @@ def test_prefetches_every_named_dependency(tmp_path: Path) -> None:
 
             assert chosen(result) == {"a.a": "2.0.0", "b.b": "1.0.0"}
             # Nothing waits for it, since a.a 2.0.0 doesn't need old.dep, so it can arrive after resolve returns.
-            assert server.wait_for("/index/old/dep.jsonl")
+            assert server.wait_for(index_path(tmp_path / "site", "old.dep"))

@@ -96,25 +96,28 @@ class Fetcher:
         for proxy in self._proxies.values():
             proxy.clear()
 
-    def fetch(self, url: str, cache_path: str | None) -> concurrent.futures.Future[bytes | None]:
+    def fetch(
+        self, url: str, cache_path: str | None, *, what: str | None = None
+    ) -> concurrent.futures.Future[bytes | None]:
         """Start fetching ``url``, or return the fetch already started. Its result is the body, or None if the URL
-        doesn't exist; a failure raises FetchError from ``result()``."""
+        doesn't exist; a failure raises FetchError from ``result()``. ``what`` says what it's for in the trace, such
+        as the collection an index file found by its SHA-256 belongs to, where the URL doesn't say."""
         with self._lock:
             future = self._fetches.get(url)
             if future is None:
-                future = self._fetches[url] = self._executor.submit(self._get, url, cache_path)
+                future = self._fetches[url] = self._executor.submit(self._get, url, cache_path, what=what)
             return future
 
-    def get(self, url: str, cache_path: str | None) -> bytes | None:
+    def get(self, url: str, cache_path: str | None, *, what: str | None = None) -> bytes | None:
         """Fetch ``url`` and wait for it: the body, or None if it doesn't exist."""
-        return self.fetch(url, cache_path).result()
+        return self.fetch(url, cache_path, what=what).result()
 
     def cached(self, cache_path: str | None) -> bytes | None:
         """The body cached at ``cache_path``, without a request, or None if there's none."""
         entry = _read_cache(cache_path) if cache_path else None
         return entry[1] if entry else None
 
-    def refresh(self, url: str, cache_path: str | None) -> bytes | None:
+    def refresh(self, url: str, cache_path: str | None, *, what: str | None = None) -> bytes | None:
         """Fetch ``url`` again, past any cache between here and its host, and cache the result as ``url``.
 
         For a copy known to be out of date, such as one a CDN kept after the file changed. A query string nobody
@@ -122,9 +125,9 @@ class Fetcher:
         for a file URL, this is ``get``.
         """
         if self.offline or url.startswith("file:"):
-            return self.get(url, cache_path)
+            return self.get(url, cache_path, what=what)
         unique = f"{url}{'&' if '?' in url else '?'}r={secrets.token_hex(8)}"
-        return self._executor.submit(self._get, url, cache_path, unique).result()
+        return self._executor.submit(self._get, url, cache_path, unique, what=what).result()
 
     def download(
         self, url: str, path: str, *, max_size: int, magic: bytes = b"", kind: str = "file"
@@ -187,16 +190,19 @@ class Fetcher:
         finally:
             response.release_conn()
 
-    def _get(self, url: str, cache_path: str | None, request_url: str | None = None) -> bytes | None:
+    def _get(
+        self, url: str, cache_path: str | None, request_url: str | None = None, *, what: str | None = None
+    ) -> bytes | None:
         """Fetch ``url``, revalidating its cached copy. ``request_url`` is what to request, when it isn't ``url``."""
         if url.startswith("file:"):
-            return _read_file(url)
+            return _read_file(url, what)
 
-        cached = _read_cache(cache_path) if cache_path else None
+        label = f" ({what})" if what else ""
+        cached = _read_cache(cache_path, url) if cache_path else None
         if self.offline:
             if cached is None:
                 raise FetchError(f"{url} isn't in the cache, and alai is offline")
-            trace(f"GET {url}: from the cache, offline")
+            trace(f"GET {url}{label}: from the cache, offline")
             return cached[1]
 
         headers = dict(self._headers)
@@ -206,18 +212,18 @@ class Fetcher:
         final_url, response = self._request(requested, headers)
 
         if response.status == 304 and cached:
-            trace(f"GET {requested}: 304, the cached copy is current")
+            trace(f"GET {requested}{label}: 304, the cached copy is current")
             return cached[1]
         if response.status == 200:
             trace(
-                f"GET {requested}: 200, {len(response.data)} bytes"
+                f"GET {requested}{label}: 200, {len(response.data)} bytes"
                 + (f" from {final_url}" if final_url != requested else "")
             )
             if cache_path:
                 _write_cache(cache_path, url, response.headers.get("ETag"), response.data)
             return response.data
         if response.status in _NOT_FOUND:
-            trace(f"GET {requested}: {response.status}, not found")
+            trace(f"GET {requested}{label}: {response.status}, not found")
             if cached and cache_path:
                 _remove(cache_path)
             return None
@@ -342,22 +348,24 @@ def _file_path(url: str) -> str:
         raise FetchError(f"{url}: {e}") from None
 
 
-def _read_file(url: str) -> bytes | None:
+def _read_file(url: str, what: str | None = None) -> bytes | None:
     path = _file_path(url)
+    label = f" ({what})" if what else ""
     try:
         with open(path, "rb") as fd:
             data = fd.read()
     except (FileNotFoundError, NotADirectoryError):
-        trace(f"read {path}: not found")
+        trace(f"read {path}{label}: not found")
         return None
     except OSError as e:
         raise FetchError(f"{path}: {e.strerror or e}") from None
-    trace(f"read {path}: {len(data)} bytes")
+    trace(f"read {path}{label}: {len(data)} bytes")
     return data
 
 
-def _read_cache(path: str) -> tuple[str | None, bytes] | None:
-    """A cached response as ``(etag, body)``, or None if there's none or it's unreadable.
+def _read_cache(path: str, url: str | None = None) -> tuple[str | None, bytes] | None:
+    """A cached response as ``(etag, body)``, or None if there's none or it's unreadable. With ``url``, the ETag only
+    if the body came from there: an index file is cached by collection, and its URL changes with its SHA-256.
 
     The file is one JSON line of metadata, then the body as received, after decompression.
     """
@@ -374,6 +382,8 @@ def _read_cache(path: str) -> tuple[str | None, bytes] | None:
     if not sep or not isinstance(meta, dict) or meta.get("v") != _CACHE_VERSION:
         return None
     etag = meta.get("etag")  # pyright: ignore[reportUnknownVariableType]
+    if url is not None and meta.get("url") != url:
+        etag = None
     return (etag if isinstance(etag, str) else None), body
 
 
