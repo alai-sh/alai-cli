@@ -39,13 +39,15 @@ def make_index(
     raw_lines: dict[str, str] | None = None,
     artifacts: bool = False,
     plugins: list[dict[str, object]] | None = None,
+    hashed: bool = True,
 ) -> str:
     """Write an index in the spec's layout, returning its file:// root URL.
 
     With ``artifacts``, each version gets a real tarball under ``root/dl``, which ``dl`` points at, and its line the
     tarball's ``cksum`` and ``size``, so it can be installed: one holding only a README, or the file a version's
     ``tarball`` key names, such as a collection downloaded from Galaxy. With ``plugins``, it has a plugin index of those lines
-    (see ``plugin``).
+    (see ``plugin``). Index files are found by their SHA-256, ``index/<aa>/<sha256>.jsonl``, as ``index.alai.sh``
+    serves them, or with ``hashed=False`` by name, ``index/<namespace>/<name>.jsonl``.
     """
     (root / "index").mkdir(parents=True, exist_ok=True)
     dl = (
@@ -58,7 +60,9 @@ def make_index(
             {
                 "formats": {
                     "1": {
-                        "index": "index/",
+                        "index": "index/{sha256-prefix}/{sha256-checksum}.jsonl"
+                        if hashed
+                        else "index/{namespace}/{name}.jsonl",
                         "collections": "collections.json",
                         **({"plugins": "plugins.jsonl"} if plugins is not None else {}),
                     }
@@ -93,18 +97,32 @@ def make_index(
             lines.append(json.dumps(line))
         if raw_lines and name in raw_lines:
             lines.append(raw_lines[name])
-        path = root / "index" / namespace / f"{short}.jsonl"
-        path.parent.mkdir(exist_ok=True)
         data = ("\n".join(lines) + "\n").encode()
+        sha256 = hashlib.sha256(data).hexdigest()
+        path = (
+            root / "index" / sha256[:2] / f"{sha256}.jsonl" if hashed else root / "index" / namespace / f"{short}.jsonl"
+        )
+        path.parent.mkdir(exist_ok=True)
         _ = path.write_bytes(data)
-        listing.setdefault(namespace, {})[short] = {
-            "updated": "2026-01-01T00:00:00Z",
-            "sha256": hashlib.sha256(data).hexdigest(),
-        }
+        listing.setdefault(namespace, {})[short] = {"updated": "2026-01-01T00:00:00Z", "sha256": sha256}
     _ = (root / "collections.json").write_text(json.dumps({"v": 1, "namespaces": listing}))
     if plugins is not None:
         _ = (root / "plugins.jsonl").write_text("".join(json.dumps(line) + "\n" for line in plugins))
     return root.as_uri() + "/"
+
+
+def index_path(root: Path, name: str) -> str:
+    """Where collection ``name``'s index file is in the index at ``root``, as a URL path: by its SHA-256 in
+    ``collections.json``, or by name, as the index's template says."""
+    namespace, short = name.split(".")
+    template = json.loads((root / "config.json").read_text())["formats"]["1"]["index"]
+    sha256 = json.loads((root / "collections.json").read_text())["namespaces"][namespace][short]["sha256"]
+    return "/" + (
+        template.replace("{namespace}", namespace)
+        .replace("{name}", short)
+        .replace("{sha256-checksum}", sha256)
+        .replace("{sha256-prefix}", sha256[:2])
+    )
 
 
 def plugin(fqcn: str, type_: str = "module", **fields: object) -> dict[str, object]:

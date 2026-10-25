@@ -11,6 +11,7 @@ import shutil
 from pathlib import Path
 
 import pytest
+from index_data import make_index, v
 from index_server import IndexServer, serve
 
 from alai import _output
@@ -22,6 +23,7 @@ from alai._index import (
     IndexDataError,
     Listed,
     artifact_url,
+    index_file_url,
     parse_collections,
     parse_config,
     parse_index_file,
@@ -57,7 +59,7 @@ def index_file(*lines: dict[str, object] | str) -> bytes:
 
 def config(**changes: object) -> bytes:
     obj: dict[str, object] = {
-        "formats": {"1": {"index": "index/", "collections": "collections.json"}},
+        "formats": {"1": {"index": "index/{namespace}/{name}.jsonl", "collections": "collections.json"}},
         "dl": "https://dl.example/sha256/{sha256-prefix}/{sha256-checksum}.tar.gz",
         "moved-to": None,
     }
@@ -72,7 +74,7 @@ class TestConfig:
         assert parsed == IndexConfig(
             root=ROOT,
             format=1,
-            index_url=f"{ROOT}index/",
+            index="index/{namespace}/{name}.jsonl",
             collections_url=f"{ROOT}collections.json",
             dl="https://dl.alai.sh/sha256/{sha256-prefix}/{sha256-checksum}.tar.gz",
             plugins_url=f"{ROOT}plugins.jsonl",
@@ -85,16 +87,39 @@ class TestConfig:
         assert parsed.plugins_url is None
 
     def test_highest_readable_format(self) -> None:
-        formats = {"1": {"index": "v1/", "collections": "c1.json"}, "2": {"index": "v2/", "collections": "c2.json"}}
+        formats = {
+            "1": {"index": "v1/{namespace}/{name}.jsonl", "collections": "c1.json"},
+            "2": {"index": "v2/{namespace}/{name}.jsonl", "collections": "c2.json"},
+        }
 
         parsed, _ = parse_config(config(formats=formats), ROOT, "u")
 
-        assert (parsed.format, parsed.index_url) == (1, f"{ROOT}v1/")
+        assert (parsed.format, parsed.index) == (1, "v1/{namespace}/{name}.jsonl")
 
-    def test_index_path_gets_trailing_slash(self) -> None:
-        parsed, _ = parse_config(config(formats={"1": {"index": "idx", "collections": "c.json"}}), ROOT, "u")
+    @pytest.mark.parametrize(
+        ("template", "hashed"),
+        [
+            ("index/{namespace}/{name}.jsonl", False),
+            ("index/{sha256-prefix}/{sha256-checksum}.jsonl", True),
+            ("https://files.example/{namespace}.{name}-{sha256-checksum}.jsonl", True),
+        ],
+    )
+    def test_index_template(self, template: str, hashed: bool) -> None:
+        parsed, _ = parse_config(config(formats={"1": {"index": template, "collections": "c.json"}}), ROOT, "u")
 
-        assert parsed.index_url == f"{ROOT}idx/"
+        assert (parsed.index, parsed.hashed) == (template, hashed)
+
+    @pytest.mark.parametrize(
+        ("root", "path"),
+        [
+            ("file:///srv/index/", "https://files.example/{namespace}/{name}.jsonl"),
+            ("http://index.example/", "https://files.example/{namespace}/{name}.jsonl"),
+        ],
+    )
+    def test_index_elsewhere(self, root: str, path: str) -> None:
+        parsed, _ = parse_config(config(formats={"1": {"index": path, "collections": "c.json"}}), root, "u")
+
+        assert parsed.index == path
 
     def test_moved_to(self) -> None:
         assert parse_config(config(**{"moved-to": "https://new.example/"}), ROOT, "u")[1] == "https://new.example/"
@@ -109,11 +134,39 @@ class TestConfig:
             (config(formats={}), "it offers index format none"),
             (config(formats={"1": "index/"}), r"'formats\.1' must be an object"),
             (config(formats={"1": {"index": "index/"}}), "must have 'index' and 'collections' paths"),
+            (
+                config(formats={"1": {"index": "index/", "collections": "c.json"}}),
+                r"'formats\.1\.index' must be a URL template naming each file",
+            ),
+            (
+                config(formats={"1": {"index": "index/{name}.jsonl", "collections": "c.json"}}),
+                r"'formats\.1\.index' must be a URL template naming each file",
+            ),
+            (
+                config(formats={"1": {"index": "index/{sha256-prefix}.jsonl", "collections": "c.json"}}),
+                r"'formats\.1\.index' must be a URL template naming each file",
+            ),
+            (
+                config(formats={"1": {"index": "http://files.example/{namespace}/{name}.jsonl", "collections": "c"}}),
+                r"'formats\.1\.index': refusing http://files\.example/ns/name\.jsonl, from an index at https://",
+            ),
+            (
+                config(formats={"1": {"index": "file:///srv/{sha256-checksum}.jsonl", "collections": "c.json"}}),
+                r"'formats\.1\.index': refusing file:///srv/0{64}\.jsonl",
+            ),
+            (
+                config(formats={"1": {"index": "i/{namespace}/{name}", "collections": "http://e.example/c.json"}}),
+                r"'formats\.1\.collections': refusing http://e\.example/c\.json",
+            ),
+            (
+                config(formats={"1": {"index": "i/{namespace}/{name}", "collections": "c", "plugins": "ftp://p"}}),
+                r"'formats\.1\.plugins': refusing ftp://p",
+            ),
             (config(dl="https://dl.example/artifact.tar.gz"), "'dl' must be a URL template with a placeholder"),
             (config(dl=None), "'dl' must be a URL template"),
             (config(**{"moved-to": 1}), "'moved-to' must be a URL or null"),
             (
-                config(formats={"1": {"index": "i/", "collections": "c.json", "plugins": 1}}),
+                config(formats={"1": {"index": "i/{namespace}/{name}", "collections": "c.json", "plugins": 1}}),
                 r"'formats\.1\.plugins' must be a path",
             ),
         ],
@@ -329,7 +382,7 @@ class TestIndexFile:
     def test_artifact_url(self) -> None:
         version = parse_index_file(index_file(line(vers="1.0.0+build.1")), "ns.coll", "u").versions[0]
         dl = "https://dl.example/{namespace}/{name}/{version}/{sha256-prefix}/{sha256-checksum}.tar.gz"
-        parsed = IndexConfig(root=ROOT, format=1, index_url=ROOT, collections_url=ROOT, dl=dl)
+        parsed = IndexConfig(root=ROOT, format=1, index="i/{namespace}/{name}", collections_url=ROOT, dl=dl)
 
         assert (
             artifact_url(parsed, version.name, version.version, version.cksum)
@@ -365,7 +418,7 @@ class TestIndexClient:
         url = f"{EXAMPLE.as_uri()}/" if over == "file" else request.getfixturevalue("server").url
         index = client(url, fetcher, tmp_path / "cache")
 
-        assert index.config().index_url == f"{url}index/"
+        assert index_file_url(index.config(), "community.general") == f"{url}index/community/general.jsonl"
         assert sorted(index.collections()) == [
             "alai_example.demo",
             "community.general",
@@ -441,7 +494,9 @@ class TestIndexClient:
         (site / "listing").mkdir()
         _ = (site / "collections.json").rename(site / "listing" / "collections.json")
         _ = (site / "config.json").write_bytes(
-            config(formats={"1": {"index": "index/", "collections": "listing/collections.json"}})
+            config(
+                formats={"1": {"index": "index/{namespace}/{name}.jsonl", "collections": "listing/collections.json"}}
+            )
         )
         index = client(server.url, fetcher, tmp_path / "cache")
 
@@ -615,7 +670,7 @@ class TestCachedIndexFiles:
             _ = index.collections()
         _ = (site / "listing.json").write_bytes((site / "collections.json").read_bytes())
         _ = (site / "config.json").write_bytes(
-            config(formats={"1": {"index": "index/", "collections": "listing.json"}})
+            config(formats={"1": {"index": "index/{namespace}/{name}.jsonl", "collections": "listing.json"}})
         )
         server.requests.clear()
 
@@ -731,3 +786,245 @@ class TestCachedIndexFiles:
 
         # No guess, so the listing waits for config.json.
         assert server.paths() == ["/config.json", "/collections.json"]
+
+
+class TestIndexFileUrl:
+    @pytest.mark.parametrize(
+        ("template", "sha256", "expected"),
+        [
+            ("index/{namespace}/{name}.jsonl", None, f"{ROOT}index/ns/coll.jsonl"),
+            ("index/{sha256-prefix}/{sha256-checksum}.jsonl", CKSUM, f"{ROOT}index/aa/{CKSUM}.jsonl"),
+            # Absolute, on another host.
+            ("https://files.example/{namespace}/{sha256-checksum}", CKSUM, f"https://files.example/ns/{CKSUM}"),
+            # Filled in, then resolved: a leading / is from the host's root, as RFC 3986 has it.
+            ("/i/{namespace}/{name}.jsonl", None, "https://index.example/i/ns/coll.jsonl"),
+        ],
+    )
+    def test_filled_then_resolved(self, template: str, sha256: str | None, expected: str) -> None:
+        parsed = IndexConfig(root=ROOT, format=1, index=template, collections_url=f"{ROOT}c.json", dl="d")
+
+        assert index_file_url(parsed, "ns.coll", sha256) == expected
+
+    def test_hashed_needs_sha256(self) -> None:
+        parsed = IndexConfig(root=ROOT, format=1, index="i/{sha256-checksum}", collections_url=f"{ROOT}c.json", dl="d")
+
+        with pytest.raises(
+            IndexDataError, match=r"ns\.coll has no sha256, which .*config\.json's index template needs"
+        ):
+            _ = index_file_url(parsed, "ns.coll")
+
+
+def hashed_site(root: Path) -> Path:
+    """An index whose files are found by SHA-256, as index.alai.sh serves them."""
+    _ = make_index(root, {"a.b": [v("1.0.0")], "c.d": [v("1.0.0", {"a.b": "*"})]}, hashed=True)
+    return root
+
+
+def republish(site: Path, name: str, extra: bytes, *, keep_old: bool = True) -> str:
+    """Publish a new index file for ``name`` with ``extra`` appended, as a sync would: the new file first, then the
+    listing pointing at it. The old file stays for a while, unless ``keep_old`` is False. Returns its new path."""
+    listing = json.loads((site / "collections.json").read_text())
+    namespace, short = name.split(".")
+    entry = listing["namespaces"][namespace][short]
+    old = site / "index" / entry["sha256"][:2] / f"{entry['sha256']}.jsonl"
+    data = old.read_bytes() + extra
+    entry["sha256"] = hashlib.sha256(data).hexdigest()
+    new = site / "index" / entry["sha256"][:2] / f"{entry['sha256']}.jsonl"
+    new.parent.mkdir(exist_ok=True)
+    _ = new.write_bytes(data)
+    _ = (site / "collections.json").write_text(json.dumps(listing))
+    if not keep_old:
+        old.unlink()
+    return f"/{new.relative_to(site)}"
+
+
+def hashed_path(site: Path, name: str) -> str:
+    namespace, short = name.split(".")
+    sha256 = json.loads((site / "collections.json").read_text())["namespaces"][namespace][short]["sha256"]
+    return f"/index/{sha256[:2]}/{sha256}.jsonl"
+
+
+class TestHashedIndexFiles:
+    """An index template with {sha256-checksum}: files that never change, found only through collections.json."""
+
+    @pytest.fixture
+    def hsite(self, tmp_path: Path) -> Path:
+        return hashed_site(tmp_path / "hsite")
+
+    @pytest.fixture
+    def hserver(self, hsite: Path) -> _c.Iterator[IndexServer]:
+        yield from serve(hsite)
+
+    def test_reads_by_sha256(self, hserver: IndexServer, hsite: Path, tmp_path: Path) -> None:
+        with run(hserver.url, tmp_path / "cache") as index:
+            result = index.versions("c.d")
+
+        assert result is not None
+        assert [str(x.version) for x in result.versions] == ["1.0.0"]
+        assert hashed_path(hsite, "c.d") in hserver.paths()
+
+    def test_cached_by_collection(self, hserver: IndexServer, hsite: Path, tmp_path: Path) -> None:
+        with run(hserver.url, tmp_path / "cache") as index:
+            _ = index.versions("a.b")
+        _ = republish(hsite, "a.b", b"\n")
+        with run(hserver.url, tmp_path / "cache") as index:
+            _ = index.versions("a.b")
+
+        [directory] = (tmp_path / "cache" / "index").iterdir()
+        # One copy, at the collection's own path, replaced rather than kept beside the new one.
+        assert sorted(str(p.relative_to(directory)) for p in directory.rglob("*") if p.is_file()) == [
+            "collections.json",
+            "config.json",
+            "index/a/b.jsonl",
+        ]
+
+    def test_unchanged_files_need_no_request(self, hserver: IndexServer, tmp_path: Path) -> None:
+        with run(hserver.url, tmp_path) as index:
+            _ = index.versions("a.b")
+        hserver.requests.clear()
+
+        with run(hserver.url, tmp_path) as index:
+            assert index.versions("a.b") is not None
+
+        assert sorted(hserver.paths()) == ["/collections.json", "/config.json"]
+
+    def test_changed_file_fetched_without_etag(self, hserver: IndexServer, hsite: Path, tmp_path: Path) -> None:
+        with run(hserver.url, tmp_path) as index:
+            _ = index.versions("a.b")
+        new = republish(hsite, "a.b", b"\n")
+        hserver.requests.clear()
+
+        with run(hserver.url, tmp_path) as index:
+            assert index.versions("a.b") is not None
+
+        [request] = [r for r in hserver.requests if r.path == new]
+        # The cached copy's ETag is for the old URL, so it isn't sent to the new one.
+        assert "if-none-match" not in request.headers
+
+    def test_unlisted_needs_no_request(self, hserver: IndexServer, tmp_path: Path) -> None:
+        with run(hserver.url, tmp_path) as index:
+            assert index.versions("x.y") is None
+            index.prefetch(["x.y"])
+
+        assert sorted(hserver.paths()) == ["/collections.json", "/config.json"]
+
+    def test_prefetch(self, hserver: IndexServer, hsite: Path, tmp_path: Path) -> None:
+        with run(hserver.url, tmp_path) as index:
+            index.prefetch(["a.b", "c.d"])
+            assert index.versions("a.b") is not None
+            assert index.versions("c.d") is not None
+
+        assert sorted(hserver.paths()) == sorted(
+            ["/collections.json", "/config.json", hashed_path(hsite, "a.b"), hashed_path(hsite, "c.d")]
+        )
+
+    def test_gone_file_relists(self, hserver: IndexServer, hsite: Path, tmp_path: Path) -> None:
+        with run(hserver.url, tmp_path) as index:
+            _ = index.collections()
+        cached = (hsite / "collections.json").read_bytes()
+        old = hashed_path(hsite, "a.b")
+        new = republish(hsite, "a.b", b"\n", keep_old=False)
+        # A cache on the way still has the old listing, which names a file the host has since deleted.
+        hserver.responses["/collections.json"] = [(200, {}, cached)]
+        hserver.requests.clear()
+
+        with run(hserver.url, tmp_path) as index:
+            result = index.versions("a.b")
+
+        assert result is not None
+        targets = [r.target for r in hserver.requests]
+        assert targets.count(old) == 1
+        [relisted] = [t for t in targets if t.startswith("/collections.json?r=")]
+        assert targets.index(old) < targets.index(relisted) < targets.index(new)
+
+    def test_gone_file_still_listed(self, hserver: IndexServer, hsite: Path, tmp_path: Path) -> None:
+        (hsite / hashed_path(hsite, "a.b").lstrip("/")).unlink()
+
+        with (
+            run(hserver.url, tmp_path) as index,
+            pytest.raises(IndexDataError, match=r"not found, though .* lists a\.b"),
+        ):
+            _ = index.versions("a.b")
+
+    def test_relisted_once(self, hserver: IndexServer, hsite: Path, tmp_path: Path) -> None:
+        for name in ("a.b", "c.d"):
+            (hsite / hashed_path(hsite, name).lstrip("/")).unlink()
+
+        with run(hserver.url, tmp_path) as index:
+            for name in ("a.b", "c.d"):
+                with pytest.raises(IndexDataError, match="not found, though"):
+                    _ = index.versions(name)
+
+        assert len([r for r in hserver.requests if r.target.startswith("/collections.json?r=")]) == 1
+
+    def test_removed_while_cached_listing_was_old(self, hserver: IndexServer, hsite: Path, tmp_path: Path) -> None:
+        listing = json.loads((hsite / "collections.json").read_text())
+        stale = json.dumps(listing).encode()
+        (hsite / hashed_path(hsite, "a.b").lstrip("/")).unlink()
+        del listing["namespaces"]["a"]
+        _ = (hsite / "collections.json").write_text(json.dumps(listing))
+        hserver.responses["/collections.json"] = [(200, {}, stale)]
+
+        with run(hserver.url, tmp_path) as index:
+            assert index.versions("a.b") is None
+
+    def test_mismatch_is_an_error(self, hserver: IndexServer, hsite: Path, tmp_path: Path) -> None:
+        path = hsite / hashed_path(hsite, "a.b").lstrip("/")
+        _ = path.write_bytes(path.read_bytes() + b"\n")
+
+        with run(hserver.url, tmp_path) as index, pytest.raises(IndexDataError, match="doesn't match its sha256 in"):
+            _ = index.versions("a.b")
+
+    def test_missing_sha256(self, hserver: IndexServer, hsite: Path, tmp_path: Path) -> None:
+        listing = json.loads((hsite / "collections.json").read_text())
+        del listing["namespaces"]["a"]["b"]["sha256"]
+        _ = (hsite / "collections.json").write_text(json.dumps(listing))
+
+        with run(hserver.url, tmp_path) as index:
+            index.prefetch(["a.b"])
+            with pytest.raises(IndexDataError, match=r"a\.b has no sha256"):
+                _ = index.versions("a.b")
+
+    def test_offline(self, hserver: IndexServer, hsite: Path, tmp_path: Path) -> None:
+        with run(hserver.url, tmp_path) as index:
+            _ = index.versions("a.b")
+        # A later run fetched the new listing but not a.b's new file.
+        _ = republish(hsite, "a.b", b"\n")
+        with run(hserver.url, tmp_path) as index:
+            _ = index.collections()
+        hserver.requests.clear()
+
+        # Offline uses the cached file, though the cached listing names another.
+        with run(hserver.url, tmp_path, offline=True) as index:
+            assert index.versions("a.b") is not None
+        assert hserver.requests == []
+
+    def test_trace_names_the_collection(
+        self,
+        hserver: IndexServer,
+        hsite: Path,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(_output, "verbosity", 2)
+        with run(hserver.url, tmp_path / "cache") as index:
+            _ = index.versions("a.b")
+        with run(hserver.url, tmp_path / "cache") as index:
+            _ = index.versions("a.b")
+        with run(f"{hsite.as_uri()}/", tmp_path / "cache") as index:
+            _ = index.versions("c.d")
+
+        err = capsys.readouterr().err
+        url = f"{hserver.url}{hashed_path(hsite, 'a.b').lstrip('/')}"
+        # The URL names only a hash; the trace says whose file it is, fetched, from the cache, or read from disk.
+        assert f"trace: GET {url} (a.b): 200, " in err
+        assert f"trace: {url} (a.b): the cached copy matches collections.json" in err
+        assert f"{hashed_path(hsite, 'c.d').lstrip('/')} (c.d): " in err
+
+    def test_file_index(self, hsite: Path, tmp_path: Path) -> None:
+        with run(f"{hsite.as_uri()}/", tmp_path) as index:
+            result = index.versions("c.d")
+
+        assert result is not None
+        assert not (tmp_path / "index").exists()
