@@ -87,11 +87,16 @@ impl Target {
         })
     }
 
-    /// Where `entry` goes, its parent directories made and checked to resolve inside the collection on disk.
+    /// Where `entry` goes, its parent directories made and checked to resolve inside the collection on disk. Unless
+    /// the parent's own parent is known to have no symlink, so at most the parent itself is made, and inside, it's
+    /// checked before it's made too: through a chain of links leading out, a directory would be made outside.
     pub(crate) fn path(&mut self, entry: &str) -> Result<PathBuf, Error> {
         let path = self.dest.join(entry);
         let parent = path.parent().unwrap_or(&self.dest).to_owned();
         if !self.plain.contains(&parent) {
+            if !parent.parent().is_some_and(|above| self.plain.contains(above)) {
+                self.check_inside(&parent, entry)?;
+            }
             DirBuilder::new()
                 .recursive(true)
                 .mode(DIR_MODE)

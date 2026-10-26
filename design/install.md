@@ -96,7 +96,12 @@ with its logic in `src/alai/_sync.py`. The user documentation is
   chain, so `a -> .` and `s -> a/..` each pass by name while `s` is the
   collection's parent on disk. So the parent of every entry is resolved
   with `realpath` before writing, and every link is resolved again once all
-  exist, since a later link can change where an earlier one leads. Device
+  exist, since a later link can change where an earlier one leads. A parent
+  that must be made is resolved before it's made as well, unless its own
+  parent is already known to be plain: making `s/sub` for `s/sub/x` would
+  otherwise create `sub` beside the collection before the check refused
+  it. A member named `./s` is a different name from `s`, so it can't
+  replace an escaping `s`, and `FILES.json` can't list it. Device
   files, FIFOs and anything but files, directories, hardlinks and symlinks
   are refused.
   - Where alai and ansible-galaxy differ on links, tested on 2026-10-23

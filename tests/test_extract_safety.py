@@ -552,6 +552,42 @@ class TestSymlinks:
 
         refused(sandbox, members, r"b/new\.txt in the artifact leads outside the collection")
 
+    @pytest.mark.parametrize("ftype", ["file", "dir"])
+    def test_chain_leading_out_no_directory_made(self, sandbox: Path, ftype: str) -> None:
+        # s/sub/x's parent, sub, would be made beside the collection if it were made before it's checked.
+        entry = listed("s/sub/x", b"x") if ftype == "file" else listed_dir("s/sub/x")
+        members = collection(
+            tar_symlink("a", "."),
+            tar_symlink("s", "a/.."),
+            tar_file("s/sub/x", b"x") if ftype == "file" else tar_dir("s/sub/x"),
+            files=[listed_dir("a"), listed_dir("s"), entry],
+        )
+
+        refused(sandbox, members, r"s/sub/x in the artifact leads outside the collection")
+
+    def test_longer_chain_leading_out_no_directory_made(self, sandbox: Path) -> None:
+        # b -> a/.. is the collection's parent and s -> b/.. the sandbox, each inside by name.
+        members = collection(
+            tar_symlink("a", "."),
+            tar_symlink("b", "a/.."),
+            tar_symlink("s", "b/.."),
+            tar_file("s/up/x", b"x"),
+            files=[listed_dir("a"), listed_dir("b"), listed_dir("s"), listed("s/up/x", b"x")],
+        )
+
+        refused(sandbox, members, r"s/up/x in the artifact leads outside the collection")
+
+    def test_dotted_name_doesnt_replace_a_link(self, sandbox: Path) -> None:
+        # ./s is another member than s, so the escaping s is still the one extracted, and refused.
+        members = collection(
+            tar_symlink("s", "a/.."),
+            tar_symlink("a", "."),
+            tar_file("./s", b"x"),
+            files=[listed_dir("s"), listed_dir("a")],
+        )
+
+        refused(sandbox, members, "s in the artifact leads outside the collection")
+
     def test_chain_leading_out_read_through(self, sandbox: Path) -> None:
         # f's checksum would be of secret.txt, beside the collection, if it were read through s.
         members = collection(
