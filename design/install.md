@@ -410,6 +410,19 @@ on 2026-10-21 in a project with `requests` and its four dependencies:
   and the index files are revalidated every run anyway
   ([index-client.md](index-client.md)), so a reinstall from the cache has
   no `Prepared` line.
+- **An edit in place under `hardlink` or `symlink` survives a reinstall**,
+  as it's in the cache too, so the docs say so wherever they offer
+  `--reinstall-collection` for an edited collection, and point at
+  `link_mode`'s warning: delete `<cache_dir>/collections-v1/`, then
+  reinstall (2026-10-26). That matters by default, as `auto` hardlinks on
+  filesystems without copy-on-write, such as ext4. uv does the same: tried
+  with uv 0.13.5 and `UV_LINK_MODE=hardlink`, an installed `six.py` edited
+  in place was edited in uv's cache too (`archive-v0/<id>/six.py`, the same
+  inode), and stayed edited through `uv sync --reinstall` and
+  `uv sync --reinstall --refresh`; only `uv cache clean six` and a
+  reinstall gave a clean copy. Checking the cache against `FILES.json` on a
+  reinstall was considered and left out, to match uv; the fix to come is
+  `alai cache clean` (Not done yet).
 - **Shown as `~`**, yellow, for one replaced by the same version (`~
   idna==3.20`), with `Uninstalled N` and `Installed N` counting it, as uv
   does. One that changes version as well is `-` and `+` as usual (`uv sync
@@ -974,6 +987,12 @@ own:
   `GIT_SSL_NO_VERIFY` as uv does.
 
 ## Not done yet
+
+- **`alai cache clean [NAME…]`, and the rest of uv's `cache` commands**
+  (`prune`, `dir`), so an edited cached collection, or a cache that's grown,
+  can be cleared without knowing its layout. Until then the docs say to
+  delete `<cache_dir>/collections-v1/` (see Reinstalling). Design it from
+  uv's first.
 
 - **Relaying ssh's questions under the progress display**, so it never
   pauses: each git command gets a pseudo-terminal of alai's as its

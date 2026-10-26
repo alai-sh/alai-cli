@@ -16,6 +16,14 @@
 #   columns      the terminal's width, 80 unless set: wider for output that
 #                fills the terminal, such as alai find's, at the cost of
 #                smaller text, as the player fits each to the page's width
+#   live         true to run against the real indexes rather than the local
+#                one: recorded only when named, into docs/assets/casts/ to be
+#                committed, with SVGs of it for the README
+#   panes        in place of commands, a split screen: [[recording.panes]]
+#                tables, top to bottom, each with a title, a directory
+#                relative to where the recording starts, "." unless set, and
+#                its commands, recorded one pane after another and played
+#                as if they ran at once
 
 # The index's plugin index, plugins.jsonl, for `alai find`: lines taken from
 # the real index, for the collections below and a few more.
@@ -105,8 +113,9 @@ plugins = [
     { vers = "8.7.1", deps = { "ansible.utils" = ">=6.0.0" } },
 ]
 "ansible.posix" = [{ vers = "2.1.0" }, { vers = "2.2.2" }]
-# 6.1.1 is the real collection, downloaded from the index's artifact store, for
-# the recording that runs a module from it; it has no dependencies.
+# ansible.utils 6.1.1 and community.general 11.0.0 are the real collections,
+# downloaded from the index's artifact store, for the recordings that run their
+# plugins; neither has dependencies.
 "ansible.utils" = [
     { vers = "6.0.0" },
     { vers = "6.1.1", download = "961b587874b54a0e30e2614ec5c6f673d036cc37b823ed8b164092405f8ada6b" },
@@ -116,13 +125,17 @@ plugins = [
     { vers = "11.6.0", deps = { "ansible.netcommon" = ">=8.1.0", "ansible.posix" = ">=2.0.0" } },
 ]
 "community.docker" = [{ vers = "4.8.1" }]
-"community.general" = [{ vers = "10.7.8" }, { vers = "10.7.9" }, { vers = "11.0.0" }]
+"community.general" = [
+    { vers = "10.7.8" },
+    { vers = "10.7.9" },
+    { vers = "11.0.0", download = "d6b878cc7ef10bc16407caa4f6a66397372714eff9e8795f4f91f0539a7f2702" },
+]
 
 [[recording]]
 name = "add"
 title = "Adding collections to a new project"
 files = { "alai.toml" = "[project]\n" }
-commands = ["alai add cisco.ios 'community.general<11'", "cat alai.toml"]
+commands = ["alai add cisco.ios 'community.general<11'", "cat alai.toml", "tree -L 3 collections"]
 
 [[recording]]
 name = "add-upgrade"
@@ -283,6 +296,221 @@ files."playbooks/site.yml" = """
 commands = ["cat playbooks/site.yml", "alai run ansible-playbook my_ns.my_col.site"]
 
 [[recording]]
+name = "project-playbook"
+title = "Running a playbook in a playbook project"
+# ansible.utils 6.1.1 is the real collection, so its module runs. The ansible.cfg
+# only turns off the warnings that there's no inventory, as the playbook runs on
+# localhost.
+files."ansible.cfg" = "[defaults]\nlocalhost_warning = False\n\n[inventory]\ninventory_unparsed_warning = False\n"
+files."alai.toml" = "[project]\n"
+files."site.yml" = """
+- hosts: localhost
+  gather_facts: false
+  tasks:
+  - name: Compare two sets of settings with a module from ansible.utils
+    ansible.utils.fact_diff:
+      before: {port: 80}
+      after: {port: 8080}
+"""
+setup = ["alai add -q ansible.utils"]
+commands = ["tree -L 4", "alai run ansible-playbook site.yml"]
+
+[[recording]]
+name = "project-playbook-local-collection"
+title = "Using a collection kept in the project's repository"
+# corp.tools is committed in collections_src/ and added as an editable source,
+# so collections/ links to it.
+files."ansible.cfg" = "[defaults]\nlocalhost_warning = False\n\n[inventory]\ninventory_unparsed_warning = False\n"
+files."alai.toml" = "[project]\n"
+files."collections_src/corp/tools/galaxy.yml" = """
+namespace: corp
+name: tools
+version: 1.0.0
+readme: README.md
+authors: [Example]
+"""
+files."collections_src/corp/tools/README.md" = "# corp.tools\n"
+files."collections_src/corp/tools/plugins/modules/hello.py" = """
+#!/usr/bin/python
+from __future__ import annotations
+
+DOCUMENTATION = r'''
+module: hello
+short_description: Return a greeting
+options:
+  name:
+    description: Who to greet.
+    type: str
+    required: true
+'''
+
+from ansible.module_utils.basic import AnsibleModule
+
+
+def main() -> None:
+    module = AnsibleModule(argument_spec=dict(name=dict(type='str', required=True)))
+    module.exit_json(changed=False, msg=f"Hello, {module.params['name']}!")
+
+
+if __name__ == '__main__':
+    main()
+"""
+files."site.yml" = """
+- hosts: localhost
+  gather_facts: false
+  tasks:
+  - name: Greet with the project's own collection
+    corp.tools.hello:
+      name: world
+    register: greeting
+
+  - ansible.builtin.debug:
+      msg: '{{ greeting.msg }}'
+"""
+commands = [
+    "alai add --editable ./collections_src/corp/tools",
+    "tree collections",
+    "alai run ansible-playbook site.yml",
+]
+
+[[recording]]
+name = "project-collection"
+title = "Testing and running a collection project"
+directory = "my_col"
+# A collection project needing ansible.utils, the real collection: one module,
+# an integration target for it, and a playbook using it by its short name. The
+# ansible.cfg only turns off the warnings that there's no inventory, as the
+# playbook runs on localhost.
+files."alai.toml" = ""
+files."ansible.cfg" = "[defaults]\nlocalhost_warning = False\n\n[inventory]\ninventory_unparsed_warning = False\n"
+files."galaxy.yml" = """
+namespace: my_ns
+name: my_col
+version: 1.0.0
+readme: README.md
+authors: [Example]
+dependencies:
+  ansible.utils: '>=6.0.0'
+"""
+files."README.md" = "# my_ns.my_col\n"
+files."plugins/modules/hello.py" = """
+#!/usr/bin/python
+from __future__ import annotations
+
+DOCUMENTATION = r'''
+module: hello
+short_description: Return a greeting
+options:
+  name:
+    description: Who to greet.
+    type: str
+    required: true
+'''
+
+from ansible.module_utils.basic import AnsibleModule
+
+
+def main() -> None:
+    module = AnsibleModule(argument_spec=dict(name=dict(type='str', required=True)))
+    module.exit_json(changed=False, msg=f"Hello, {module.params['name']}!")
+
+
+if __name__ == '__main__':
+    main()
+"""
+files."tests/integration/targets/hello/tasks/main.yml" = """
+- name: Greet someone
+  my_ns.my_col.hello:
+    name: world
+  register: greeting
+
+- name: Check the greeting
+  ansible.builtin.assert:
+    that:
+    - greeting.msg == 'Hello, world!'
+"""
+files."playbooks/site.yml" = """
+- hosts: localhost
+  gather_facts: false
+  tasks:
+  - name: Greet with the collection's own module, by its short name
+    hello:
+      name: world
+    register: greeting
+
+  - name: Compare two sets of settings with a module from ansible.utils
+    ansible.utils.fact_diff:
+      before: {greeting: '{{ greeting.msg }}'}
+      after: {greeting: 'Hello, everyone!'}
+"""
+setup = ["alai sync -q"]
+commands = [
+    "alai run ansible-test integration hello",
+    "alai run ansible-playbook my_ns.my_col.site",
+]
+
+[[recording]]
+name = "project-collection-dev-group"
+title = "A collection project's test-only collections, in its dev group"
+directory = "my_col"
+# The integration target uses a filter from community.general, which the
+# collection itself doesn't need, so it's in the dev group: alai run installs
+# that group by default.
+files."alai.toml" = ""
+files."galaxy.yml" = """
+namespace: my_ns
+name: my_col
+version: 1.0.0
+readme: README.md
+authors: [Example]
+"""
+files."README.md" = "# my_ns.my_col\n"
+files."plugins/modules/hello.py" = """
+#!/usr/bin/python
+from __future__ import annotations
+
+DOCUMENTATION = r'''
+module: hello
+short_description: Return a greeting
+options:
+  name:
+    description: Who to greet.
+    type: str
+    required: true
+'''
+
+from ansible.module_utils.basic import AnsibleModule
+
+
+def main() -> None:
+    module = AnsibleModule(argument_spec=dict(name=dict(type='str', required=True)))
+    module.exit_json(changed=False, msg=f"Hello, {module.params['name']}!")
+
+
+if __name__ == '__main__':
+    main()
+"""
+files."tests/integration/targets/hello/tasks/main.yml" = """
+- name: Greet someone
+  my_ns.my_col.hello:
+    name: world
+  register: greeting
+
+- name: Check the greeting, with a filter from community.general
+  ansible.builtin.assert:
+    that:
+    - (greeting.msg | community.general.dict_kv('msg')) == greeting_expected
+  vars:
+    greeting_expected:
+      msg: Hello, world!
+"""
+commands = [
+    "alai add --dev community.general",
+    "cat alai.toml",
+    "alai run ansible-test integration hello",
+]
+
+[[recording]]
 name = "remove"
 title = "Removing a collection"
 files = { "alai.toml" = "[project]\n" }
@@ -318,7 +546,7 @@ commands = ["ls", "alai collection install ansible.posix", "tree -L 3 collection
 name = "collection-install-subdirectory"
 title = "Installing from a directory inside the project"
 files = { "alai.toml" = "", "playbooks/site.yml" = "- hosts: all\n" }
-commands = ["ls", "cd playbooks", "alai collection install ansible.posix", "tree -L 4 .."]
+commands = ["tree", "cd playbooks", "alai collection install ansible.posix", "tree -L 4 .."]
 
 [[recording]]
 name = "collection-install-ansible-cfg"
@@ -330,14 +558,18 @@ commands = ["ls", "alai collection install ansible.posix", "tree -L 3 collection
 name = "collection-install-outside"
 title = "Installing outside a project"
 directory = "ansible"
-commands = ["alai collection install cisco.ios", "alai collection install --collections-dir ./collections cisco.ios"]
+commands = [
+    "alai collection install cisco.ios",
+    "alai collection install --collections-dir ./collections cisco.ios",
+    "tree -L 3 collections",
+]
 
 [[recording]]
 name = "collection-uninstall"
 title = "Uninstalling from a project's collections directory"
 files = { "alai.toml" = "" }
 setup = ["alai collection install -q cisco.ios"]
-commands = ["ls", "alai collection uninstall cisco.ios", "tree -L 3 collections"]
+commands = ["tree -L 3 collections", "alai collection uninstall cisco.ios", "tree -L 3 collections"]
 
 [[recording]]
 name = "collection-uninstall-outside"
@@ -419,6 +651,28 @@ link_mode = "copy"
 collections = ["ansible.posix"]
 """ }
 commands = ["alai config show"]
+
+# The landing page's and README's comparison, against Galaxy and index.alai.sh,
+# with nothing cached: ansible-galaxy and alai each install community.general
+# into a project of their own, and alai then into another project from its
+# cache, played as if started at the same moment. Each is recorded on its own,
+# so neither's downloads slow the other's. Record it again by hand, with
+# `python scripts/cli_recordings.py galaxy-comparison`.
+[[recording]]
+name = "galaxy-comparison"
+title = "ansible-galaxy and alai installing community.general"
+live = true
+directory = "galaxy"
+files = { "ansible.cfg" = "[defaults]\ncollections_path = collections\n", "../alai/alai.toml" = "[project]\n", "../another/alai.toml" = "[project]\n" }
+
+[[recording.panes]]
+title = "ansible-galaxy"
+commands = ["ansible-galaxy collection install community.general"]
+
+[[recording.panes]]
+title = "alai"
+directory = "../alai"
+commands = ["alai add community.general", "cd ../another", "alai add community.general"]
 
 # Which recordings the CLI reference (docs/cli.md) shows under each command, in
 # order: one [[reference."<command>"]] table each, naming the recording, with an

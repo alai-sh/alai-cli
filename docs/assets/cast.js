@@ -39,7 +39,7 @@
       screen.alaiPlayer = AsciinemaPlayer.create(link.href, screen, {
         fit: "width",
         theme: "alai",
-        idleTimeLimit: 1,
+        // The longest pause shown comes from the recording, as one comparing how long commands take has none.
         terminalFontFamily: fontFamily ? `${fontFamily}, monospace` : undefined,
         // With reduced motion it waits to be played, showing how the recording ends.
         poster: reducedMotion ? "npt:9999" : undefined,

@@ -35,6 +35,8 @@
 - **Plugin documentation**: a separate tool, working with alai, to show a
   plugin's full documentation, options and examples, as `ansible-doc`
   does, without installing its collection first.
+- **Index tool**: a separate tool for setting up an index locally or building
+  the required files that a custom index would require.
 - **More from installed collections in `alai find`**: listing the plugins
   of installed collections that aren't on an index, such as source
   checkouts, and reading routing from the version installed.

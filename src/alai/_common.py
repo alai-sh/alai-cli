@@ -151,11 +151,19 @@ def read_toml_document(path: str) -> TomlDocument:
         raise _toml_error(path, e) from None
 
 
+def home_path(path: str) -> str:
+    """``path`` with a leading home directory shortened to ``~``, for display."""
+    home = os.path.expanduser("~")
+    if home != "~" and (path == home or path.startswith(home + os.sep)):
+        return "~" + path[len(home) :]
+    return path
+
+
 def _toml_error(path: str, e: Exception) -> ConfigError:
     """A file that can't be read, or isn't UTF-8 or valid TOML, as an error naming it."""
     if isinstance(e, OSError):
-        return ConfigError(f"can't read {path}: {e.strerror or e}")
-    return ConfigError(f"{path}: invalid TOML: {e}")
+        return ConfigError(f"can't read {home_path(path)}: {e.strerror or e}")
+    return ConfigError(f"{home_path(path)}: invalid TOML: {e}")
 
 
 TRUE_WORDS = frozenset(("1", "true", "yes", "on"))

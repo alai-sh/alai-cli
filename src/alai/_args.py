@@ -83,7 +83,7 @@ def add_global_args(parser: argparse.ArgumentParser, *, suppress: bool) -> None:
         "--color",
         choices=("auto", "always", "never"),
         default=default("auto"),
-        help="colour the output: auto, the default, colours it on a terminal (env: NO_COLOR, FORCE_COLOR)",
+        help="color the output: auto, the default, colors it on a terminal (env: NO_COLOR, FORCE_COLOR)",
     )
     _ = group.add_argument(
         "--no-progress",

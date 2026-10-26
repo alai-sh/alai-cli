@@ -4,7 +4,7 @@
 
     The index format, and how alai uses indexes, are still being worked
     out and may change without notice. This page will be filled in once
-    they settle; until then it only covers what you need to use the
+    they settle. Until then it only covers what you need to use the
     default index.
 
 alai reads which collections exist, their versions and what they depend on
@@ -17,6 +17,6 @@ location the index gives, and checked against the checksum it lists, which
 Nothing needs configuring to use it. Other indexes, such as a mirror of
 `index.alai.sh`, can be added with [`[[index]]`](alai-toml.md#index) or
 `--index`, and a collection tied to one with
-[`[project.sources]`](alai-toml.md#projectsources); how several combine is
-described in [Configuration](configuration.md#indexes). Automation Hub and
-private Galaxy servers can't be used as a source.
+[`[project.sources]`](alai-toml.md#projectsources). See
+[Configuration](configuration.md#indexes) for more information around how
+indexes are defined and ordered.

@@ -35,33 +35,38 @@ $ uv run python design/benchmarks/ansible_galaxy.py community.general
 $ uv run python design/benchmarks/ansible_galaxy.py cisco.ios
 ```
 
-The docs' landing page compares `alai sync` with ansible-core 2.20.0's
+The docs' landing page compares `alai sync` with ansible-core 2.21.5's
 `ansible-galaxy collection install -r requirements.yml -p ./collections`
-(2026-10-21, this machine, alai on Python 3.15, ansible-core on 3.14). Each
-of five runs per tool started with a new, empty `HOME`, so neither tool's
-cache carried over: ansible-galaxy keeps everything under
-`~/.ansible` (its API response cache in `galaxy_cache/api.json`), alai under
-`~/.cache/alai`. Per run: a first install into a new project (ansible-galaxy
-with `--clear-response-cache`), the same command again with nothing to
-change, then a first install into a second project with the cache kept.
-alai ran with a committed `alai.lock`, and again without one, which
-resolves as ansible-galaxy always does. Medians:
+(2026-10-26, this machine, alai on Python 3.15, ansible-core on 3.14, after
+`index.alai.sh` moved to index files by SHA-256). Each of five runs per
+tool started with a new, empty `HOME`, so neither tool's cache carried
+over: ansible-galaxy keeps everything under `~/.ansible` (its API response
+cache in `galaxy_cache/api.json`), alai under `~/.cache/alai`. Per run: a
+first install into a new project (ansible-galaxy with
+`--clear-response-cache`), the same command again with nothing to change,
+then a first install into a second project with the cache kept. alai ran
+with a committed `alai.lock`, and again without one, which resolves as
+ansible-galaxy always does. Medians, with each one's range:
 
-| | `community.general` | `cisco.ios` (4 collections) |
+| | `community.general` | `cisco.ios` (3 collections) |
 |---|---|---|
-| ansible-galaxy, first install | 16.5 s | 27.8 s |
-| ansible-galaxy, again into another project | 12.8 s | 15.1 s |
-| ansible-galaxy, nothing to change | 0.23 s | 0.25 s |
-| ansible-galaxy `--no-cache`, first install | 43.6 s | not run |
-| alai without a lock, first install | 1.38 s | 0.87 s |
-| alai with a lock, first install | 0.88 s | 0.56 s |
-| alai without a lock, again into another project | 0.23 s | 0.20 s |
-| alai with a lock, again into another project | 0.08 s | 0.07 s |
-| alai, nothing to change | 0.03 s | 0.03 s |
+| ansible-galaxy, first install | 14.60 s (13.85 to 16.92) | 20.70 s (20.09 to 21.56) |
+| ansible-galaxy, again into another project | 9.52 s (8.98 to 11.19) | 13.40 s (12.86 to 14.71) |
+| ansible-galaxy, nothing to change | 0.30 s (0.24 to 0.42) | 0.23 s (0.22 to 0.25) |
+| alai without a lock, first install | 1.15 s (0.94 to 1.16) | 0.80 s (0.73 to 0.85) |
+| alai with a lock, first install | 0.61 s (0.52 to 1.11) | 0.41 s (0.38 to 0.44) |
+| alai without a lock, again into another project | 0.26 s (0.20 to 0.31) | 0.18 s (0.18 to 0.19) |
+| alai with a lock, again into another project | 0.06 s (0.06 to 0.07) | 0.06 s (0.05 to 0.06) |
+| alai, nothing to change | 0.04 s (0.04 to 0.04) | 0.04 s (0.04 to 0.05) |
 
-Galaxy dominated ansible-galaxy's times and varied widely (15.7 to 78 s for
-a first install of `community.general`), so they're medians, and worth
-measuring again before quoting new numbers.
+The previous run (2026-10-21, ansible-core 2.20.0, the index by name with
+`max-age=60`) had alai at 1.38 s and 0.88 s with a lock for
+`community.general`, and `cisco.ios` resolving to 4 collections, against 3
+now. Galaxy dominated ansible-galaxy's times and varied
+widely then (15.7 to 78 s for a first install of `community.general`); it
+was steadier this time, but they're still medians, and worth measuring
+again before quoting new numbers. `--no-cache` wasn't run this time (43.6 s
+for `community.general` on 2026-10-21).
 
 ## Extraction
 

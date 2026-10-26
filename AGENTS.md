@@ -16,6 +16,8 @@ reasons, and drop anything a tool now enforces.
   (`tests/test_native.py` fails if more than one is there).
 - Every `.py`, `.pyi` and `.rs` file starts with the two-line copyright/MIT
   header; copy it from an existing file.
+- What users read is US English: `docs/`, `README.md`, and the CLI's help
+  and output. `design/` and code comments can stay as written.
 - `docs/` is the published user documentation and describes current behaviour
   only, except `docs/roadmap.md`, which summarises what's planned: keep it in
   step with the roadmap in `design/README.md`. Keep it to plain Markdown plus
