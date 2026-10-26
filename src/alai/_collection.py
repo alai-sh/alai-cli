@@ -13,7 +13,7 @@ import os
 import time
 import typing as _t
 
-from ._common import ConfigError
+from ._common import ConfigError, home_path
 from ._config import Settings
 from ._install import Installed, installed, remove
 from ._manifest import (
@@ -27,7 +27,7 @@ from ._manifest import (
     is_source,
     source_key,
 )
-from ._output import DIM, change, debug, home_path, shown_path, status, styled, summary, warn
+from ._output import DIM, change, debug, shown_path, status, styled, summary, warn
 from ._project import given_requirement, read_given_source, resolve_manifest
 from ._sync import install_locked
 

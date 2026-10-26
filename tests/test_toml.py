@@ -144,6 +144,18 @@ class TestRead:
         with pytest.raises(ConfigError, match=rf"^can't read {tmp_path}: Is a directory$"):
             _ = read(str(tmp_path))
 
+    @pytest.mark.parametrize("read", [read_toml, read_toml_document])
+    def test_errors_shorten_home(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, read: _t.Callable[[str], object]
+    ) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
+        path = tmp_path / "project" / "alai.lock"
+        path.parent.mkdir()
+        _ = path.write_text("a = \n")
+
+        with pytest.raises(ConfigError, match=r"^~/project/alai\.lock: invalid TOML: "):
+            _ = read(str(path))
+
 
 class TestDumps:
     def test_layout(self) -> None:

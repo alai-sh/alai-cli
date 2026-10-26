@@ -6,45 +6,71 @@ alai is useful to you, these may be too.
 ## Inspiration
 
 - **[uv](https://docs.astral.sh/uv/)**, Astral's package and project
-  manager for Python, is the model for alai. Its commands, flags, defaults
-  and output are where alai starts: `alai add`, `alai lock` and
-  `alai sync` are meant to feel like their uv counterparts, and alai only
-  differs where Ansible collections need something else.
+  manager for Python. alai was heavily modeled after the uv commands,
+  flags, defaults and output. Commands like `alai add`, `alai lock` and
+  `alai sync` are meant to feel and act like their uv counterparts, with
+  only a few minor differences.
 - **[ModuleFast](https://github.com/JustinGrote/ModuleFast)**, by Justin
-  Grote, does for PowerShell modules and the
+  Grote. ModuleFast does for PowerShell modules and the
   [PowerShell Gallery](https://www.powershellgallery.com/) what alai does
-  for Ansible collections and Galaxy: a fast, declarative way to install
-  modules, made with CI in mind.
+  for Ansible collections and Galaxy. Its artifact and index mirroring is
+  what inspired me to do the same for Galaxy and collection content.
 - **[Cargo](https://doc.rust-lang.org/cargo/)**, Rust's package manager,
   and its
   [registry index](https://doc.rust-lang.org/cargo/reference/registry-index.html)
   shaped alai's index format. Like Cargo's sparse index, alai's is a set of
   static files, one per collection with a line per version, that any web
-  server or CDN can serve, so resolving needs no API.
+  server or CDN can serve.
 - **[PwshSpectreConsole](https://pwshspectreconsole.com/)**, by Shaun
   Lawrie, inspired these docs. Its examples are run and recorded, so the
-  documentation shows what the commands really print; the recordings in the
-  [CLI reference](cli.md) do the same for alai.
+  documentation shows what the commands really print. The recordings in
+  these docs do the same for alai.
 
 ## Built with
 
-- **[Ansible Galaxy](https://galaxy.ansible.com/)**, where the collections
-  come from: alai's default index is a mirror of it. alai installs a
-  collection the way `ansible-galaxy` does, so the result is the same
-  either way.
-- **[PubGrub](https://github.com/pubgrub-rs/pubgrub)**, the version solving
-  algorithm uv and Cargo use, chooses the versions and explains why there's
-  no choice when there isn't.
-- **[PyYAML](https://pyyaml.org/)** reads a collection's `galaxy.yml` and
-  `meta/runtime.yml`, with the same parser `ansible-core` uses.
-- **[distlib](https://github.com/pypa/distlib)** reads the `manifest`
-  directives in `galaxy.yml` when a collection is installed from its
-  directory, as `ansible-galaxy` does.
+This is not an exhaustive list, but some of the key components used by this
+project are:
+
+- **[Ansible Galaxy](https://galaxy.ansible.com/)**, the source of alai's
+  default index. The content from Ansible Galaxy is mirrored to the alai
+  index as part of a regular sync job.
+
+### Python
+
 - **[urllib3](https://urllib3.readthedocs.io/)** and
   **[truststore](https://truststore.readthedocs.io/)** download from the
-  index, verified against the operating system's certificates.
+  index, verified as the operating system does.
+- **[PyYAML](https://pyyaml.org/)** reads a collection's `galaxy.yml` and
+  `meta/runtime.yml`, with the same parser ansible-core uses.
+- **[distlib](https://github.com/pypa/distlib)** applies the `manifest`
+  directives in `galaxy.yml` when installing a collection from its source
+  directory, as `ansible-galaxy` does.
 - **[argcomplete](https://kislyuk.github.io/argcomplete/)** provides
   [shell completion](shell-completion.md).
-- **[Zensical](https://zensical.org/)** builds these docs, and
-  **[asciinema-player](https://docs.asciinema.org/manual/player/)** plays
+
+### Rust
+
+Part of alai is a native extension written in Rust, for the work that's slow
+in Python.
+
+- **[PyO3](https://pyo3.rs/)** and **[maturin](https://www.maturin.rs/)**
+  build it into the Python package.
+- **[PubGrub](https://github.com/pubgrub-rs/pubgrub)**, the version solving
+  algorithm uv and Cargo use, chooses the versions.
+- **[tar](https://crates.io/crates/tar)** and
+  **[flate2](https://crates.io/crates/flate2)** extract collection tarballs,
+  and **[sha2](https://crates.io/crates/sha2)** checks each file against the
+  collection's `FILES.json` as it goes.
+- **[serde_json](https://crates.io/crates/serde_json)** reads index files
+  and each collection's `MANIFEST.json` and `FILES.json`.
+- **[toml_edit](https://crates.io/crates/toml_edit)** reads `alai.toml`,
+  `alai.lock` and the config files, and edits `alai.toml` while keeping the
+  rest of its text, as Cargo and uv do.
+
+### Docs
+
+- **[Zensical](https://zensical.org/)** builds these docs.
+- **[asciinema-player](https://docs.asciinema.org/manual/player/)** plays
   their recordings.
+- **[asg](https://github.com/kingsword09/asg)** draws the README's recording
+  as an animated SVG.

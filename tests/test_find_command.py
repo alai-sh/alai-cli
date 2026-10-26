@@ -245,7 +245,7 @@ class TestListing:
 
         assert find("--color", "never", "to_seconds") == 0
 
-        assert out(capsys)[-1] == "✓ installed  · not installed  grey probably a copy of another collection"
+        assert out(capsys)[-1] == "✓ installed  · not installed  gray probably a copy of another collection"
 
     def test_no_legend_with_quiet(
         self, project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

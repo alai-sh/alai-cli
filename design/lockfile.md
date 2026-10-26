@@ -442,7 +442,12 @@ dependencies = []
 - **The name must match**: the directory's `galaxy.yml` must be for the
   collection its entry names, as uv refused `foo @ ./lib` ("Package
   metadata name `lib` does not match given name `foo`"). The project's own
-  collection can't be given a source; it's always the checkout.
+  collection can't be given a source; it's always the checkout. Any
+  source for it is an error, an `index` or `url` one included, checked
+  before anything is read or downloaded. uv 0.13.5 silently ignores a
+  `[tool.uv.sources]` entry for the project itself, even a `path` or an
+  index that isn't configured; alai refuses instead, as an entry that's
+  written down but never used is easy to misread.
 - **Paths are as written**: relative to the project root, or absolute,
   with `~` expanded, as uv writes an absolute path it's given as absolute.
 - **Only the project's own manifest can name these sources.** A

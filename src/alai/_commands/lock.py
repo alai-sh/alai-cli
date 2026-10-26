@@ -59,9 +59,19 @@ def run(args: argparse.Namespace) -> int:
     report_changes(existing, manifest, lock, resolution, inputs=args.check)
     if args.check:
         if not lock_unchanged(existing, manifest, lock):
-            error(f"{shown_path(path)} is out of date; run alai lock")
+            error(f"{shown_path(path)} is out of date; run {_relock(args)}")
             return EXIT_STALE
         status(f"{shown_path(path)} is up to date")
         return 0
     _ = write_lock(path, lock)
     return 0
+
+
+def _relock(args: argparse.Namespace) -> str:
+    """The ``alai lock`` that writes what ``--check`` found, with the upgrade options it was given."""
+    words = ["alai lock"]
+    if args.upgrade:
+        words.append("--upgrade")
+    words += [f"--upgrade-collection {name}" for name in args.upgrade_collection]
+    words += [f"--upgrade-group {name}" for name in args.upgrade_group]
+    return " ".join(words)

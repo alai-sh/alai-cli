@@ -46,7 +46,7 @@ Every command takes these, before or after its name.
 | `--cache-dir DIR` | The cache directory |
 | `-v`, `--verbose` | Show debug detail; `-vv` also traces each step |
 | `-q`, `--quiet` | Only show errors |
-| `--color {auto,always,never}` | Colour the output: auto, the default, colours it on a terminal (env: `NO_COLOR`, `FORCE_COLOR`) |
+| `--color {auto,always,never}` | Color the output: auto, the default, colors it on a terminal (env: `NO_COLOR`, `FORCE_COLOR`) |
 | `--no-progress` | Don't draw progress while working (env: `ALAI_NO_PROGRESS`) |
 
 ## alai add
@@ -98,7 +98,7 @@ $ alai add [OPTIONS] [REQUIREMENT ...]
 |---|---|
 | `--collections-dir DIR` | Install collections under DIR/ansible_collections |
 | `--link-mode {auto,clone,hardlink,copy,symlink}` | How files get from the cache into the collections directory |
-| `--system-certs`, `--no-system-certs` | Verify TLS certificates with the operating system's trust store (the default) |
+| `--system-certs`, `--no-system-certs` | Verify TLS certificates as the operating system does (the default) |
 | `--offline`, `--no-offline` | Use only what's cached, without connecting to any index |
 | `--index NAME=URL` | An index to resolve from, before those in config files; can be repeated |
 | `--default-index [NAME=]URL` | Replace the default index |
@@ -172,7 +172,7 @@ $ alai collection install [OPTIONS] [REQUIREMENT ...]
 |---|---|
 | `--collections-dir DIR` | Install collections under DIR/ansible_collections |
 | `--link-mode {auto,clone,hardlink,copy,symlink}` | How files get from the cache into the collections directory |
-| `--system-certs`, `--no-system-certs` | Verify TLS certificates with the operating system's trust store (the default) |
+| `--system-certs`, `--no-system-certs` | Verify TLS certificates as the operating system does (the default) |
 | `--offline`, `--no-offline` | Use only what's cached, without connecting to any index |
 | `--index NAME=URL` | An index to resolve from, before those in config files; can be repeated |
 | `--default-index [NAME=]URL` | Replace the default index |
@@ -272,7 +272,7 @@ $ alai config show [OPTIONS] [key]
 |---|---|
 | `--collections-dir DIR` | Install collections under DIR/ansible_collections |
 | `--link-mode {auto,clone,hardlink,copy,symlink}` | How files get from the cache into the collections directory |
-| `--system-certs`, `--no-system-certs` | Verify TLS certificates with the operating system's trust store (the default) |
+| `--system-certs`, `--no-system-certs` | Verify TLS certificates as the operating system does (the default) |
 | `--offline`, `--no-offline` | Use only what's cached, without connecting to any index |
 | `--index NAME=URL` | An index to resolve from, before those in config files; can be repeated |
 | `--default-index [NAME=]URL` | Replace the default index |
@@ -340,7 +340,7 @@ $ alai find [OPTIONS] QUERY
 | Option | Description |
 |---|---|
 | `--collections-dir DIR` | Install collections under DIR/ansible_collections |
-| `--system-certs`, `--no-system-certs` | Verify TLS certificates with the operating system's trust store (the default) |
+| `--system-certs`, `--no-system-certs` | Verify TLS certificates as the operating system does (the default) |
 | `--offline`, `--no-offline` | Use only what's cached, without connecting to any index |
 | `--index NAME=URL` | An index to resolve from, before those in config files; can be repeated |
 | `--default-index [NAME=]URL` | Replace the default index |
@@ -370,7 +370,7 @@ $ alai lock [OPTIONS]
 
 | Option | Description |
 |---|---|
-| `--system-certs`, `--no-system-certs` | Verify TLS certificates with the operating system's trust store (the default) |
+| `--system-certs`, `--no-system-certs` | Verify TLS certificates as the operating system does (the default) |
 | `--offline`, `--no-offline` | Use only what's cached, without connecting to any index |
 | `--index NAME=URL` | An index to resolve from, before those in config files; can be repeated |
 | `--default-index [NAME=]URL` | Replace the default index |
@@ -414,7 +414,7 @@ $ alai remove [OPTIONS] NAME [NAME ...]
 |---|---|
 | `--collections-dir DIR` | Install collections under DIR/ansible_collections |
 | `--link-mode {auto,clone,hardlink,copy,symlink}` | How files get from the cache into the collections directory |
-| `--system-certs`, `--no-system-certs` | Verify TLS certificates with the operating system's trust store (the default) |
+| `--system-certs`, `--no-system-certs` | Verify TLS certificates as the operating system does (the default) |
 | `--offline`, `--no-offline` | Use only what's cached, without connecting to any index |
 | `--index NAME=URL` | An index to resolve from, before those in config files; can be repeated |
 | `--default-index [NAME=]URL` | Replace the default index |
@@ -474,7 +474,7 @@ $ alai run [OPTIONS] COMMAND ...
 |---|---|
 | `--collections-dir DIR` | Install collections under DIR/ansible_collections |
 | `--link-mode {auto,clone,hardlink,copy,symlink}` | How files get from the cache into the collections directory |
-| `--system-certs`, `--no-system-certs` | Verify TLS certificates with the operating system's trust store (the default) |
+| `--system-certs`, `--no-system-certs` | Verify TLS certificates as the operating system does (the default) |
 | `--offline`, `--no-offline` | Use only what's cached, without connecting to any index |
 | `--index NAME=URL` | An index to resolve from, before those in config files; can be repeated |
 | `--default-index [NAME=]URL` | Replace the default index |
@@ -538,7 +538,7 @@ $ alai sync [OPTIONS]
 |---|---|
 | `--collections-dir DIR` | Install collections under DIR/ansible_collections |
 | `--link-mode {auto,clone,hardlink,copy,symlink}` | How files get from the cache into the collections directory |
-| `--system-certs`, `--no-system-certs` | Verify TLS certificates with the operating system's trust store (the default) |
+| `--system-certs`, `--no-system-certs` | Verify TLS certificates as the operating system does (the default) |
 | `--offline`, `--no-offline` | Use only what's cached, without connecting to any index |
 | `--index NAME=URL` | An index to resolve from, before those in config files; can be repeated |
 | `--default-index [NAME=]URL` | Replace the default index |

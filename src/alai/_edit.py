@@ -13,7 +13,7 @@ import os
 import secrets
 import time
 
-from ._common import NAME_RE, ConfigError, read_toml_document
+from ._common import NAME_RE, ConfigError, home_path, read_toml_document
 from ._config import Settings, raw_manifest
 from ._lock import Lock, lock_path, read_lock, write_lock
 from ._manifest import (
@@ -28,7 +28,7 @@ from ._manifest import (
     source_key,
 )
 from ._native import TomlDocument, TomlEditError
-from ._output import error, home_path, shown_path, summary
+from ._output import error, shown_path, summary
 from ._project import (
     Upgrade,
     given_requirement,

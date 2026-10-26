@@ -14,7 +14,7 @@ import time
 import typing as _t
 
 from . import _output
-from ._common import ConfigError, sha256_file
+from ._common import ConfigError, home_path, sha256_file
 from ._config import Index, RawManifest, Settings
 from ._install import (
     Linker,
@@ -40,7 +40,7 @@ from ._lock import (
     LockedRoot,
 )
 from ._manifest import Manifest
-from ._output import change, error, home_path, shown_path, summary
+from ._output import change, error, shown_path, summary
 from ._progress import Live, Task
 
 if _t.TYPE_CHECKING:

@@ -148,7 +148,7 @@ class TestCheck:
 
         assert lines(capsys.readouterr().err) == ["Resolved 2 collections", "alai.lock is up to date"]
 
-    def test_upgrade(self, project: Path) -> None:
+    def test_upgrade(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         # -U is allowed, unlike uv's: it passes while the lock already has the newest versions that fit.
         write_project(project, ["a.a", "b.b<1.1"])
         _ = lock()
@@ -158,9 +158,17 @@ class TestCheck:
         write_project(project, ["a.a", "b.b"])
         _ = lock()
         before = (project / "alai.lock").read_bytes()
+        _ = capsys.readouterr()
 
         assert lock("--check", "-U") == EXIT_STALE
         assert (project / "alai.lock").read_bytes() == before
+        # The command it suggests is the one that writes what was found: plain alai lock would keep b.b.
+        assert lines(capsys.readouterr().err)[-1] == "error: alai.lock is out of date; run alai lock --upgrade"
+
+        assert lock("--check", "-P", "b.b") == EXIT_STALE
+        assert lines(capsys.readouterr().err)[-1] == (
+            "error: alai.lock is out of date; run alai lock --upgrade-collection b.b"
+        )
 
     def test_manifest_changed(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         write_project(project, ["a.a"])
@@ -310,11 +318,15 @@ class TestUpgradeGroup:
 
         assert versions(project) == {"a.a": "2.0.0", "b.b": "1.1.0", "c.c": "1.0.0"}
 
-    def test_check(self, project: Path) -> None:
+    def test_check(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         self.locked_old(project)
 
         assert lock("--check", "--upgrade-group", "test") == 0
+        _ = capsys.readouterr()
         assert lock("--check", "--upgrade-group", "lint") == EXIT_STALE
+        assert (
+            lines(capsys.readouterr().err)[-1] == "error: alai.lock is out of date; run alai lock --upgrade-group lint"
+        )
 
     @pytest.mark.parametrize(
         ("groups", "message"),

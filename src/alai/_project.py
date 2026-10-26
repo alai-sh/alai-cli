@@ -11,7 +11,7 @@ import os
 import re
 import typing as _t
 
-from ._common import ConfigError, Record, inside, read_toml, selects, sha256_file
+from ._common import ConfigError, Record, home_path, inside, read_toml, selects, sha256_file
 from ._config import RawManifest, Settings, raw_manifest
 from ._lock import (
     ArchiveSource,
@@ -36,7 +36,7 @@ from ._manifest import (
     parse_git,
     parse_manifest,
 )
-from ._output import detail, home_path, lock_change, status, warn
+from ._output import detail, lock_change, status, warn
 from ._progress import Live, Task
 
 if _t.TYPE_CHECKING:
@@ -135,6 +135,12 @@ def with_root(
     )
     manifest = parse_manifest(raw)
     manifest.root = root
+    # Refused whatever the source, before any is read or downloaded: uv ignores a source for the project itself.
+    if (source := manifest.sources.get(root.name)) is not None:
+        raise ConfigError(
+            f"[project.sources] takes {root.name} from {source}, but it's the project's own collection, which is "
+            + "always the checkout"
+        )
     _fill_local(settings, manifest, local)
     return raw, manifest
 
@@ -159,13 +165,6 @@ def read_local(settings: Settings, manifest: Manifest) -> None:
     or an exact sync, would replace or remove it. A path to a tarball is hashed and read through the cache; a URL or
     a git repository needs the network, so ``resolve_manifest`` reads those."""
     for name, source in sorted(manifest.sources.items()):
-        if not isinstance(source, (PathSource, GitSource)):
-            continue
-        if manifest.root is not None and name == manifest.root.name:
-            raise ConfigError(
-                f"[project.sources] takes {name} from {source}, but it's the project's own collection, which is "
-                + "always the checkout"
-            )
         if isinstance(source, PathSource):
             manifest.local[name] = read_path_source(settings, name, source)
 

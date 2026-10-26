@@ -1,8 +1,8 @@
 # Shell completion
 
-alai can complete its commands, options and option values when you press
-Tab. `alai generate-shell-completion <shell>` prints the script that turns it
-on; add it to your shell's startup file once.
+alai can provide shell completion options for various shells. Use
+`alai generate-shell-completion <shell>` and your shell's eval command to have
+it setup completion support:
 
 | Shell | Add to | Line |
 |---|---|---|
@@ -12,7 +12,8 @@ on; add it to your shell's startup file once.
 | PowerShell | `$PROFILE` | `alai generate-shell-completion powershell | Out-String | Invoke-Expression` |
 | tcsh | `~/.tcshrc` | ``eval "`alai generate-shell-completion tcsh`"`` |
 
-Then start a new shell.
+After doing the above, restart the shell and completion should work using
+whatever mechanism your shell exposes, for example with the tab key.
 
 !!! note "bash on macOS"
 
@@ -28,25 +29,36 @@ Then start a new shell.
     `autoload -Uz compinit && compinit` above the alai line. zsh is the
     default shell on macOS.
 
-The script doesn't list alai's options. On each Tab it runs `alai`, which
-answers from its own options, so the script never needs regenerating when
-alai is upgraded. That also means bash users can save it once instead of
-running it in every new shell:
+The script doesn't list alai's options. On each completion request it runs
+`alai`, which answers from its own options, so the script never needs
+regenerating when alai is upgraded.
+
+Completion only works when `alai` is the command being run. When alai is
+called through another command, such as `uv run alai ...`, the shell completes
+`uv`'s arguments and not alai's.
+
+## Other ways to set up completion
+
+### bash-completion
+
+[bash-completion](https://github.com/scop/bash-completion) loads a command's
+completion script from a directory the first time you press Tab after that
+command, rather than when the shell starts. Saving alai's script there means
+nothing needs adding to `~/.bashrc`, and a new shell doesn't run alai until
+you complete it:
 
 ```console
 $ alai generate-shell-completion bash > ~/.local/share/bash-completion/completions/alai
 ```
 
-bash-completion then loads it the first time you press Tab after `alai`.
-This needs the bash-completion package (version 2), which most Linux
-distributions install with bash. macOS doesn't include it; Homebrew has it as
-`bash-completion@2`.
+This needs bash-completion version 2, which most Linux distributions install
+with bash. macOS doesn't include it but can be installed through tools like
+Homebrew through the `bash-completion@2` package.
 
-Completion works for the `alai` command, as installed by
-`uv tool install alai` or in an activated virtual environment. It doesn't
-work through `uv run alai …`, since the shell completes for `uv` there.
+### argcomplete's global completion
 
-If you already use argcomplete's global completion
-(`activate-global-python-argcomplete`, bash and zsh), alai is completed with
-no setup. In bash that needs bash 4.2 or later, so not the bash 3.2 that macOS
-includes.
+alai's completion is built on
+[argcomplete](https://github.com/kislyuk/argcomplete). If you already use its
+[global completion](https://github.com/kislyuk/argcomplete#global-completion)
+(`activate-global-python-argcomplete`, in bash and zsh), alai is completed
+with no setup.

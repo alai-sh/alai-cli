@@ -9,7 +9,7 @@ import argparse
 
 from .. import _output
 from .._args import HelpFormatter, add_global_args, add_settings_args, settings_from_args
-from .._common import ConfigError
+from .._common import ConfigError, home_path
 from .._config import FILE_SETTINGS, SETTINGS, Level, Settings, suggest_key
 
 
@@ -65,19 +65,19 @@ def _show_key(settings: Settings, key: str) -> None:
 def _show_all(settings: Settings, *, verbose: bool) -> None:
     project = settings.project
     found = f"found by {project.marker}" if project.marker else "no marker found"
-    _section("Project", [("root", f"{_output.home_path(project.root)} ({found})")])
+    _section("Project", [("root", f"{home_path(project.root)} ({found})")])
 
     if settings.no_config:
         files = [("none", "--no-config given")]
     elif settings.searched and settings.searched[0].level is Level.EXPLICIT:
-        files = [("--config-file", _output.home_path(settings.searched[0].path))]
+        files = [("--config-file", home_path(settings.searched[0].path))]
     else:
         files = []
         for level in (Level.PROJECT, Level.USER, Level.SYSTEM):
             read = [f.path for f in settings.searched if f.level is level and f.read]
-            missing = [_output.home_path(f.path) for f in settings.searched if f.level is level and not f.read]
+            missing = [home_path(f.path) for f in settings.searched if f.level is level and not f.read]
             if read:
-                value = _output.home_path(read[0])
+                value = home_path(read[0])
             elif verbose and missing:
                 value = f"none, looked for {', '.join(missing)}"
             else:
@@ -97,11 +97,11 @@ def _show_all(settings: Settings, *, verbose: bool) -> None:
         rows.append((setting.key, value, _source(settings, setting.target)))
         if verbose:
             for value, source in settings.overridden.get(setting.target, ()):
-                rows.append(("", _text(value, tilde=True), f"{_output.home_path(source)}, overridden"))
+                rows.append(("", _text(value, tilde=True), f"{home_path(source)}, overridden"))
     _section("Settings", rows)
 
     indexes = [
-        (index.name, index.url, f"{_output.home_path(index.source)}{', default index' if index.default else ''}")
+        (index.name, index.url, f"{home_path(index.source)}{', default index' if index.default else ''}")
         for index in settings.indexes
     ]
     _section("Indexes, in resolution order", indexes)
@@ -119,11 +119,11 @@ def _section(title: str, rows: list[tuple[str, ...]]) -> None:
 
 
 def _source(settings: Settings, target: str) -> str:
-    return _output.home_path(settings.sources[target])
+    return home_path(settings.sources[target])
 
 
 def _text(value: object, *, tilde: bool = False) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"  # as written in alai.toml
     text = str(getattr(value, "value", value))  # an enum's value, such as LinkMode.COPY's "copy"
-    return _output.home_path(text) if tilde else text
+    return home_path(text) if tilde else text

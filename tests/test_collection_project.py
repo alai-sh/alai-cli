@@ -365,6 +365,27 @@ class TestSync:
 
         assert f"'project.{key}' can't be set beside a collection's galaxy.yml" in capsys.readouterr().err
 
+    @pytest.mark.parametrize(
+        "source",
+        [
+            '{ index = "alai" }',
+            '{ index = "nowhere" }',
+            '{ path = "../missing" }',
+            '{ path = "../missing", editable = true }',
+            '{ url = "https://example.invalid/ns-col-1.0.0.tar.gz" }',
+            '{ git = "https://example.invalid/col.git" }',
+        ],
+    )
+    def test_a_source_for_itself_refused(self, project: Path, capsys: pytest.CaptureFixture[str], source: str) -> None:
+        # Whatever the source, before it's read, downloaded or its index looked for.
+        galaxy(project)
+        _ = (project / "alai.toml").write_text(f'[project.sources]\n"ns.col" = {source}\n')
+
+        assert main(["lock"]) == EXIT_ERROR
+
+        assert "but it's the project's own collection, which is always the checkout" in capsys.readouterr().err
+        assert not (project / "alai.lock").exists()
+
     def test_a_dependency_on_itself(self, project: Path) -> None:
         # a.a 2.0.0 depends on b.b>=1.0.0, which is the project's own collection here: the checkout satisfies it.
         _ = (project / "galaxy.yml").write_text("namespace: b\nname: b\nversion: 1.0.0\ndependencies: {a.a: '>=2'}\n")

@@ -13,7 +13,18 @@ import collections.abc as _c
 import enum
 import os
 
-from ._common import NAME_RE, ConfigError, Record, as_table, env_bool, inside, parse_bool, read_toml, string_list
+from ._common import (
+    NAME_RE,
+    ConfigError,
+    Record,
+    as_table,
+    env_bool,
+    home_path,
+    inside,
+    parse_bool,
+    read_toml,
+    string_list,
+)
 from ._output import debug
 
 CONFIG_FILE_NAME = "alai.toml"
@@ -187,7 +198,7 @@ class Settings(Record):
         self.indexes = indexes
         """The indexes in resolution order, the default index last."""
         self.system_certs = system_certs
-        """Verify TLS certificates with the operating system's trust store rather than OpenSSL's."""
+        """Verify TLS certificates as the operating system does, with truststore, rather than with OpenSSL's defaults."""
         self.offline = offline
         """Read only what's cached, never the network."""
 
@@ -749,7 +760,7 @@ def _resolve_indexes(indexes: _c.Sequence[Index]) -> tuple[Index, ...]:
 
     for index in [*indexes, builtin]:
         if index.name in seen:
-            debug(f"Ignoring index '{index.name}' from {index.source}, already defined at a higher level")
+            debug(f"Ignoring index '{index.name}' from {home_path(index.source)}, already defined at a higher level")
             continue
         seen.add(index.name)
 
@@ -758,7 +769,7 @@ def _resolve_indexes(indexes: _c.Sequence[Index]) -> tuple[Index, ...]:
         elif default is None:
             default = index
         else:
-            debug(f"Ignoring default index '{index.name}' from {index.source}, default is '{default.name}'")
+            debug(f"Ignoring default index '{index.name}' from {home_path(index.source)}, default is '{default.name}'")
 
     if default:
         ordered.append(default)
@@ -870,7 +881,7 @@ SETTINGS = (
         key="system_certs",
         flag="--system-certs",
         env="ALAI_SYSTEM_CERTS",
-        help="verify TLS certificates with the operating system's trust store (the default)",
+        help="verify TLS certificates as the operating system does (the default)",
         parse=_bool_arg,
         boolean=True,
         group="resolve",

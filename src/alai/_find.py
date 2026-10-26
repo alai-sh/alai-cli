@@ -15,7 +15,7 @@ import re
 import sys
 
 from . import _output
-from ._common import EXIT_NOT_FOUND, Error
+from ._common import EXIT_NOT_FOUND, Error, home_path
 from ._config import Settings
 from ._install import Installed, installed
 from ._output import (
@@ -30,7 +30,6 @@ from ._output import (
     UNDERLINE,
     YELLOW,
     debug,
-    home_path,
     status,
     terminal_width,
     warn,
@@ -581,7 +580,7 @@ class _Renderer:
         markers = {self._marker(f) for f in shown}
         parts = [f"{self.s(m, colour)} {self.s(text, DIM)}" for m, colour, text in _LEGEND if (m, colour) in markers]
         if any(f.copy for f in shown):
-            parts.append(f"{self.s('grey', DIM)} {self.s('probably a copy of another collection', DIM)}")
+            parts.append(f"{self.s('gray', DIM)} {self.s('probably a copy of another collection', DIM)}")
         print()
         print("  ".join(parts))
 
