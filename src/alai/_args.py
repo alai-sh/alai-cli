@@ -112,7 +112,7 @@ def add_settings_args(parser: argparse.ArgumentParser, *groups: str) -> None:
 
 def _add_setting(group: argparse._ArgumentGroup, setting: SettingDefinition, *, default: object) -> None:
     if setting.boolean:
-        # --system-certs and --no-system-certs; unset (None) unless one is given.
+        # --offline and --no-offline; unset (None) unless one is given.
         _ = group.add_argument(
             setting.flag, dest=setting.name, action=argparse.BooleanOptionalAction, default=default, help=setting.help
         )

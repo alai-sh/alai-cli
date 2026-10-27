@@ -120,8 +120,7 @@ what's planned on top of it, and the questions still open.
   type-checked; a test checks it has an attribute for every definition.
 - **Flags exist only on the commands that use them.** A flag a command
   doesn't use is an argparse error, never silently accepted. Each
-  definition has a group, `resolve` (the indexes, `system_certs`,
-  `offline`) or `install` (`collections_dir`, `link_mode`), and a command
+  definition has a group, `resolve` (the indexes and `offline`) or `install` (`collections_dir`, `link_mode`), and a command
   asks for the groups it uses: `alai lock` takes `resolve` only, so
   `alai lock --link-mode copy` is an error; `config show` takes every one.
   `cache_dir` is a global flag, since every command that reads an index or
@@ -153,8 +152,8 @@ what's planned on top of it, and the questions still open.
   `alai.toml` fails on the next command run rather than the next install,
   as the strict loading above promises. The cost: a bad `ALAI_LINK_MODE` in
   CI breaks `alai lock` too, with an error naming the variable.
-- **Boolean settings get a flag pair**, `--system-certs` and
-  `--no-system-certs` (argparse's `BooleanOptionalAction`), so the command
+- **Boolean settings get a flag pair**, `--offline` and `--no-offline`
+  (argparse's `BooleanOptionalAction`), so the command
   line can override a file or environment variable either way, as `--link-mode
   auto` undoes a file's `link_mode`. In a file the value must be TOML's
   `true` or `false`, not a string; the environment variable takes the words

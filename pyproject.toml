@@ -32,9 +32,6 @@ dependencies = [
     "distlib >= 0.4.4",
     # galaxy.yml and meta/runtime.yml, read with the same parser ansible-core uses.
     "pyyaml >= 6.0",
-    # The OS trust store for TLS; the floor is the release tested.
-    "truststore >= 0.10",
-    "urllib3 >= 2.0",
 ]
 
 [project.urls]
@@ -46,13 +43,19 @@ Issues = "https://github.com/alai-sh/alai-cli/issues"
 alai = "alai.__main__:main"
 
 [dependency-groups]
+# What the tests need to run, and nothing else, for CI's musl job, which installs it alone (uv sync --group test).
+test = [
+    "pytest >= 8",
+    "pytest-xdist",
+    # A CA and certificates for the HTTPS tests, for the fetcher to verify against.
+    "trustme",
+]
 dev = [
+    { include-group = "test" },
     "basedpyright >= 1.40.2",
     "coverage[toml] >= 5.3",  # Support for source_pkgs
     "ruff >= 0.17.0",
     "pre-commit",
-    "pytest >= 8",
-    "pytest-xdist",
     "tox-uv",
     # Type stubs for PyYAML, for basedpyright.
     "types-pyyaml",

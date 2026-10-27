@@ -225,7 +225,7 @@ def _lock_and_sync(
     if locked and existing is None:
         error(f"there's no {shown_path(path)}, and --locked was given; run alai lock")
         return False
-    lock, resolution = resolve_project(settings, manifest, raw, existing, upgrade=upgrade)
+    lock, resolution = resolve_project(settings, manifest, raw, existing, upgrade=upgrade, download=sync)
     finish(doc, lock)
     # Parsed again for what finish changed, with the sources as they were just read rather than read again.
     raw, manifest = with_root(settings, raw_manifest(doc.data(), config), local=manifest.local)

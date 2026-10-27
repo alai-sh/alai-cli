@@ -367,46 +367,46 @@ class TestValidation:
 
 
 class TestBoolean:
-    """system_certs, the first true-or-false setting: on by default, and either way from any level."""
+    """offline, a true-or-false setting: off by default, and either way from any level."""
 
     def test_default(self, tmp_path: Path, environ: dict[str, str]) -> None:
-        assert load(tmp_path, environ).system_certs is True
+        assert load(tmp_path, environ).offline is False
 
     def test_file(self, tmp_path: Path, environ: dict[str, str]) -> None:
-        config = write_file(tmp_path / "alai.toml", "system_certs = false\n")
+        config = write_file(tmp_path / "alai.toml", "offline = true\n")
 
         settings = load(tmp_path, environ)
 
-        assert settings.system_certs is False
-        assert settings.sources["system_certs"] == str(config)
+        assert settings.offline is True
+        assert settings.sources["offline"] == str(config)
 
     @pytest.mark.parametrize(("value", "expected"), [("0", False), ("off", False), ("YES", True), ("1", True)])
     def test_env(self, tmp_path: Path, environ: dict[str, str], value: str, expected: bool) -> None:
-        write_file(tmp_path / "alai.toml", f"system_certs = {str(not expected).lower()}\n")
-        environ["ALAI_SYSTEM_CERTS"] = value
+        write_file(tmp_path / "alai.toml", f"offline = {str(not expected).lower()}\n")
+        environ["ALAI_OFFLINE"] = value
 
-        assert load(tmp_path, environ).system_certs is expected
+        assert load(tmp_path, environ).offline is expected
 
     @pytest.mark.parametrize("flag", [True, False])
     def test_flag_beats_env_either_way(self, tmp_path: Path, environ: dict[str, str], flag: bool) -> None:
-        environ["ALAI_SYSTEM_CERTS"] = "0" if flag else "1"
+        environ["ALAI_OFFLINE"] = "0" if flag else "1"
 
-        settings = load(tmp_path, environ, Overrides(system_certs=flag))
+        settings = load(tmp_path, environ, Overrides(offline=flag))
 
-        assert settings.system_certs is flag
-        assert settings.sources["system_certs"] == "--system-certs"
+        assert settings.offline is flag
+        assert settings.sources["offline"] == "--offline"
 
     def test_invalid_env(self, tmp_path: Path, environ: dict[str, str]) -> None:
-        environ["ALAI_SYSTEM_CERTS"] = "maybe"
+        environ["ALAI_OFFLINE"] = "maybe"
 
-        with pytest.raises(ConfigError, match=r"ALAI_SYSTEM_CERTS: expected a boolean .* got 'maybe'"):
+        with pytest.raises(ConfigError, match=r"ALAI_OFFLINE: expected a boolean .* got 'maybe'"):
             load(tmp_path, environ)
 
     @pytest.mark.parametrize("value", ['"false"', "0", "[true]"])
     def test_file_needs_toml_boolean(self, tmp_path: Path, environ: dict[str, str], value: str) -> None:
-        write_file(tmp_path / "alai.toml", f"system_certs = {value}\n")
+        write_file(tmp_path / "alai.toml", f"offline = {value}\n")
 
-        with pytest.raises(ConfigError, match="'system_certs' must be true or false"):
+        with pytest.raises(ConfigError, match="'offline' must be true or false"):
             load(tmp_path, environ)
 
 
@@ -553,7 +553,6 @@ def test_sources_and_overridden(tmp_path: Path, home: Path, environ: dict[str, s
         "collections_dir": "default",
         "cache_dir": str(user),
         "link_mode": "--link-mode",
-        "system_certs": "default",
         "offline": "default",
     }
     assert settings.overridden == {

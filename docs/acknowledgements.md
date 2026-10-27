@@ -37,9 +37,6 @@ project are:
 
 ### Python
 
-- **[urllib3](https://urllib3.readthedocs.io/)** and
-  **[truststore](https://truststore.readthedocs.io/)** download from the
-  index, verified as the operating system does.
 - **[PyYAML](https://pyyaml.org/)** reads a collection's `galaxy.yml` and
   `meta/runtime.yml`, with the same parser ansible-core uses.
 - **[distlib](https://github.com/pypa/distlib)** applies the `manifest`
@@ -61,6 +58,14 @@ in Python.
   **[flate2](https://crates.io/crates/flate2)** extract collection tarballs,
   and **[sha2](https://crates.io/crates/sha2)** checks each file against the
   collection's `FILES.json` as it goes.
+- **[reqwest](https://crates.io/crates/reqwest)**, on
+  **[Tokio](https://tokio.rs/)**, downloads from the index, over HTTP/2
+  where the host supports it.
+- **[rustls](https://github.com/rustls/rustls)**, with
+  **[AWS-LC](https://github.com/aws/aws-lc-rs)** for its cryptography, makes
+  the TLS connections, and
+  **[rustls-platform-verifier](https://github.com/rustls/rustls-platform-verifier)**
+  has the operating system verify their certificates.
 - **[serde_json](https://crates.io/crates/serde_json)** reads index files
   and each collection's `MANIFEST.json` and `FILES.json`.
 - **[toml_edit](https://crates.io/crates/toml_edit)** reads `alai.toml`,

@@ -73,7 +73,7 @@ $ uv tool install https://github.com/alai-sh/alai-cli/archive/refs/heads/main.ta
 
 Run the same command with `--reinstall` to update; `uv tool upgrade` won't,
 as it doesn't look for new commits. Part of alai is written in
-Rust, so installing from source needs Rust 1.88 or later, with `cargo` on your
+Rust, so installing from source needs Rust 1.92 or later, with `cargo` on your
 `PATH` ([rustup](https://rustup.rs/) installs it). This is temporary: once
 alai is published on PyPI, it will be `uv tool install alai`, from a
 ready-built wheel on most Linux and macOS systems.

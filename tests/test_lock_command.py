@@ -12,6 +12,7 @@ from index_data import make_index, v
 
 from alai._cli import main
 from alai._common import EXIT_ERROR, EXIT_STALE
+from alai._index import IndexClient
 from alai._native import toml_loads
 
 
@@ -31,6 +32,15 @@ class TestLock:
         text = (project / "alai.lock").read_text()
         assert 'name = "a.a"\nversion = "2.0.0"' in text
         assert '[project]\ncollections = ["a.a"]' in text
+
+    def test_doesnt_connect_to_download_host(self, project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Nothing is downloaded, so no connection is made for it.
+        calls: list[str] = []
+        monkeypatch.setattr(IndexClient, "preconnect_downloads", lambda self: calls.append(self.config().root))
+        write_project(project, ["a.a"])
+
+        assert lock() == 0
+        assert calls == []
 
     def test_unchanged(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         write_project(project, ["a.a"])

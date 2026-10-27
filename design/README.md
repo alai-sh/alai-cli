@@ -53,6 +53,13 @@ Next (2026-10-22):
    docs: the `gh attestation verify` command from performance.md, and that
    it works on a file from PyPI too, as attestations are keyed by the
    file's SHA-256. Not before, as `docs/` describes only what works.
+3. **More of fetching in the extension**, on the `http-in-rust` branch,
+   which moved HTTP there (2026-10-27): fetches as futures from the
+   extension rather than a thread blocked in it for each
+   ([index-client.md](index-client.md#not-done-yet)), then one call to
+   download, check and extract every artifact
+   ([install.md](install.md#not-done-yet)), and seeing the x86_64 and macOS
+   wheels build with aws-lc-rs in CI.
 
 Done on 2026-10-21: `alai run` and `alai env` ([run.md](run.md)), and
 collection projects
@@ -65,7 +72,10 @@ extension, in Rust and required
 ([performance.md](performance.md#the-native-extension)); on 2026-10-23, the
 resolver moved from resolvelib to PubGrub in that extension
 ([resolver.md](resolver.md)), with what's left of those in each note's
-"Not done yet".
+"Not done yet"; on 2026-10-27, HTTP in the extension, with reqwest over
+HTTP/2 and the OS verifying certificates
+([index-client.md](index-client.md#decisions),
+[performance.md](performance.md#http-in-the-extension)).
 
 Moved out: plugin documentation, `alai doc`, built here first and kept as
 a project of its own for later in `../alai-doc` (2026-10-25); what alai
@@ -86,8 +96,8 @@ those items; change it with them.
 | [manifest-editing.md](manifest-editing.md) | `alai add` and `alai remove`, and the checked `toml_edit` editor they change `alai.toml` with, laying arrays out as uv does |
 | [requirements-file.md](requirements-file.md) | Reading ansible-galaxy's `requirements.yml` for `-r`: its format, what uv does with sources in `requirements.txt`, the mapping proposed, and open questions. Shelved |
 | [install.md](install.md) | Installing locked collections: downloading artifacts, the extracted-collection cache, extraction as ansible-galaxy does it, what counts as installed, link modes and exact syncing |
-| [index-client.md](index-client.md) | Fetching and caching the index: the HTTP library, cache layout, revalidation, proxies, errors, and what `index.alai.sh` does |
-| [performance.md](performance.md) | Where the time goes, measured on `sivel.acd`: extraction, cloning, the Rust extension and how alai ships with it |
+| [index-client.md](index-client.md) | Fetching and caching the index: the extension's HTTP client and HTTP/2, TLS verification, cache layout, revalidation, proxies, errors, and what `index.alai.sh` does |
+| [performance.md](performance.md) | Where the time goes, measured on `sivel.acd`: extraction, cloning, HTTP/2, the Rust extension and how alai ships with it |
 | [list.md](list.md) | `alai collection list`: what uv lists and where, comparing the directory with `alai.lock`, and the output |
 | [find.md](find.md) | `alai find`: searching the plugin index, ranking without download counts, probable copies, following routing as ansible-core does, and the output |
 | [output.md](output.md) | Verbosity, what goes to stdout and stderr, JSON, colour and progress |

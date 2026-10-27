@@ -83,7 +83,6 @@ Settings
   link_mode                clone                  ALAI_LINK_MODE
                            hardlink               ~/project/alai.toml, overridden
                            copy                   ~/.config/alai/alai.toml, overridden
-  system_certs             true                   default
   offline                  false                  default
 
 Indexes, in resolution order
@@ -136,8 +135,8 @@ setting comes from the files or its default. Boolean variables take `1`,
 
 ### Boolean flags
 
-A boolean setting has a pair of flags, such as `--system-certs` and
-`--no-system-certs`, so a run can override a file or environment variable
+A boolean setting has a pair of flags, such as `--offline` and
+`--no-offline`, so a run can override a file or environment variable
 either way. When both are given, the last one wins, so a flag added after a
 wrapper's or alias's own flags takes effect.
 
@@ -156,3 +155,57 @@ so they have no `alai.toml` key:
 | `--color <when>` | `NO_COLOR`, `FORCE_COLOR` | Color the output: `auto` (the default) only when it goes to a terminal that isn't `TERM=dumb`, `always` or `never`. With `auto`, a non-empty `NO_COLOR` turns color off and a non-empty `FORCE_COLOR` turns it on; `NO_COLOR` wins if both are set |
 | `--no-progress` | `ALAI_NO_PROGRESS` | Don't draw progress while resolving, downloading or installing. Progress is only drawn when the output goes to a terminal that isn't `TERM=dumb`, and never with `-q` |
 | none | `ALAI_MAX_UNPACKED_SIZE` | The most a collection tarball may unpack to, in bytes, before alai refuses it. The default is `536870912` (512 MiB), and `0` means no limit. It stops a small hostile tarball from filling the disk |
+
+## Network
+
+### TLS certificates
+
+alai uses the operating system libraries to verify each server's certificate,
+as a browser does. On macOS that is the Security framework, so roots added to
+the Keychain and trust settings made in Keychain Access are honored. On Linux
+and other systems, alai loads the CA certificates from where OpenSSL keeps
+them, such as `/etc/ssl/certs`, and checks the chain itself. The location of
+this directory depends on the Linux distribution and how it is configured.
+
+Except on macOS, alai is stricter than OpenSSL about malformed certificates.
+It refuses a version 1 CA certificate, or a server certificate that names its
+host only in the common name. The same applies on macOS when `SSL_CERT_FILE`
+or `SSL_CERT_DIR` is set, as alai then checks the chain itself. This could
+be a problem for some TLS-intercepting proxies that issue such certificates.
+
+The `SSL_CERT_FILE` and `SSL_CERT_DIR` environment variables can be set to a
+PEM bundle or directory of PEM files respectively to use for the CA trust
+check. If either is set, it replaces the system's certificates rather than
+adding to them.
+
+If a system has no CA certificates, alai fails with a TLS error saying so.
+Install these certificates, for example the `ca-certificates` package,
+or name a bundle with `SSL_CERT_FILE`.
+
+### Capturing TLS traffic
+
+The `SSLKEYLOGFILE` environment variable can be used to capture the raw keys
+used for alai's TLS traffic. Set it to a file path and alai will append each
+session's key which can then be used by tools like Wireshark to decrypt the
+captured TLS traffic.
+
+Anyone with that file and a capture of the traffic can read the traffic, so
+unset the variable when you're done. It is deliberately not a setting in
+`alai.toml`, where a committed file could turn it on for everyone who clones
+the project.
+
+### Proxies
+
+alai reads the usual proxy variables, in upper or lower case. `HTTPS_PROXY`
+applies to `https` URLs and `HTTP_PROXY` to `http` URLs. `ALL_PROXY`
+applies to either when the scheme's own variable is unset. A proxy is an
+`http://`, `https://`, `socks5://` or `socks5h://` URL, and a bare
+`host:port` is an HTTP proxy. HTTPS requests go through an HTTP proxy with
+`CONNECT`, so the proxy can't read them.
+
+`NO_PROXY` lists what to connect to directly, separated by commas. An entry
+is a host name, a domain suffix such as `.example.com`, an IP address, an
+IP range such as `10.0.0.0/8`, or `*` for every host.
+
+On macOS, the system's proxy settings fill in whatever the variables leave
+unset. An error from a request made through a proxy names the proxy.

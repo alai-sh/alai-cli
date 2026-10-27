@@ -11,6 +11,7 @@ from index_data import make_index, v
 
 from alai._cli import main
 from alai._common import EXIT_ERROR, EXIT_STALE
+from alai._index import IndexClient
 
 
 def sync(*args: str) -> int:
@@ -35,6 +36,15 @@ class TestSync:
         ]
         assert installed_versions(project / "collections") == {"a.a": "2.0.0", "b.b": "1.1.0", "c.c": "1.0.0"}
         assert (project / "alai.lock").is_file()
+
+    def test_connects_to_download_host_early(self, project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # While resolving, as it's about to download: the index's download host is connected to then.
+        calls: list[str] = []
+        monkeypatch.setattr(IndexClient, "preconnect_downloads", lambda self: calls.append(self.config().root))
+        write_project(project, ["a.a"])
+
+        assert sync() == 0
+        assert len(calls) == 1
 
     def test_nothing_to_do(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         write_project(project, ["a.a"])

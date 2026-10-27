@@ -13,6 +13,7 @@ import collections.abc as _c
 import gzip
 import hashlib
 import http.server
+import ssl
 import sys
 import threading
 import time
@@ -21,7 +22,8 @@ from pathlib import Path
 
 
 class Request:
-    def __init__(self, target: str, path: str, headers: dict[str, str]) -> None:
+    def __init__(self, target: str, path: str, headers: dict[str, str], method: str = "GET") -> None:
+        self.method = method
         self.target = target
         """The request target as sent: a path, or an absolute URL when the server is used as a proxy."""
         self.path = path
@@ -33,8 +35,9 @@ Response = tuple[int, dict[str, str], bytes]
 
 
 class IndexServer:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, tls: ssl.SSLContext | None = None) -> None:
         self.root = root
+        self.tls = tls
         self.requests: list[Request] = []
         self.responses: dict[str, list[Response]] = {}
         """Scripted answers by path, used in order; once a path's list is empty its file is served again."""
@@ -43,10 +46,16 @@ class IndexServer:
         """Seconds to wait before answering, for timeouts."""
         self.delays: dict[str, float] = {}
         """Seconds to wait before answering, by path."""
+        self.closed = 0
+        """Connections that have ended, by the client closing them."""
         server = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"  # keep-alive, so connection reuse is exercised
+
+            def finish(self) -> None:
+                super().finish()
+                server.closed += 1
 
             def do_GET(self) -> None:
                 path = urllib.parse.urlsplit(self.path).path
@@ -72,6 +81,15 @@ class IndexServer:
                     headers["Content-Encoding"] = "gzip"
                 self._send(200, headers, body)
 
+            def do_HEAD(self) -> None:
+                # Only recorded and answered by whether the file exists: the fetcher's HEAD is to connect, not to read.
+                path = urllib.parse.urlsplit(self.path).path
+                headers = {k.lower(): v for k, v in self.headers.items()}
+                server.requests.append(Request(self.path, path, headers, "HEAD"))
+                self.send_response(200 if (server.root / path.lstrip("/")).is_file() else 404)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
             def _send(self, status: int, headers: dict[str, str], body: bytes) -> None:
                 self.send_response(status)
                 for name, value in headers.items():
@@ -84,13 +102,15 @@ class IndexServer:
                 pass
 
         self._server = _Server(("127.0.0.1", 0), Handler)
+        if tls is not None:
+            self._server.socket = tls.wrap_socket(self._server.socket, server_side=True)
         # A short poll interval, as shutdown() waits for the next poll: the default 0.5 s is paid by every test.
         self._thread = threading.Thread(target=self._server.serve_forever, args=(0.01,), daemon=True)
 
     @property
     def url(self) -> str:
         host, port = self._server.server_address[:2]
-        return f"http://{host!s}:{port}/"
+        return f"{'https' if self.tls else 'http'}://{host!s}:{port}/"
 
     def paths(self) -> list[str]:
         return [r.path for r in self.requests]
@@ -125,7 +145,7 @@ class _Server(http.server.ThreadingHTTPServer):
         super().handle_error(request, client_address)  # pyright: ignore[reportArgumentType]
 
 
-def serve(root: Path) -> _c.Iterator[IndexServer]:
+def serve(root: Path, tls: ssl.SSLContext | None = None) -> _c.Iterator[IndexServer]:
     """For a pytest fixture: ``yield from serve(path)``."""
-    with IndexServer(root) as server:
+    with IndexServer(root, tls) as server:
         yield server
