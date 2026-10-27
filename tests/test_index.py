@@ -16,7 +16,7 @@ from index_server import IndexServer, serve
 
 from alai import _output
 from alai._config import Index
-from alai._fetch import Fetcher
+from alai._fetch import Fetcher, FetchError
 from alai._index import (
     IndexClient,
     IndexConfig,
@@ -85,6 +85,14 @@ class TestConfig:
 
         assert parsed.plugins_url is None
 
+    @pytest.mark.parametrize("listing", [{}, {"collections": None}, {"collections": ""}])
+    def test_no_listing(self, listing: dict[str, object]) -> None:
+        parsed, _ = parse_config(
+            config(formats={"1": {"index": "index/{namespace}/{name}.jsonl", **listing}}), ROOT, "u"
+        )
+
+        assert parsed.collections_url is None
+
     def test_highest_readable_format(self) -> None:
         formats = {
             "1": {"index": "v1/{namespace}/{name}.jsonl", "collections": "c1.json"},
@@ -132,7 +140,15 @@ class TestConfig:
             (config(formats={"2": {}, "x": {}}), "needs a newer alai: it offers index format 2, this alai reads 1"),
             (config(formats={}), "it offers index format none"),
             (config(formats={"1": "index/"}), r"'formats\.1' must be an object"),
-            (config(formats={"1": {"index": "index/"}}), "must have 'index' and 'collections' paths"),
+            (config(formats={"1": {"collections": "c.json"}}), r"'formats\.1' must have an 'index' template"),
+            (
+                config(formats={"1": {"index": "i/{namespace}/{name}", "collections": 1}}),
+                r"'formats\.1\.collections' must be a path",
+            ),
+            (
+                config(formats={"1": {"index": "index/{sha256-prefix}/{sha256-checksum}.jsonl"}}),
+                r"'formats\.1\.index' finds files by SHA-256, which only a 'collections' listing gives",
+            ),
             (
                 config(formats={"1": {"index": "index/", "collections": "c.json"}}),
                 r"'formats\.1\.index' must be a URL template naming each file",
@@ -1024,3 +1040,121 @@ class TestHashedIndexFiles:
 
         assert result is not None
         assert not (tmp_path / "index").exists()
+
+
+def unlist(site: Path) -> None:
+    """Take collections.json out of the index, as a host that serves only index files."""
+    (site / "collections.json").unlink()
+    _ = (site / "config.json").write_bytes(config(formats={"1": {"index": "index/{namespace}/{name}.jsonl"}}))
+
+
+DOCKER = "/index/community/docker.jsonl"
+
+
+class TestNoListing:
+    """An index whose config.json has no 'collections': each collection is found by its index file alone."""
+
+    @pytest.fixture
+    def userver(self, site: Path) -> _c.Iterator[IndexServer]:
+        unlist(site)
+        yield from serve(site)
+
+    def test_has_from_the_index_file(self, userver: IndexServer, tmp_path: Path) -> None:
+        with run(userver.url, tmp_path) as index:
+            assert index.collections() is None
+            assert index.known("community.general") is None
+            assert index.has("community.general")
+            assert index.known("community.general")
+            assert not index.has("community.docker")
+            assert index.known("community.docker") is False
+            general = index.versions("community.general")
+
+        assert general is not None
+        assert len(general.versions) == 3
+        # Each asked once: has and versions share the file.
+        assert sorted(p for p in userver.paths() if p.startswith("/index/")) == [DOCKER, GENERAL]
+
+    def test_no_guess_once_config_cached(self, userver: IndexServer, tmp_path: Path) -> None:
+        with run(userver.url, tmp_path) as index:
+            _ = index.has("community.general")
+        userver.requests.clear()
+
+        with run(userver.url, tmp_path) as index:
+            _ = index.has("community.general")
+
+        assert sorted(userver.paths()) == ["/config.json", GENERAL]
+
+    def test_index_files_revalidated(self, userver: IndexServer, site: Path, tmp_path: Path) -> None:
+        with run(userver.url, tmp_path) as index:
+            _ = index.versions("community.general")
+        userver.requests.clear()
+
+        with run(userver.url, tmp_path) as index:
+            unchanged = index.versions("community.general")
+        general = site / GENERAL.lstrip("/")
+        _ = general.write_bytes(general.read_bytes() + index_file(line(name="community.general", vers="9.0.0")))
+        with run(userver.url, tmp_path) as index:
+            changed = index.versions("community.general")
+
+        assert all("if-none-match" in r.headers for r in userver.requests if r.path == GENERAL)
+        assert unchanged is not None
+        assert changed is not None
+        assert len(changed.versions) == len(unchanged.versions) + 1
+
+    def test_not_found_asked_again_next_run(self, userver: IndexServer, site: Path, tmp_path: Path) -> None:
+        # Nothing remembers a 404 past the run: a collection the user is given access to is there the next one.
+        with run(userver.url, tmp_path) as index:
+            assert not index.has("community.docker")
+        _ = shutil.copy(site / GENERAL.lstrip("/"), site / DOCKER.lstrip("/"))
+        with run(userver.url, tmp_path) as index:
+            assert index.has("community.docker")
+
+    def test_prefetch_every_name(self, userver: IndexServer, tmp_path: Path) -> None:
+        with run(userver.url, tmp_path) as index:
+            index.prefetch(["community.general", "community.docker"])
+            assert userver.wait_for(GENERAL)
+            assert userver.wait_for(DOCKER)
+
+    def test_cached_listing_not_used(self, server: IndexServer, site: Path, tmp_path: Path) -> None:
+        # The index dropped its listing after one run cached it: the old listing isn't trusted for anything.
+        with run(server.url, tmp_path) as index:
+            assert index.has("community.general")
+        unlist(site)
+        _ = shutil.copy(site / GENERAL.lstrip("/"), site / DOCKER.lstrip("/"))
+
+        with run(server.url, tmp_path) as index:
+            assert index.collections() is None
+            assert index.has("community.docker")
+
+    def test_offline(self, userver: IndexServer, tmp_path: Path) -> None:
+        with run(userver.url, tmp_path) as index:
+            _ = index.has("community.general")
+        userver.requests.clear()
+
+        with run(userver.url, tmp_path, offline=True) as index:
+            assert index.has("community.general")
+            # Never fetched, so offline can't say whether the index has it.
+            with pytest.raises(FetchError, match="isn't in the cache, and alai is offline"):
+                _ = index.has("community.docker")
+        assert userver.requests == []
+
+    def test_credentials_required(self, userver: IndexServer, tmp_path: Path) -> None:
+        # The index can't be passed over for a collection it may have: an answer other than not found is an error.
+        userver.responses[DOCKER] = [(401, {}, b"")]
+
+        with run(userver.url, tmp_path) as index, pytest.raises(FetchError, match=r"credentials required \(HTTP 401\)"):
+            _ = index.has("community.docker")
+
+    def test_file_index(self, site: Path, tmp_path: Path) -> None:
+        # The simplest index there is: a directory of index files and a config.json, read where it is.
+        unlist(site)
+
+        with run(f"{site.as_uri()}/", tmp_path / "cache") as index:
+            assert index.collections() is None
+            assert index.has("community.general")
+            assert not index.has("community.docker")
+            general = index.versions("community.general")
+
+        assert general is not None
+        assert len(general.versions) == 3
+        assert not (tmp_path / "cache").exists()

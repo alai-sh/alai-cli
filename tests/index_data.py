@@ -40,6 +40,7 @@ def make_index(
     artifacts: bool = False,
     plugins: list[dict[str, object]] | None = None,
     hashed: bool = True,
+    listing: bool = True,
 ) -> str:
     """Write an index in the spec's layout, returning its file:// root URL.
 
@@ -47,7 +48,8 @@ def make_index(
     tarball's ``cksum`` and ``size``, so it can be installed: one holding only a README, or the file a version's
     ``tarball`` key names, such as a collection downloaded from Galaxy. With ``plugins``, it has a plugin index of those lines
     (see ``plugin``). Index files are found by their SHA-256, ``index/<aa>/<sha256>.jsonl``, as ``index.alai.sh``
-    serves them, or with ``hashed=False`` by name, ``index/<namespace>/<name>.jsonl``.
+    serves them, or with ``hashed=False`` by name, ``index/<namespace>/<name>.jsonl``. With ``listing=False``, which needs
+    ``hashed=False``, it has no ``collections.json``, as a host that serves only index files.
     """
     (root / "index").mkdir(parents=True, exist_ok=True)
     dl = (
@@ -63,7 +65,7 @@ def make_index(
                         "index": "index/{sha256-prefix}/{sha256-checksum}.jsonl"
                         if hashed
                         else "index/{namespace}/{name}.jsonl",
-                        "collections": "collections.json",
+                        **({"collections": "collections.json"} if listing else {}),
                         **({"plugins": "plugins.jsonl"} if plugins is not None else {}),
                     }
                 },
@@ -72,7 +74,7 @@ def make_index(
             }
         )
     )
-    listing: dict[str, dict[str, dict[str, str]]] = {}
+    listed: dict[str, dict[str, dict[str, str]]] = {}
     for name, versions in collections.items():
         namespace, short = name.split(".")
         lines: list[str] = []
@@ -103,8 +105,9 @@ def make_index(
         )
         path.parent.mkdir(exist_ok=True)
         _ = path.write_bytes(data)
-        listing.setdefault(namespace, {})[short] = {"updated": "2026-01-01T00:00:00Z", "sha256": sha256}
-    _ = (root / "collections.json").write_text(json.dumps({"v": 1, "namespaces": listing}))
+        listed.setdefault(namespace, {})[short] = {"updated": "2026-01-01T00:00:00Z", "sha256": sha256}
+    if listing:
+        _ = (root / "collections.json").write_text(json.dumps({"v": 1, "namespaces": listed}))
     if plugins is not None:
         _ = (root / "plugins.jsonl").write_text("".join(json.dumps(line) + "\n" for line in plugins))
     return root.as_uri() + "/"

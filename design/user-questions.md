@@ -363,3 +363,21 @@ and an SBOM format such as CycloneDX.
 builds? Would they rather run alai there, and would an SBOM be used?
 
 See [list.md](list.md#decisions).
+
+## An index with no listing that answers 403
+
+**Today:** for an index with no `collections.json`, only a 404, 410 or 451
+for a collection's index file means it doesn't have it, and alai asks the
+next index (2026-10-27). A 401 or 403 is an error, as the index might have
+the collection. So a host that hides collections from some users has to
+answer 404 for them. uv stops at a 401 or 403 from its first index too.
+
+**The alternative:** a setting on the index that treats 403 as not found,
+as uv's `ignore-error-codes` does. A typo in a credential would then look
+like a missing collection, and a later index could supply one of the same
+name.
+
+**Ask:** do the hosts you'd put in front of an index answer 403 for what
+you can't see, and can they be made to answer 404?
+
+See [index-client.md](index-client.md#decisions).

@@ -43,7 +43,9 @@ How alai chooses one version of every collection a project needs, in
   unchanged manifest gives an unchanged lock. `upgrade` (all, or by name)
   drops that preference.
 - **Where a collection comes from: its `[project.sources]` entry, else the
-  first configured index whose `collections.json` has it**, whether the
+  first configured index whose `collections.json` has it**, or, for an index
+  with no listing, that has its index file
+  ([index-client.md](index-client.md)), whether the
   project lists it or something depends on it, and only that index's
   versions are candidates. That's uv's default `index-strategy`,
   `first-index` ("limiting the candidate versions to those present in the

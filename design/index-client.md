@@ -257,6 +257,55 @@ from a machine ~250 ms (TCP plus TLS) from Cloudflare.
   name. As the URL names only a hash, `-vv`'s trace lines for an index file
   name its collection, `GET <url> (community.general): 200, …`; the
   fetcher takes what a request is for (`what=`) for its trace.
+- **An index can have no listing** (2026-10-27). `formats.<n>.collections`
+  is optional in `config.json`, for two kinds of host:
+  - **One that serves only index files.** A directory of
+    `<namespace>/<name>.jsonl` files is then a whole index, with no
+    listing to rebuild on every change, and a host that generates files on
+    request needn't enumerate them.
+  - **One that shows each user only what they can see**, which one shared
+    listing can't do. Authentication itself isn't done yet (see
+    [Not done yet](#not-done-yet)).
+
+  Such an index:
+  - **finds its files by name.** A template by SHA-256 needs the listing's
+    `sha256`, so `config.json` with one and no listing is an error.
+  - **has a collection if its index file is there.** A 404, 410 or 451
+    means it doesn't, and the next index is asked. Anything else, 401 and
+    403 included, is an error, as the index might have it. uv does the same
+    with its first index: tried with uv 0.13.5 on 2026-10-27, against two
+    local simple indexes, the first answering 401 or 403 for a package
+    failed the lock without asking the second. So a host that hides a
+    collection from a user has to answer 404 for it, as GitHub does for
+    private repositories.
+  - **is asked before any later index.** The resolver starts a
+    collection's file from the first index that might have it, without
+    waiting, and stops there. An index with a listing answers from it with
+    no request, so it's skipped or chosen at once. One without a listing
+    has to be asked, and the indexes after it wait for its answer. Asking
+    them at the same time would save a round trip for a collection the
+    first doesn't have, but would send a public index the names of private
+    collections. uv asked its second index only after the first's 404.
+  - **revalidates each index file every run it's read**, with
+    `If-None-Match`, as an index file found by name without a `sha256`
+    always was. A warm run costs one request per collection, not two in
+    all, but each is a 304 with no body, and they run in parallel.
+  - **doesn't remember a 404 past the run.** The spec allows caching one
+    briefly. But a collection a user has just been given access to would
+    then stay missing for that time, with nothing to tell them why. Within
+    a run each file is asked for once. uv asked again on its next run too.
+  - **has no "did you mean"** for a collection no index has, unless another
+    index's listing suggests one.
+
+  Only `config.json` says whether there's a listing. One it names that
+  isn't found is an error (`IndexDataError`), never taken as no listing:
+  that would hide a broken or half-published index, and an index by
+  SHA-256 would have no way to find its files.
+
+  On a first run nothing says the index has no listing, so `collections.json`
+  is still guessed alongside `config.json`, and the 404 is one unused
+  request. Once `config.json` is cached, it isn't guessed. A cached
+  `collections.json` from before the index dropped it is never read.
 - **Why `index.alai.sh` finds its files by SHA-256** (2026-10-25). A cold
   `alai add community.general` resolved in about 3 s on the first run after
   a pause and in 0.45 s straight after it. The index files were served with
@@ -312,6 +361,12 @@ from a machine ~250 ms (TCP plus TLS) from Cloudflare.
   than being closed; a longer body is dropped with its connection. Its test
   uses a 48 KiB body, as hyper already reuses a connection whose body came
   in with the headers, so a short one passes with or without the reading.
+  The next hop can still lose the drained connection to a race in
+  hyper-util's pool (0.1.21, read 2026-10-27): finding none idle, it waits
+  for one while connecting, and if the drained one is handed to it just as
+  the new one connects, it's dropped with the wait. That's rare and costs
+  one connection, so the test redirects to another server, whose hop never
+  asks the pool for the first's connection.
   `moved-to` is followed the same way, with a warning to update the
   configured URL, and fails on a loop or more than 5 hops.
 - **Proxies are reqwest's** (2026-10-27, taking the library's default as
@@ -484,7 +539,9 @@ from a machine ~250 ms (TCP plus TLS) from Cloudflare.
 
 - **Credentials** for private indexes, and for tarball URLs
   ([lockfile.md](lockfile.md#tarballs)). The spec leaves authentication to
-  the host; a `401` already reports "credentials required". The extension
+  the host; a `401` already reports "credentials required". An index with
+  no listing, as one that shows each user what they can see needs, is read
+  already. The extension
   follows redirects itself, sending each hop the request's own headers,
   which today are only `If-None-Match`, as urllib3's loop did. reqwest's
   own following drops `Authorization` and cookies on a redirect to another

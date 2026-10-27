@@ -59,7 +59,7 @@ class IndexConfig(Record):
         root: str,
         format: int,  # noqa: A002
         index: str,
-        collections_url: str,
+        collections_url: str | None,
         dl: str,
         plugins_url: str | None = None,
     ) -> None:
@@ -70,6 +70,9 @@ class IndexConfig(Record):
         """The index file URL template, as given, relative to ``root``: ``index/{namespace}/{name}.jsonl``, or one by
         SHA-256 such as ``index/{sha256-prefix}/{sha256-checksum}.jsonl``."""
         self.collections_url = collections_url
+        """The listing, ``collections.json``, or None if the index has none, such as a host that serves only index
+        files, or one that shows each user only what they can see: whether it has a collection is then only known from
+        its index file."""
         self.dl = dl
         """The artifact URL template."""
         self.plugins_url = plugins_url
@@ -168,6 +171,10 @@ class IndexClient:
     used without a request (the spec's "Cached index files"), so a run where nothing changed costs those two requests.
     Index files are cached by collection, not URL, so an index whose template finds them by SHA-256 keeps one copy of
     each rather than one for every change.
+
+    An index with no listing finds its files by name, and each is revalidated whenever a run reads it: whether the
+    index has a collection is whether its file is there, which ``has`` waits for, so a caller that wants several
+    asks for them with ``prefetch`` first.
     """
 
     def __init__(
@@ -210,12 +217,14 @@ class IndexClient:
         parts = urllib.parse.urlsplit(dl)
         self._fetcher.preconnect(f"{parts.scheme}://{parts.netloc}/")
 
-    def collections(self) -> dict[str, Listed]:
-        """Every collection in the index, from ``collections.json``."""
+    def collections(self) -> dict[str, Listed] | None:
+        """Every collection in the index, from ``collections.json``, or None if the index has no listing."""
         config = self.config()
+        url = config.collections_url
+        if url is None:
+            return None
         with self._lock:
             if self._collections is None:
-                url = config.collections_url
                 data = self._fetcher.get(url, self._cache_path(config.root, url))
                 if data is None:
                     raise IndexDataError(f"{url} not found")
@@ -233,14 +242,25 @@ class IndexClient:
         return data
 
     def has(self, name: str) -> bool:
-        """Whether the index lists collection ``name``."""
-        return name in self.collections()
+        """Whether the index has collection ``name``: whether its listing has it, or with no listing, whether its index
+        file is there, which waits for that request."""
+        known = self.known(name)
+        return self.versions(name) is not None if known is None else known
+
+    def known(self, name: str) -> bool | None:
+        """Whether the index has collection ``name``, if that's known without waiting for more than the listing: from
+        the listing, or with none, from its index file once read. None if only the index file can say."""
+        listing = self.collections()
+        if listing is not None:
+            return name in listing
+        with self._lock:
+            return self._files[name] is not None if name in self._files else None
 
     def prefetch(self, names: list[str]) -> None:
         """Start fetching the index files for ``names`` that aren't current in the cache, so a later ``versions``
-        call finds them ready."""
+        call finds them ready. With no listing, that's every one of them."""
         config = self.config()
-        listing = self.collections()
+        listing = self.collections() or {}
         for name in names:
             listed = listing.get(name)
             if config.hashed and (listed is None or listed.sha256 is None):
@@ -255,7 +275,7 @@ class IndexClient:
             if name in self._files:
                 return self._files[name]
         config = self.config()
-        listed = self.collections().get(name)
+        listed = (self.collections() or {}).get(name)
         cache_path = self._file_cache_path(config.root, name)
 
         if config.hashed and listed is None:
@@ -266,8 +286,8 @@ class IndexClient:
             data = self._current(listed, cache_path)
             if data is not None:
                 trace(f"{url} ({name}): the cached copy matches collections.json")
-            elif config.hashed:
-                url, data = self._fetch_hashed(config, name, url, cache_path)
+            elif config.hashed and config.collections_url is not None:  # parse_config refuses one without
+                url, data = self._fetch_hashed(config, config.collections_url, name, url, cache_path)
             else:
                 data = self._fetcher.get(url, cache_path, what=name)
                 if data is not None and listed and listed.sha256 and _sha256(data) != listed.sha256:
@@ -281,7 +301,7 @@ class IndexClient:
             return self._files.setdefault(name, result)
 
     def _fetch_hashed(
-        self, config: IndexConfig, name: str, url: str, cache_path: str | None
+        self, config: IndexConfig, listing_url: str, name: str, url: str, cache_path: str | None
     ) -> tuple[str | None, bytes | None]:
         """Fetch an index file found by its SHA-256, returning its URL and body, or None for both if the index no
         longer has the collection. Such a file never changes, so one that doesn't match its SHA-256 is an error, not a
@@ -289,27 +309,26 @@ class IndexClient:
         listing is fetched again past any cache, once a run, and the file it names now tried."""
         data = self._fetcher.get(url, cache_path, what=name)
         if data is None:
-            trace(f"{url} ({name}): not found, fetching {config.collections_url} again past any cache")
-            listed = self._relist(config).get(name)
+            trace(f"{url} ({name}): not found, fetching {listing_url} again past any cache")
+            listed = self._relist(config.root, listing_url).get(name)
             if listed is None:
                 return None, None
             url = index_file_url(config, name, listed.sha256)
             data = self._fetcher.get(url, cache_path, what=name)
             if data is None:
-                raise IndexDataError(f"{url} not found, though {config.collections_url} lists {name}")
+                raise IndexDataError(f"{url} not found, though {listing_url} lists {name}")
         else:
-            listed = self.collections().get(name)
+            listed = (self.collections() or {}).get(name)
         # Offline, the cached copy is used as it is, as for an index whose files are found by name.
         if listed is not None and not self._fetcher.offline and _sha256(data) != listed.sha256:
-            raise IndexDataError(f"{url} doesn't match its sha256 in {config.collections_url}")
+            raise IndexDataError(f"{url} doesn't match its sha256 in {listing_url}")
         return url, data
 
-    def _relist(self, config: IndexConfig) -> dict[str, Listed]:
-        """``collections.json``, fetched again past any cache if it hasn't been this run."""
+    def _relist(self, root: str, url: str) -> dict[str, Listed]:
+        """``collections.json``, at ``url``, fetched again past any cache if it hasn't been this run."""
         with self._lock:
             if not self._relisted or self._collections is None:
-                url = config.collections_url
-                data = self._fetcher.refresh(url, self._cache_path(config.root, url))
+                data = self._fetcher.refresh(url, self._cache_path(root, url))
                 if data is None:
                     raise IndexDataError(f"{url} not found")
                 self._collections = parse_collections(data, url)
@@ -398,13 +417,21 @@ def parse_config(data: bytes, root: str, url: str) -> tuple[IndexConfig, str | N
     if not isinstance(paths, dict):
         raise IndexDataError(f"{url}: 'formats.{number}' must be an object")
     index = paths.get("index")  # pyright: ignore[reportUnknownVariableType]
-    collections_path = paths.get("collections")  # pyright: ignore[reportUnknownVariableType]
-    if not isinstance(index, str) or not isinstance(collections_path, str):
-        raise IndexDataError(f"{url}: 'formats.{number}' must have 'index' and 'collections' paths")
+    if not isinstance(index, str):
+        raise IndexDataError(f"{url}: 'formats.{number}' must have an 'index' template")
     if not ("{namespace}" in index and "{name}" in index) and "{sha256-checksum}" not in index:
         raise IndexDataError(
             f"{url}: 'formats.{number}.index' must be a URL template naming each file, with {{namespace}} and {{name}},"
             + " or {sha256-checksum}"
+        )
+    # No listing is an index that only answers for each collection: a host that serves index files alone, or one that
+    # shows each user only what they can see.
+    collections_path = paths.get("collections")  # pyright: ignore[reportUnknownVariableType]
+    if collections_path is not None and not isinstance(collections_path, str):
+        raise IndexDataError(f"{url}: 'formats.{number}.collections' must be a path")
+    if not collections_path and any(p in index for p in _HASHED):
+        raise IndexDataError(
+            f"{url}: 'formats.{number}.index' finds files by SHA-256, which only a 'collections' listing gives"
         )
     plugins_path = paths.get("plugins")  # pyright: ignore[reportUnknownVariableType]
     if plugins_path is not None and not isinstance(plugins_path, str):
@@ -426,7 +453,7 @@ def parse_config(data: bytes, root: str, url: str) -> tuple[IndexConfig, str | N
         root=root,
         format=number,
         index=index,
-        collections_url=urllib.parse.urljoin(root, collections_path),
+        collections_url=urllib.parse.urljoin(root, collections_path) if collections_path else None,
         dl=dl,
         plugins_url=urllib.parse.urljoin(root, plugins_path) if plugins_path else None,
     )
