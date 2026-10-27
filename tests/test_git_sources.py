@@ -556,7 +556,7 @@ class TestCollectionInstall:
     def test_install(self, project: Path, repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
         repo.collection(dependencies={"c.c": "*"})
         commit = repo.commit()
-        (project / "collections" / "ansible_collections").mkdir(parents=True)
+        _ = (project / "alai.toml").write_text("")
 
         assert main(["collection", "install", f"git+{repo.url}@main"]) == 0
         err = lines(capsys.readouterr().err)
@@ -579,7 +579,7 @@ class TestCollectionInstall:
         _ = repo.commit()
         checkout = tmp_path / "checkout"
         Repo(checkout).collection(name="ns.dir")
-        (project / "collections" / "ansible_collections").mkdir(parents=True)
+        _ = (project / "alai.toml").write_text("")
         _ = main(["collection", "install", "-q", f"git+{repo.url}", "-e", str(checkout)])
         _ = capsys.readouterr()
 

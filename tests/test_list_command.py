@@ -45,7 +45,7 @@ class TestWhere:
     def test_needs_a_project_or_a_directory(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         assert main(["collection", "list"]) == EXIT_ERROR
 
-        assert "no project found from" in capsys.readouterr().err
+        assert "no alai.toml found in" in capsys.readouterr().err
 
     def test_explicit_directory(self, project: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         assert main(["collection", "install", "--collections-dir", str(tmp_path / "out"), "c.c"]) == 0
@@ -56,7 +56,7 @@ class TestWhere:
         assert err == [f"Using collections directory at: {tmp_path / 'out'}", "No alai.lock to compare with"]
 
     def test_nothing_installed(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        _ = (project / "ansible.cfg").write_text("[defaults]\n")
+        _ = (project / "alai.toml").write_text("")
 
         out, err = listing(capsys)
 
@@ -68,7 +68,7 @@ class TestWhere:
         ]
 
     def test_quiet(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        _ = (project / "ansible.cfg").write_text("[defaults]\n")
+        _ = (project / "alai.toml").write_text("")
         assert main(["collection", "install", "a.a"]) == 0
 
         out, err = listing(capsys, "-q")
@@ -79,7 +79,7 @@ class TestWhere:
 
 class TestWithoutLock:
     def test_no_markers(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        _ = (project / "ansible.cfg").write_text("[defaults]\n")
+        _ = (project / "alai.toml").write_text("")
         assert main(["collection", "install", "a.a", "c.c"]) == 0
 
         out, err = listing(capsys)
@@ -90,7 +90,7 @@ class TestWithoutLock:
         assert err == ["Using collections directory at: collections", "No alai.lock to compare with"]
 
     def test_unknown_version(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        _ = (project / "ansible.cfg").write_text("[defaults]\n")
+        _ = (project / "alai.toml").write_text("")
         (cdir(project) / "ns" / "made").mkdir(parents=True)
 
         out, _ = listing(capsys)
@@ -373,7 +373,7 @@ class TestJson:
         }
 
     def test_without_lock(self, project: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        _ = (project / "ansible.cfg").write_text("[defaults]\n")
+        _ = (project / "alai.toml").write_text("")
         assert main(["collection", "install", "c.c"]) == 0
         (tmp_path / "elsewhere").mkdir()
         (cdir(project) / "ns").symlink_to(tmp_path / "elsewhere")

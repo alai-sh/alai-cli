@@ -68,18 +68,20 @@ class Index(Record):
 
 
 class Project(Record):
-    __slots__ = ("collection_file", "config_file", "marker", "root")
+    __slots__ = ("collection_file", "config_file", "near", "root")
 
     def __init__(
-        self, root: str, config_file: str | None, marker: str | None, collection_file: str | None = None
+        self, root: str, config_file: str | None, collection_file: str | None = None, near: str | None = None
     ) -> None:
         self.root = root
+        """The directory holding ``alai.toml``, or where discovery started when there's none."""
         self.config_file = config_file
-        """The project's ``alai.toml``, if it has one."""
-        self.marker = marker
-        """The marker that chose ``root``, or None when no marker was found."""
+        """The project's ``alai.toml``, or None when there's no project."""
         self.collection_file = collection_file
-        """The root's ``galaxy.yml`` in a collection project, else None."""
+        """The ``galaxy.yml`` beside ``alai.toml`` in a collection project, else None."""
+        self.near = near
+        """With no ``alai.toml``, the nearest ``galaxy.yml``, else ``ansible.cfg``, on the way up, for
+        ``no_project`` to suggest as the root."""
 
 
 class Overrides(Record):
@@ -457,35 +459,48 @@ def _check_tree(root: str, collections_dir: str, source: str) -> None:
 
 
 def find_project(start: str) -> Project:
-    """Find the project root by walking up from ``start``.
+    """Find the project root, the nearest directory holding an ``alai.toml``, by walking up from ``start``.
 
-    The nearest ``alai.toml`` wins, then the nearest ``galaxy.yml``, then the nearest ``ansible.cfg``, then the
-    nearest ``collections/ansible_collections``. A ``galaxy.yml`` beside the chosen ``alai.toml``, or the chosen
-    ``galaxy.yml``, makes it a collection project.
+    A ``galaxy.yml`` beside it makes it a collection project. Nothing else marks a root (see
+    ``design/configuration.md``), but with no ``alai.toml``, the nearest ``galaxy.yml``, else ``ansible.cfg``, is kept
+    for the error to suggest.
     """
     start = os.path.realpath(start)
-    galaxy: Project | None = None
-    ansible_cfg: Project | None = None
-    collections: Project | None = None
+    galaxy: str | None = None
+    ansible_cfg: str | None = None
 
     directory = start
     while True:
         alai_toml = os.path.join(directory, CONFIG_FILE_NAME)
         galaxy_yml = os.path.join(directory, "galaxy.yml")
         if os.path.isfile(alai_toml):
-            return Project(directory, alai_toml, CONFIG_FILE_NAME, galaxy_yml if os.path.isfile(galaxy_yml) else None)
+            return Project(directory, alai_toml, galaxy_yml if os.path.isfile(galaxy_yml) else None)
 
         if galaxy is None and os.path.isfile(galaxy_yml):
-            galaxy = Project(directory, None, "galaxy.yml", galaxy_yml)
-        if ansible_cfg is None and os.path.isfile(os.path.join(directory, "ansible.cfg")):
-            ansible_cfg = Project(directory, None, "ansible.cfg")
-        if collections is None and os.path.isdir(os.path.join(directory, "collections", "ansible_collections")):
-            collections = Project(directory, None, "collections")
+            galaxy = galaxy_yml
+        cfg = os.path.join(directory, "ansible.cfg")
+        if ansible_cfg is None and os.path.isfile(cfg):
+            ansible_cfg = cfg
 
         parent = os.path.dirname(directory)
         if parent == directory:
-            return galaxy or ansible_cfg or collections or Project(start, None, None)
+            return Project(start, None, near=galaxy or ansible_cfg)
         directory = parent
+
+
+def no_project(project: Project, why: str) -> ConfigError:
+    """The error for a command that needs a project when there's no ``alai.toml``, as uv's "No `pyproject.toml`
+    found in current directory or any parent directory", with a hint naming the directory that's likely the root."""
+    message = f"no alai.toml found in {home_path(project.root)} or any directory above it: {why}"
+    if project.near is None:
+        hint = "create an alai.toml, which can be empty, in the project's root directory"
+    else:
+        directory = home_path(os.path.dirname(project.near))
+        if os.path.basename(project.near) == "galaxy.yml":
+            hint = f"{directory} has a galaxy.yml. To make it a collection project, create an empty alai.toml there"
+        else:
+            hint = f"{directory} has an ansible.cfg. If it's the project's root, create an empty alai.toml there"
+    return ConfigError(f"{message}\n\nhint: {hint}")
 
 
 def user_config_paths(environ: _c.Mapping[str, str]) -> list[str]:

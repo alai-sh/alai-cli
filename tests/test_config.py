@@ -21,6 +21,7 @@ from alai._config import (
     Settings,
     find_project,
     load_settings,
+    no_project,
 )
 
 
@@ -33,7 +34,7 @@ def index_names(settings: Settings) -> list[str]:
 
 
 class TestFindProject:
-    def test_no_marker_uses_start(self, tmp_path: Path) -> None:
+    def test_none_uses_start(self, tmp_path: Path) -> None:
         start = tmp_path / "a" / "b"
         start.mkdir(parents=True)
 
@@ -41,58 +42,101 @@ class TestFindProject:
 
         assert project.root == str(start)
         assert project.config_file is None
-        assert project.marker is None
+        assert project.near is None
 
-    @pytest.mark.parametrize("marker", ["alai.toml", "ansible.cfg"])
-    def test_marker_in_parent(self, tmp_path: Path, marker: str) -> None:
-        write_file(tmp_path / "repo" / marker)
+    def test_in_parent(self, tmp_path: Path) -> None:
+        config = write_file(tmp_path / "repo" / "alai.toml")
         start = tmp_path / "repo" / "roles" / "foo"
         start.mkdir(parents=True)
 
         project = find_project(start)
 
         assert project.root == str(tmp_path / "repo")
-        assert project.marker == marker
+        assert project.config_file == str(config)
+        assert project.collection_file is None
 
-    def test_collections_dir_marker(self, tmp_path: Path) -> None:
-        (tmp_path / "repo" / "collections" / "ansible_collections").mkdir(parents=True)
-        start = tmp_path / "repo" / "playbooks"
-        start.mkdir()
+    def test_nearest_wins(self, tmp_path: Path) -> None:
+        write_file(tmp_path / "repo" / "alai.toml")
+        config = write_file(tmp_path / "repo" / "sub" / "alai.toml")
 
-        project = find_project(start)
+        assert find_project(tmp_path / "repo" / "sub").config_file == str(config)
 
-        assert project.root == str(tmp_path / "repo")
-        assert project.marker == "collections"
-        assert project.config_file is None
-
-    def test_collections_without_ansible_collections_is_not_marker(self, tmp_path: Path) -> None:
-        (tmp_path / "repo" / "collections").mkdir(parents=True)
-
-        assert find_project(tmp_path / "repo").marker is None
-
-    def test_strong_marker_beats_nearer_weak(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("name", ["ansible.cfg", "galaxy.yml"])
+    def test_other_files_not_a_root(self, tmp_path: Path, name: str) -> None:
+        """Only alai.toml marks a root: a nearer ansible.cfg or galaxy.yml is passed over (design/configuration.md)."""
         config = write_file(tmp_path / "repo" / "alai.toml")
-        write_file(tmp_path / "repo" / "playbooks" / "ansible.cfg")
+        write_file(tmp_path / "repo" / "playbooks" / name)
 
         project = find_project(tmp_path / "repo" / "playbooks")
 
         assert project.root == str(tmp_path / "repo")
         assert project.config_file == str(config)
+        assert project.collection_file is None
 
-    def test_ansible_cfg_beats_nearer_collections(self, tmp_path: Path) -> None:
+    def test_collections_dir_not_a_root(self, tmp_path: Path) -> None:
+        (tmp_path / "repo" / "collections" / "ansible_collections").mkdir(parents=True)
+
+        project = find_project(tmp_path / "repo")
+
+        assert project.config_file is None
+        assert project.near is None
+
+    @pytest.mark.parametrize("name", ["ansible.cfg", "galaxy.yml"])
+    def test_without_alai_toml_kept_for_the_hint(self, tmp_path: Path, name: str) -> None:
+        near = write_file(tmp_path / "repo" / name)
+        start = tmp_path / "repo" / "sub"
+        start.mkdir()
+
+        project = find_project(start)
+
+        assert project.root == str(start)
+        assert project.config_file is None
+        assert project.near == str(near)
+
+    def test_galaxy_yml_kept_over_a_nearer_ansible_cfg(self, tmp_path: Path) -> None:
+        """An integration target's ansible.cfg is inside the collection: its galaxy.yml is the likelier root."""
+        galaxy = write_file(tmp_path / "col" / "galaxy.yml")
+        write_file(tmp_path / "col" / "tests" / "integration" / "targets" / "t" / "ansible.cfg")
+
+        assert find_project(tmp_path / "col" / "tests" / "integration" / "targets" / "t").near == str(galaxy)
+
+
+class TestNoProject:
+    def test_no_hint_file(self, tmp_path: Path) -> None:
+        error = no_project(find_project(tmp_path), "it says why")
+
+        assert str(error) == (
+            f"no alai.toml found in {tmp_path} or any directory above it: it says why\n\n"
+            + "hint: create an alai.toml, which can be empty, in the project's root directory"
+        )
+
+    def test_galaxy_yml(self, tmp_path: Path) -> None:
+        write_file(tmp_path / "col" / "galaxy.yml")
+
+        error = no_project(find_project(tmp_path / "col"), "it says why")
+
+        assert str(error).endswith(
+            f"hint: {tmp_path}/col has a galaxy.yml. To make it a collection project, create an empty alai.toml there"
+        )
+
+    def test_ansible_cfg(self, tmp_path: Path) -> None:
         write_file(tmp_path / "repo" / "ansible.cfg")
-        (tmp_path / "repo" / "playbooks" / "collections" / "ansible_collections").mkdir(parents=True)
 
-        project = find_project(tmp_path / "repo" / "playbooks")
+        error = no_project(find_project(tmp_path / "repo"), "it says why")
 
-        assert project.root == str(tmp_path / "repo")
-        assert project.marker == "ansible.cfg"
+        assert str(error).endswith(
+            f"hint: {tmp_path}/repo has an ansible.cfg. If it's the project's root, create an empty alai.toml there"
+        )
 
-    def test_nearest_weak_marker_wins(self, tmp_path: Path) -> None:
-        write_file(tmp_path / "repo" / "ansible.cfg")
-        write_file(tmp_path / "repo" / "sub" / "ansible.cfg")
+    def test_home_shortened(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
+        write_file(tmp_path / "my repo" / "galaxy.yml")
 
-        assert find_project(tmp_path / "repo" / "sub").root == str(tmp_path / "repo" / "sub")
+        error = no_project(find_project(tmp_path / "my repo"), "it says why")
+
+        assert str(error).endswith(
+            "hint: ~/my repo has a galaxy.yml. To make it a collection project, create an empty alai.toml there"
+        )
 
 
 class TestDefaults:
@@ -197,7 +241,7 @@ class TestConfigFiles:
 
         assert settings.config_files == ()
         assert settings.link_mode == LinkMode.AUTO
-        # The project is still found by its marker.
+        # The project is still found by its alai.toml.
         assert settings.project.root == str(tmp_path)
 
     def test_no_config_false(self, tmp_path: Path, environ: dict[str, str]) -> None:

@@ -12,8 +12,8 @@ These steps are recommended, but using `alai sync` and a lock file isn't
 required. You can use `alai collection install` to install collections
 manually (see [Installing by hand](installing-by-hand.md)). Don't mix it with
 `alai sync`, which removes collections the lock doesn't list. You should still
-follow steps 1 and 2 to set up a project marker and configure the correct
-collections directory.
+follow steps 1 and 2 to create the project's `alai.toml` and configure the
+correct collections directory.
 
 1. **Create an `alai.toml`** in the directory holding your playbooks. It
    marks the project's root, and can start empty:
@@ -272,10 +272,10 @@ Automation Hub and private Galaxy servers can't be installed from.
 
 ### `ansible.cfg` isn't read
 
-alai uses an `ansible.cfg` only to find the project's root. Its settings,
-such as `collections_path` or Galaxy servers, aren't read. Only alai's own
-settings are read, from [`alai.toml`](alai-toml.md), environment variables and
-flags.
+alai doesn't read `ansible.cfg`, and doesn't use it to find the project's
+root either. Its settings, such as `collections_path` or Galaxy servers,
+aren't read. Only alai's own settings are read, from
+[`alai.toml`](alai-toml.md), environment variables and flags.
 
 If your `ansible.cfg` sets `collections_path` to somewhere other than
 `collections/`, set alai's

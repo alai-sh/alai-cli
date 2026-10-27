@@ -24,8 +24,17 @@ from alai._native import toml_loads
 
 
 def galaxy(
-    root: Path, dependencies: dict[str, str] | None = None, *, name: str = "col", version: str = "1.0.0"
+    root: Path,
+    dependencies: dict[str, str] | None = None,
+    *,
+    name: str = "col",
+    version: str = "1.0.0",
+    alai_toml: bool = True,
 ) -> None:
+    """A ``galaxy.yml`` in ``root``, and an empty ``alai.toml`` beside it, unless there's one or not ``alai_toml``,
+    which makes ``root`` a collection project."""
+    if alai_toml and not (root / "alai.toml").exists():
+        _ = (root / "alai.toml").write_text("")
     lines = ["namespace: ns", f"name: {name}", f"version: {version}", "readme: README.md", "authors: [me]"]
     if dependencies:
         lines.append("dependencies:")
@@ -53,28 +62,39 @@ def installed(cdir: Path) -> dict[str, str]:
 
 
 class TestDiscovery:
-    def test_galaxy_yml_alone(self, tmp_path: Path) -> None:
+    def test_galaxy_yml_alone_not_a_project(self, tmp_path: Path) -> None:
+        galaxy(tmp_path, alai_toml=False)
+        (tmp_path / "plugins").mkdir()
+
+        project = find_project(str(tmp_path / "plugins"))
+
+        assert (project.root, project.config_file, project.collection_file) == (str(tmp_path / "plugins"), None, None)
+        assert project.near == str(tmp_path / "galaxy.yml")
+
+    def test_galaxy_yml_alone_hinted(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        galaxy(project, alai_toml=False)
+
+        assert main(["sync"]) == EXIT_ERROR
+
+        err = capsys.readouterr().err
+        assert (
+            f"hint: {project} has a galaxy.yml. To make it a collection project, create an empty alai.toml there" in err
+        )
+        assert not (project / "alai.lock").exists()
+
+    def test_beside_alai_toml(self, tmp_path: Path) -> None:
         galaxy(tmp_path)
         (tmp_path / "plugins").mkdir()
 
         project = find_project(str(tmp_path / "plugins"))
 
-        assert (project.root, project.config_file, project.marker) == (str(tmp_path), None, "galaxy.yml")
-        assert project.collection_file == str(tmp_path / "galaxy.yml")
-
-    def test_beside_alai_toml(self, tmp_path: Path) -> None:
-        galaxy(tmp_path)
-        _ = (tmp_path / "alai.toml").write_text("")
-
-        project = find_project(str(tmp_path))
-
-        assert (project.marker, project.collection_file) == ("alai.toml", str(tmp_path / "galaxy.yml"))
+        assert (project.root, project.collection_file) == (str(tmp_path), str(tmp_path / "galaxy.yml"))
 
     def test_alai_toml_above_wins(self, tmp_path: Path) -> None:
         _ = (tmp_path / "alai.toml").write_text("")
         checkout = tmp_path / "collections/ansible_collections/ns/col"
         checkout.mkdir(parents=True)
-        galaxy(checkout)
+        galaxy(checkout, alai_toml=False)
 
         project = find_project(str(checkout))
 
@@ -388,6 +408,7 @@ class TestSync:
 
     def test_a_dependency_on_itself(self, project: Path) -> None:
         # a.a 2.0.0 depends on b.b>=1.0.0, which is the project's own collection here: the checkout satisfies it.
+        _ = (project / "alai.toml").write_text("")
         _ = (project / "galaxy.yml").write_text("namespace: b\nname: b\nversion: 1.0.0\ndependencies: {a.a: '>=2'}\n")
 
         assert main(["sync", "-q"]) == 0
@@ -399,6 +420,7 @@ class TestSync:
 
     def test_a_dependency_on_itself_backtracks(self, project: Path) -> None:
         # The checkout is too old for a.a 2.0.0, so a.a 1.0.0, which doesn't need it, is chosen.
+        _ = (project / "alai.toml").write_text("")
         _ = (project / "galaxy.yml").write_text("namespace: b\nname: b\nversion: 0.5.0\ndependencies: {a.a: '*'}\n")
 
         assert main(["lock", "-q"]) == 0
@@ -407,6 +429,7 @@ class TestSync:
         assert lock is not None and [(c.name, c.version.text) for c in lock.collections] == [("a.a", "1.0.0")]
 
     def test_a_dependency_on_itself_unmet(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        _ = (project / "alai.toml").write_text("")
         _ = (project / "galaxy.yml").write_text("namespace: b\nname: b\nversion: 0.5.0\ndependencies: {a.a: '>=2'}\n")
 
         assert main(["lock"]) == EXIT_ERROR

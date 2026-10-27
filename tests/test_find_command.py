@@ -47,11 +47,11 @@ PLUGINS = [
 
 @pytest.fixture
 def project(project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """conftest's project, with a plugin index in its index, and marked by an ansible.cfg, with community.general 2.5.0
-    installed. The terminal is 80 columns wide."""
+    """conftest's project, with a plugin index in its index, and no alai.toml but its collections/ given as the
+    collections directory, with community.general 2.5.0 installed. The terminal is 80 columns wide."""
     monkeypatch.setenv("ALAI_DEFAULT_INDEX", make_index(tmp_path / "plugins", {"a.a": []}, plugins=PLUGINS))
     monkeypatch.setenv("COLUMNS", "80")
-    _ = (project / "ansible.cfg").write_text("[defaults]\n")
+    monkeypatch.setenv("ALAI_COLLECTIONS_DIR", "collections")
     install(project, "community.general", "2.5.0")
     return project
 
@@ -230,6 +230,7 @@ class TestListing:
         elsewhere = tmp_path / "elsewhere"
         elsewhere.mkdir()
         monkeypatch.chdir(elsewhere)
+        monkeypatch.delenv("ALAI_COLLECTIONS_DIR")
 
         assert find("copy_thing") == 0
 

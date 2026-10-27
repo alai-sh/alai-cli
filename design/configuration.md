@@ -23,14 +23,45 @@ what's planned on top of it, and the questions still open.
   live next to it. One lockfile has to install to one place whichever
   directory alai runs from. Letting a nearer `ansible.cfg` choose the root
   would give one repo two collection trees.
-- **Marker order**: `alai.toml`, then `galaxy.yml` (2026-10-21, see
-  [collection-development.md](collection-development.md)), then
-  `ansible.cfg`, then `collections/ansible_collections/`. `ansible.cfg` is a weaker signal than
-  alai's own file because repos often hold several (per environment, per
-  playbook directory, in test fixtures), and Ansible itself only reads it from
-  the current directory, never a parent. The home directory got no special
-  case: a stray `~/ansible.cfg` is rare, and an exception is harder to reason
-  about.
+- **Only `alai.toml` marks a project** (2026-10-27), as only
+  `pyproject.toml` marks one for uv. Until then `galaxy.yml`, `ansible.cfg`
+  and `collections/ansible_collections/` were markers too, in that order
+  after `alai.toml`, which took a precedence rule (a stronger marker further
+  up beat a nearer weaker one) and a docs tip to give every project an
+  `alai.toml` anyway. Dropped because:
+  - An `alai.toml` can be empty, so `touch alai.toml` is all a project
+    needs. A collection contributor gets an untracked `alai.lock` at the
+    root anyway, so an untracked `alai.toml` beside it costs nothing more.
+  - `ansible.cfg` was a weak signal. Repos often hold several (per
+    environment, per playbook directory, in integration targets), and
+    Ansible itself only reads one from the current directory, never a
+    parent. alai doesn't read its `collections_path` either, so the root it
+    chose could install where that repo's Ansible doesn't look. And adding
+    an `alai.toml` further up moved the root and the collections tree.
+  - `galaxy.yml` alone gave a collection project with no `alai.toml`, but
+    `alai add` can't edit `galaxy.yml` yet, so such a project could do
+    little more than one with an empty `alai.toml`.
+  - `collections/ansible_collections/` guessed an install target rather
+    than a project, for `alai collection install`, which can take
+    `--collections-dir` for that.
+
+  A `galaxy.yml` beside the `alai.toml` still makes it a collection project.
+  `galaxy.yml` could become a marker again later without breaking a layout
+  (see [user-questions.md](user-questions.md#what-marks-a-project)).
+- **No project is an error with a hint**, as uv's ``No `pyproject.toml`
+  found in current directory or any parent directory`` (uv 0.13.5, from
+  `uv add`, `uv sync`, `uv lock`, `uv remove`, also with `--project`). alai
+  names where it started rather than "current directory", as that may be
+  `--project`'s directory. The walk up remembers the nearest `galaxy.yml`,
+  else the nearest `ansible.cfg`, and the hint names its directory as the
+  place for an empty `alai.toml`. It gives no shell command, which would
+  need quoting for paths with spaces and `~` left outside the quotes. `galaxy.yml` comes first because an
+  integration target's `ansible.cfg` is inside the collection.
+- **`--project` only says where discovery starts**, and never creates an
+  `alai.toml`, as uv 0.13.5's `uv add --project DIR` still walks up from
+  `DIR` and fails the same way, and a typo in the path would otherwise start
+  a new project. Creating one is for a future `alai init`, as uv leaves it
+  to `uv init`.
 - **Strict loading.** Unknown keys are errors at every level, so typos fail
   loudly and alai can add keys without colliding with anything a file already
   uses; nothing needs reserving. `[tool]` is the one table left to other

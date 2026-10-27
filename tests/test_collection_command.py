@@ -24,8 +24,8 @@ def uninstall(*args: str) -> int:
 
 @pytest.fixture
 def cdir(project: Path) -> Path:
-    """A project marked by an ansible.cfg, with no alai.toml, so collections go to its collections/."""
-    _ = (project / "ansible.cfg").write_text("[defaults]\n")
+    """A project with an empty alai.toml, so collections go to its collections/."""
+    _ = (project / "alai.toml").write_text("")
     return project / "collections"
 
 
@@ -33,7 +33,7 @@ class TestWhere:
     def test_needs_a_project_or_a_directory(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         assert install("c.c") == EXIT_ERROR
 
-        assert "no project found from" in capsys.readouterr().err
+        assert "no alai.toml found in" in capsys.readouterr().err
         assert not (project / "collections").exists()
 
     def test_error_shortens_home(
@@ -43,7 +43,7 @@ class TestWhere:
 
         assert install("c.c") == EXIT_ERROR
 
-        assert "no project found from ~/project (" in capsys.readouterr().err
+        assert "no alai.toml found in ~/project or any directory above it" in capsys.readouterr().err
 
     def test_explicit_directory(self, project: Path, tmp_path: Path) -> None:
         assert install("--collections-dir", str(tmp_path / "out"), "c.c") == 0
@@ -102,10 +102,16 @@ class TestWhere:
         assert (project / "alai.toml").read_text() == '[project]\ncollections = ["d.d"]\n'
         assert not (project / "alai.lock").exists()
 
-    def test_ansible_cfg_project(self, cdir: Path) -> None:
-        assert install("c.c") == 0
+    def test_ansible_cfg_not_a_project(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        _ = (project / "ansible.cfg").write_text("[defaults]\n")
 
-        assert installed_versions(cdir) == {"c.c": "1.0.0"}
+        assert install("c.c") == EXIT_ERROR
+
+        assert (
+            f"hint: {project} has an ansible.cfg. If it's the project's root, create an empty alai.toml there"
+            in capsys.readouterr().err
+        )
+        assert not (project / "collections").exists()
 
 
 class TestInstall:
@@ -327,7 +333,7 @@ class TestUninstall:
     def test_needs_a_project_or_a_directory(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         assert uninstall("c.c") == EXIT_ERROR
 
-        assert "no project found from" in capsys.readouterr().err
+        assert "no alai.toml found in" in capsys.readouterr().err
 
     def test_install_flags_not_taken(self, cdir: Path) -> None:
         with pytest.raises(SystemExit) as e:

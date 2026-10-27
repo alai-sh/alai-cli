@@ -56,7 +56,7 @@ def test_config_show_defaults(capsys: pytest.CaptureFixture[str]) -> None:
     # The home directory is shown as ~, and isolated is ~/work.
     assert capsys.readouterr().out == (
         "Project\n"
-        "  root  ~/work (no marker found)\n"
+        "  root  ~/work (no alai.toml found)\n"
         "\n"
         "Config files, highest precedence first\n"
         "  project  none\n"
@@ -94,7 +94,7 @@ def test_config_show_project(isolated: Path, capsys: pytest.CaptureFixture[str])
     assert main(["config", "show", "--project", "sub"]) == 0
 
     out = lines(capsys.readouterr().out)
-    assert "root ~/work (found by alai.toml)" in out
+    assert "root ~/work" in out
     assert "project ~/work/alai.toml" in out
     assert "link_mode copy ~/work/alai.toml" in out
     assert out.index("internal https://internal/ ~/work/alai.toml") < out.index(

@@ -14,7 +14,7 @@ or `alai.lock`.
 | Recorded for the next person | Yes, in `alai.toml` and `alai.lock` | No |
 | Removes what wasn't asked for | Yes: `sync` makes the directory match the lock | Never: only what's named is uninstalled |
 | Versions already installed | Replaced if the lock says otherwise | Kept while they fit what's asked for |
-| Needs a project | Yes, with an `alai.toml` | No: any [project marker](projects.md#finding-the-project-root), or `--collections-dir` |
+| Needs a project | Yes, with an `alai.toml` | An [`alai.toml`](projects.md#finding-the-project-root), even an empty one, or `--collections-dir` |
 
 Use the project commands for anything the project needs, so it's recorded
 and the same for everyone. Installing by hand suits trying a collection

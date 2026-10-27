@@ -76,7 +76,7 @@ def list_collections(settings: Settings, *, output_format: str = "text") -> None
     from ._collection import target, using
 
     cdir = target(settings)
-    path = lock_path(settings.project.root) if settings.project.marker is not None else None
+    path = lock_path(settings.project.root) if settings.project.config_file is not None else None
     lock = read_lock(path) if path is not None else None
     if output_format == "text":
         # Always, unlike collection install's: what's listed is only what's in this directory, so a listing of the

@@ -165,7 +165,7 @@ class TestRun:
     def test_needs_a_project(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         assert main(["run", "true"]) == EXIT_ERROR
 
-        assert "there's no alai.toml" in capsys.readouterr().err
+        assert "no alai.toml found in" in capsys.readouterr().err
 
     def test_needs_a_command(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         with pytest.raises(SystemExit):
