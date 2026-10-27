@@ -624,7 +624,6 @@ def _local_version(collection: SourceCollection, *, root: bool = False) -> Colle
         size=0,
         requires_ansible=requires_ansible,
         yanked=False,
-        origin="",
         published="",
     )
 

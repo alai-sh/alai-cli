@@ -40,9 +40,9 @@ def extract_collection(
     checksum reads; 0 is no limit.
     """
 
-_IndexFields = tuple[str, int, bool, str, str, bool | str, bool, list[tuple[str, str]], str | None]
-"""An index line's ``cksum``, ``size``, ``yanked``, ``origin``, ``published``, ``deprecated``, ``upstream_conflict``,
-each of ``deps`` as ``(name, req)``, and ``requires_ansible``, each of its JSON type."""
+_IndexFields = tuple[str, int, bool, str, bool | str, list[tuple[str, str]], str | None]
+"""An index line's ``cksum``, ``size``, ``yanked``, ``published``, ``deprecated``, each of ``deps`` as ``(name, req)``,
+and ``requires_ansible``, each of its JSON type."""
 
 def parse_index_lines(data: bytes, name: str, /) -> tuple[list[tuple[int, str | None, _IndexFields | str]], int]:
     """Read collection ``name``'s index file, ``alai._index.parse_index_file``'s JSON and type checks: each line that

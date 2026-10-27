@@ -46,7 +46,6 @@ def line(**fields: object) -> dict[str, object]:
         "cksum": CKSUM,
         "size": 10,
         "yanked": False,
-        "origin": "galaxy",
         "published": "2026-10-05T17:30:02Z",
     }
     obj.update(fields)
@@ -225,7 +224,6 @@ class TestIndexFile:
         assert [v.version.text for v in parsed.versions] == ["0.1.0", "0.1.1", "0.2.0-rc.1", "0.2.0"]
         assert [v.yanked for v in parsed.versions] == [False, True, False, False]
         newest = parsed.versions[-1]
-        assert newest.origin == "native"
         assert [(name, str(req)) for name, req in newest.deps] == [("community.general", ">=13.0.0,<14.0.0")]
         assert newest.deps[0][1].contains(Version("13.5.0"))
         assert newest.requires_ansible is not None
@@ -243,14 +241,13 @@ class TestIndexFile:
 
     def test_optional_fields(self) -> None:
         parsed = parse_index_file(
-            index_file(line(deprecated="use other.coll", upstream_conflict=True, requires_ansible=None, sig=[])),
+            index_file(line(deprecated="use other.coll", requires_ansible=None, sig=[])),
             "ns.coll",
             "u",
         )
 
         version = parsed.versions[0]
         assert version.deprecated == "use other.coll"
-        assert version.upstream_conflict
         assert version.requires_ansible is None
 
     def test_blank_lines_and_unknown_fields(self) -> None:
@@ -284,7 +281,6 @@ class TestIndexFile:
             (line(deps={}), "'deps' is required and must be an array"),
             (line(deps=[{"name": "a.b"}]), "each of 'deps' must have a 'name' and a 'req' string"),
             (line(deprecated=1), "'deprecated' must be true or a message"),
-            (line(upstream_conflict="yes"), "'upstream_conflict' must be a boolean"),
             (line(requires_ansible=2), "'requires_ansible' must be a string"),
             (line(vers="0.1.0"), None),  # a valid line, to show the others are judged alone
         ],
