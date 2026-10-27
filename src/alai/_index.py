@@ -201,6 +201,15 @@ class IndexClient:
                 self._config = self._load_config()
             return self._config
 
+    def preconnect_downloads(self) -> None:
+        """Start connecting to the host artifacts come from, for a command about to download them."""
+        try:
+            dl = self.config().dl
+        except Error:
+            return  # what resolving reports
+        parts = urllib.parse.urlsplit(dl)
+        self._fetcher.preconnect(f"{parts.scheme}://{parts.netloc}/")
+
     def collections(self) -> dict[str, Listed]:
         """Every collection in the index, from ``collections.json``."""
         config = self.config()

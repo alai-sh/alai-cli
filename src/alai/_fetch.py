@@ -3,9 +3,9 @@
 
 """Fetching files from ``http(s)://`` and ``file://`` URLs, with an on-disk cache revalidated by ETag.
 
-Only commands that use the network import this: urllib3 and its imports cost ~40 ms. Requests run on a pool of threads
-sharing urllib3's connection pool, so callers can start many fetches and wait on them as they need each one. The design
-is in ``design/index-client.md``.
+Requests run on a pool of threads sharing one ``_native.HttpClient``, so callers can start many fetches and wait on them
+as they need each one; over HTTP/2, a host's requests share one connection. The design is in
+``design/index-client.md``.
 """
 
 from __future__ import annotations
@@ -17,35 +17,27 @@ import hashlib
 import json
 import os
 import secrets
-import ssl
 import tempfile
 import threading
-import urllib.parse
-import urllib.request
 
-import urllib3
-
+from . import _native
 from ._common import Error, file_url_to_path
 from ._config import Settings
-from ._output import debug, trace, warn
+from ._output import trace, warn
 
 MAX_CONNECTIONS = 16
-"""Concurrent requests, and connections kept open, per host."""
-_MAX_REDIRECTS = 10
-_REDIRECTS = frozenset((301, 302, 303, 307, 308))
+"""Concurrent downloads, and connections kept open per host over HTTP/1.1."""
+MAX_REQUESTS = int(os.environ.get("_ALAI_FETCH_THREADS", MAX_CONNECTIONS))
+"""Concurrent index requests: the fetcher's threads, each blocked in the client without the GIL."""
 _NOT_FOUND = frozenset((404, 410, 451))
 _CACHE_VERSION = 1
-# Connection errors and these statuses are retried with backoff (0.5 s, 1 s, 2 s), honouring Retry-After.
-_RETRY = urllib3.Retry(
-    total=3,
-    backoff_factor=0.5,
-    status_forcelist=(429, 500, 502, 503, 504),
-    allowed_methods=frozenset(("GET",)),
-    raise_on_status=False,
-)
+# Connection errors and 429, 500, 502, 503 and 504 are retried with backoff (0.5 s, 1 s, 2 s), honouring Retry-After.
+_RETRIES = 3
+_BACKOFF = 0.5
 # read is how long to wait for the server's next bytes, uv's default UV_HTTP_TIMEOUT: with three retries, a host that
 # stalls keeps alai waiting at most about two minutes, not three as at 60 s.
-_TIMEOUT = urllib3.Timeout(connect=15, read=30)
+_CONNECT_TIMEOUT = 15.0
+_READ_TIMEOUT = 30.0
 _CHUNK = 256 * 1024
 
 
@@ -58,7 +50,8 @@ class Fetcher:
 
     ``cache_path`` is where a URL's last response is kept, with its ETag. Each fetch revalidates it with
     ``If-None-Match``, as the index spec asks for every resolve, unless ``offline``, which reads only the cache.
-    ``system_certs`` verifies TLS certificates with the operating system's trust store (see ``tls_context``).
+    TLS certificates are verified by the operating system, or against only those ``SSL_CERT_FILE`` and
+    ``SSL_CERT_DIR`` name if either is set.
     """
 
     def __init__(
@@ -66,21 +59,30 @@ class Fetcher:
         *,
         user_agent: str,
         offline: bool = False,
-        system_certs: bool = True,
-        max_connections: int = MAX_CONNECTIONS,
+        max_requests: int = MAX_REQUESTS,
     ) -> None:
         self.offline = offline
-        self._headers = urllib3.make_headers(user_agent=user_agent, accept_encoding=True)
-        self._max_connections = max_connections
-        self._tls = tls_context(system_certs=system_certs)
-        if keylog := _keylog_file():
-            warn(f"SSLKEYLOGFILE is set: TLS session keys are being written to {keylog}")
-        # block makes a thread wait for a free connection rather than open one it then throws away.
-        self._pool = urllib3.PoolManager(
-            num_pools=4, maxsize=max_connections, block=True, timeout=_TIMEOUT, ssl_context=self._tls
-        )
-        self._proxies: dict[str, urllib3.ProxyManager] = {}
-        self._executor = concurrent.futures.ThreadPoolExecutor(max_connections, thread_name_prefix="alai-fetch")
+        # A client that can't be made, as on a system with no CA certificates, only fails the requests that need it:
+        # offline, and for file URLs, none do.
+        self._client: _native.HttpClient | None = None
+        self._client_error = ""
+        try:
+            self._client = _native.HttpClient(
+                user_agent,
+                connect_timeout=_CONNECT_TIMEOUT,
+                read_timeout=_READ_TIMEOUT,
+                retries=_RETRIES,
+                backoff=_BACKOFF,
+                max_idle=MAX_CONNECTIONS,
+            )
+        except _native.HttpError as e:
+            self._client_error = e.args[1]
+        else:
+            for problem in self._client.cert_warnings:
+                warn(problem)
+        if keylog := os.environ.get("SSLKEYLOGFILE"):
+            warn(_keylog_warning(keylog))
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_requests, thread_name_prefix="alai-fetch")
         self._lock = threading.Lock()
         self._fetches: dict[str, concurrent.futures.Future[bytes | None]] = {}
 
@@ -92,9 +94,6 @@ class Fetcher:
 
     def close(self) -> None:
         self._executor.shutdown(cancel_futures=True)
-        self._pool.clear()
-        for proxy in self._proxies.values():
-            proxy.clear()
 
     def fetch(
         self, url: str, cache_path: str | None, *, what: str | None = None
@@ -141,6 +140,29 @@ class Fetcher:
         so a response that's something else, such as an error page, isn't downloaded whole. Not found and offline are
         FetchErrors, as the caller only asks for what a lock or a source names.
         """
+        if url.startswith("file:") or self.offline:
+            return self._copy(url, path, max_size=max_size, magic=magic, kind=kind)
+        try:
+            status, reason, redirects, sha256, size = self._http(url).download(url, path, max_size, magic)
+        except _native.HttpError as e:
+            error_kind, _ = e.args
+            if error_kind == "too_large":
+                raise FetchError(f"{url}: larger than the {max_size} bytes expected") from None
+            if error_kind == "not_magic":
+                raise FetchError(f"{url}: not a {kind}") from None
+            raise _transport_error(url, e, self._http(url).proxy(url)) from None
+        except OSError as e:
+            raise FetchError(f"can't write {path}: {e.strerror or e}") from None
+        _trace_redirects(url, redirects)
+        if status in _NOT_FOUND:
+            raise FetchError(f"{url}: not found (HTTP {status})")
+        if status != 200:
+            raise _status_error(url, status, reason)
+        trace(f"GET {url}: {size} bytes")
+        return sha256, size
+
+    def _copy(self, url: str, path: str, *, max_size: int, magic: bytes, kind: str) -> tuple[str, int]:
+        """``download`` for a file URL, or offline."""
         digest = hashlib.sha256()
         size = 0
         start = b""
@@ -160,7 +182,7 @@ class Fetcher:
             raise FetchError(f"can't write {path}: {e.strerror or e}") from None
         if len(start) < len(magic):
             raise FetchError(f"{url}: not a {kind}")
-        trace(f"GET {url}: {size} bytes")
+        trace(f"read {url}: {size} bytes")
         return digest.hexdigest(), size
 
     def _chunks(self, url: str) -> _c.Iterator[bytes]:
@@ -175,20 +197,21 @@ class Fetcher:
             except OSError as e:
                 raise FetchError(f"{path}: {e.strerror or e}") from None
             return
-        if self.offline:
-            raise FetchError(f"{url} isn't in the cache, and alai is offline")
-        _, response = self._request(url, dict(self._headers), preload_content=False)
-        try:
-            if response.status in _NOT_FOUND:
-                raise FetchError(f"{url}: not found (HTTP {response.status})")
-            if response.status != 200:
-                raise _status_error(url, response)
-            try:
-                yield from response.stream(_CHUNK)
-            except urllib3.exceptions.HTTPError as e:
-                raise FetchError(f"{url}: {_describe(e)}") from None
-        finally:
-            response.release_conn()
+        raise FetchError(f"{url} isn't in the cache, and alai is offline")
+
+    def preconnect(self, url: str) -> None:
+        """Start connecting to ``url``'s host, for requests soon to follow; nothing if offline or not HTTPS."""
+        if self._client is not None and not self.offline and url.startswith("https://"):
+            self._client.preconnect(url)
+
+    def _http(self, url: str) -> _native.HttpClient:
+        if self._client is None:
+            raise FetchError(
+                f"{url}: TLS error: {self._client_error}\n\n"
+                + "hint: install the system's CA certificates (the ca-certificates package), or name a bundle to "
+                + "trust with SSL_CERT_FILE"
+            )
+        return self._client
 
     def _get(
         self, url: str, cache_path: str | None, request_url: str | None = None, *, what: str | None = None
@@ -205,140 +228,53 @@ class Fetcher:
             trace(f"GET {url}{label}: from the cache, offline")
             return cached[1]
 
-        headers = dict(self._headers)
+        headers: list[tuple[str, str]] = []
         if cached and cached[0]:
-            headers["If-None-Match"] = cached[0]
+            headers.append(("If-None-Match", cached[0]))
         requested = request_url or url
-        final_url, response = self._request(requested, headers)
+        try:
+            status, reason, redirects, etag, body = self._http(requested).get(requested, headers)
+        except _native.HttpError as e:
+            raise _transport_error(requested, e, self._http(requested).proxy(requested)) from None
+        _trace_redirects(requested, redirects, label)
 
-        if response.status == 304 and cached:
+        if status == 304 and cached:
             trace(f"GET {requested}{label}: 304, the cached copy is current")
             return cached[1]
-        if response.status == 200:
+        if status == 200:
             trace(
-                f"GET {requested}{label}: 200, {len(response.data)} bytes"
-                + (f" from {final_url}" if final_url != requested else "")
+                f"GET {requested}{label}: 200, {len(body)} bytes" + (f" from {redirects[-1][1]}" if redirects else "")
             )
             if cache_path:
-                _write_cache(cache_path, url, response.headers.get("ETag"), response.data)
-            return response.data
-        if response.status in _NOT_FOUND:
-            trace(f"GET {requested}{label}: {response.status}, not found")
+                _write_cache(cache_path, url, etag, body)
+            return body
+        if status in _NOT_FOUND:
+            trace(f"GET {requested}{label}: {status}, not found")
             if cached and cache_path:
                 _remove(cache_path)
             return None
-        raise _status_error(url, response)
-
-    def _request(
-        self, url: str, headers: dict[str, str], *, preload_content: bool = True
-    ) -> tuple[str, urllib3.BaseHTTPResponse]:
-        """GET ``url``, following redirects but never from ``https`` to anything else. Without ``preload_content``, the
-        body is left to stream and the caller releases the connection."""
-        for _ in range(_MAX_REDIRECTS + 1):
-            try:
-                response = self._manager(url).request(
-                    "GET", url, headers=headers, redirect=False, retries=_RETRY, preload_content=preload_content
-                )
-            except urllib3.exceptions.HTTPError as e:
-                proxy = proxy_for(url)
-                raise FetchError(
-                    f"{url}: {_describe(e)}" + (f" (through the proxy {proxy})" if proxy else "")
-                ) from None
-            location = response.headers.get("Location")
-            if response.status not in _REDIRECTS or not location:
-                return url, response
-            if not preload_content:
-                response.drain_conn()
-                response.release_conn()
-            target = urllib.parse.urljoin(url, location)
-            if url.startswith("https://") and not target.startswith("https://"):
-                raise FetchError(f"{url}: refusing to follow a redirect from https to {target}")
-            trace(f"GET {url}: {response.status}, redirected to {target}")
-            url = target
-        raise FetchError(f"{url}: more than {_MAX_REDIRECTS} redirects")
-
-    def _manager(self, url: str) -> urllib3.PoolManager:
-        """The connection pool for ``url``: direct, or through the proxy the environment names for it."""
-        proxy = proxy_for(url)
-        if proxy is None:
-            return self._pool
-        with self._lock:
-            manager = self._proxies.get(proxy)
-            if manager is None:
-                manager = self._proxies[proxy] = urllib3.ProxyManager(
-                    proxy,
-                    num_pools=4,
-                    maxsize=self._max_connections,
-                    block=True,
-                    timeout=_TIMEOUT,
-                    ssl_context=self._tls,
-                    proxy_ssl_context=self._tls,
-                )
-            return manager
+        raise _status_error(url, status, reason)
 
 
 def open_fetcher(settings: Settings) -> Fetcher:
     """A ``Fetcher`` as alai's commands make one: identified as alai, offline and verifying as ``settings`` say."""
     from . import __version__
 
-    return Fetcher(user_agent=f"alai/{__version__}", offline=settings.offline, system_certs=settings.system_certs)
+    return Fetcher(user_agent=f"alai/{__version__}", offline=settings.offline)
 
 
-def tls_context(*, system_certs: bool) -> ssl.SSLContext | None:
-    """The TLS context for connections, or None for urllib3's own, which verifies with OpenSSL's default paths.
-
-    With ``system_certs``, a truststore context, which verifies with the operating system: the Security framework
-    on macOS, CryptoAPI on Windows, and OpenSSL's system paths elsewhere. That's what sees roots a company installs
-    in the OS, such as for TLS interception. An explicit ``SSL_CERT_FILE`` or ``SSL_CERT_DIR`` wins, since on macOS
-    and Windows truststore doesn't use OpenSSL's verification and would ignore them.
-    """
-    if not system_certs or os.environ.get("SSL_CERT_FILE") or os.environ.get("SSL_CERT_DIR"):
-        return None
-    try:
-        # Imported here, not at the top, because truststore itself raises ImportError on a Python without ssl or with
-        # too old an OpenSSL: that falls back to OpenSSL's verification below, rather than breaking every import of
-        # this module, and --no-system-certs never touches it.
-        import truststore
-
-        context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    except (ImportError, OSError) as e:
-        debug(f"can't use the system trust store ({e}); verifying with OpenSSL's instead")
-        return None
-    # urllib3 applies SSLKEYLOGFILE only to a context it builds itself, so a context passed in has to have it here.
-    if keylog := _keylog_file():
-        context.keylog_filename = keylog
-    return context
+def _trace_redirects(url: str, redirects: list[tuple[int, str]], label: str = "") -> None:
+    """A trace line for each redirect the client followed from ``url``, as it reports them."""
+    for status, target in redirects:
+        trace(f"GET {url}{label}: {status}, redirected to {target}")
+        url = target
 
 
-def _keylog_file() -> str | None:
-    """Where ``SSLKEYLOGFILE`` asks for TLS session keys to be written, expanded as urllib3 expands it."""
-    value = os.environ.get("SSLKEYLOGFILE")
-    return os.path.expandvars(value) if value else None
-
-
-def proxy_for(url: str) -> str | None:
-    """The proxy URL the environment gives for ``url``, or None to connect directly.
-
-    The usual variables, as curl and requests read them: ``HTTPS_PROXY`` and ``HTTP_PROXY`` by the URL's scheme,
-    else ``ALL_PROXY``, in either case, with hosts in ``NO_PROXY`` connected to directly.
-    """
-    parts = urllib.parse.urlsplit(url)
-    proxies = urllib.request.getproxies_environment()
-    proxy = proxies.get(parts.scheme) or proxies.get("all")
-    # The environment-only forms: proxy_bypass and getproxies also read macOS and Windows system settings.
-    # proxy_bypass_environment is in every supported Python but not in typeshed.
-    bypass: bool = urllib.request.proxy_bypass_environment(parts.netloc, proxies)  # pyright: ignore[reportAttributeAccessIssue, reportUnknownVariableType]
-    if not proxy or bypass:
-        return None
-    # A bare host:port, as some set HTTPS_PROXY, is an HTTP proxy.
-    return proxy if "://" in proxy else f"http://{proxy}"
-
-
-def _status_error(url: str, response: urllib3.BaseHTTPResponse) -> FetchError:
+def _status_error(url: str, status: int, reason: str) -> FetchError:
     """A response that's neither what was asked for nor not found."""
-    if response.status == 401:
+    if status == 401:
         return FetchError(f"{url}: credentials required (HTTP 401)")
-    return FetchError(f"{url}: HTTP {response.status}{f' {response.reason}' if response.reason else ''}")
+    return FetchError(f"{url}: HTTP {status}{f' {reason}' if reason else ''}")
 
 
 def _file_path(url: str) -> str:
@@ -409,22 +345,27 @@ def _remove(path: str) -> None:
         os.remove(path)
 
 
-def _describe(error: BaseException) -> str:
-    """The underlying reason for a urllib3 error, without its repr of the connection object."""
-    reason: BaseException = error
-    while isinstance(reason, urllib3.exceptions.MaxRetryError) and reason.reason is not None:
-        reason = reason.reason
-    cause = reason.__cause__ or reason.__context__
-    # NameResolutionError is a NewConnectionError, so it's checked first.
-    if isinstance(reason, urllib3.exceptions.NameResolutionError) and isinstance(cause, OSError):
-        return f"can't resolve the host name: {cause.strerror or cause}"
-    if isinstance(reason, urllib3.exceptions.NewConnectionError) and isinstance(cause, OSError):
-        return f"can't connect: {cause.strerror or cause}"
-    if isinstance(reason, urllib3.exceptions.SSLError):
-        return f"TLS error: {cause or reason}"
-    if isinstance(reason, urllib3.exceptions.TimeoutError):
-        return "timed out"
-    if isinstance(reason, urllib3.exceptions.ProxyError):
-        original = getattr(reason, "original_error", None)
-        return f"proxy error: {_describe(original) if isinstance(original, BaseException) else reason}"
-    return str(reason)
+def _keylog_warning(path: str) -> str:
+    """The warning while ``SSLKEYLOGFILE`` is set: where TLS session keys go, or that they can't, which rustls only
+    reports to a log alai doesn't show. Opened as rustls opens it, appending, and created owner-only."""
+    try:
+        os.close(os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600))
+    except OSError as e:
+        return (
+            f"SSLKEYLOGFILE is set, but {path} can't be opened, so no TLS session keys are written: {e.strerror or e}"
+        )
+    return f"SSLKEYLOGFILE is set: TLS session keys are being written to {path}"
+
+
+def _transport_error(url: str, error: _native.HttpError, proxy: str | None) -> FetchError:
+    """A request that got no response, by its underlying reason, naming the ``proxy`` it went through."""
+    kind, detail = error.args
+    if kind == "redirect":
+        return FetchError(f"{url}: {detail}")
+    reason = {
+        "dns": f"can't resolve the host name: {detail}",
+        "connect": f"can't connect: {detail}",
+        "tls": f"TLS error: {detail}",
+        "timeout": "timed out",
+    }.get(kind, detail)
+    return FetchError(f"{url}: {reason}" + (f" (through the proxy {proxy})" if proxy else ""))

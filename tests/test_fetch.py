@@ -9,22 +9,26 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import socket
-import sys
+import ssl
+import time
+import typing as _t
 from pathlib import Path
 
 import pytest
-import truststore
-import urllib3
 from index_server import IndexServer, serve
 
-from alai import _fetch, _output
-from alai._fetch import Fetcher, FetchError, proxy_for, tls_context
+from alai import _fetch, _native, _output
+from alai._fetch import Fetcher, FetchError
+
+if _t.TYPE_CHECKING:
+    import trustme
 
 
 @pytest.fixture(autouse=True)
 def no_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(_fetch, "_RETRY", _fetch._RETRY.new(backoff_factor=0))
+    monkeypatch.setattr(_fetch, "_BACKOFF", 0.0)
 
 
 @pytest.fixture
@@ -38,6 +42,29 @@ def site(tmp_path: Path) -> Path:
 @pytest.fixture
 def server(site: Path) -> _c.Iterator[IndexServer]:
     yield from serve(site)
+
+
+@pytest.fixture(scope="session")
+def ca() -> trustme.CA:
+    # Skipped where it can't be imported: on uv's musl Python 3.10, cffi's musllinux wheel names its extension
+    # linux-gnu, which that Python doesn't load, so cryptography, which trustme needs, can't be imported.
+    return pytest.importorskip("trustme").CA()
+
+
+@pytest.fixture(scope="session")
+def ca_file(ca: trustme.CA, tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The CA's certificate, for ``SSL_CERT_FILE``."""
+    path = tmp_path_factory.mktemp("ca") / "ca.pem"
+    ca.cert_pem.write_to_path(str(path))
+    return path
+
+
+@pytest.fixture
+def tls_server(site: Path, ca: trustme.CA) -> _c.Iterator[IndexServer]:
+    """``server`` over HTTPS, with a certificate for 127.0.0.1 from ``ca``, which nothing trusts unless told to."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ca.issue_cert("127.0.0.1").configure_cert(context)
+    yield from serve(site, context)
 
 
 @pytest.fixture
@@ -139,6 +166,14 @@ class TestHttp:
         assert fetcher.get(f"{server.url}a.json", None) == b'{"a": 1}'
         assert server.paths() == ["/a.json"] * 3
 
+    def test_honours_retry_after(self, server: IndexServer, fetcher: Fetcher) -> None:
+        # Backoff is 0 in these tests, so the wait is the header's.
+        server.responses["/a.json"] = [(503, {"Retry-After": "1"}, b"")]
+
+        assert fetcher.get(f"{server.url}a.json", None) == b'{"a": 1}'
+        first, second = (r.arrived for r in server.requests)
+        assert second - first >= 0.9
+
     def test_gives_up_after_retries(self, server: IndexServer, fetcher: Fetcher) -> None:
         server.responses["/a.json"] = [(502, {}, b"")] * 4
 
@@ -146,12 +181,40 @@ class TestHttp:
             _ = fetcher.get(f"{server.url}a.json", None)
         assert len(server.requests) == 4
 
-    def test_follows_redirects(self, server: IndexServer, fetcher: Fetcher) -> None:
+    def test_follows_redirects(
+        self,
+        server: IndexServer,
+        fetcher: Fetcher,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        monkeypatch.setattr(_output, "verbosity", 2)
         server.responses["/old.json"] = [(301, {"Location": "/moved/a.json"}, b"")]
         server.responses["/moved/a.json"] = [(307, {"Location": f"{server.url}a.json"}, b"")]
 
         assert fetcher.get(f"{server.url}old.json", None) == b'{"a": 1}'
+
         assert server.paths() == ["/old.json", "/moved/a.json", "/a.json"]
+        # Each hop is traced, with a relative Location resolved against the URL that sent it.
+        assert capsys.readouterr().err == (
+            f"trace: GET {server.url}old.json: 301, redirected to {server.url}moved/a.json\n"
+            f"trace: GET {server.url}moved/a.json: 307, redirected to {server.url}a.json\n"
+            f"trace: GET {server.url}old.json: 200, 8 bytes from {server.url}a.json\n"
+        )
+
+    def test_redirect_keeps_its_connection(self, server: IndexServer, fetcher: Fetcher) -> None:
+        # A redirect's body is read before following it, so its HTTP/1.1 connection goes back to the pool rather than
+        # being closed. Whether the next hop uses it, or a new one hyper opened meanwhile, is a race, so what's checked
+        # is that nothing is closed. The body is bigger than arrives with the headers, as hyper keeps a connection
+        # whose body it already has either way.
+        server.responses["/old.json"] = [(301, {"Location": "/a.json"}, b"m" * (48 << 10))]
+
+        assert fetcher.get(f"{server.url}old.json", None) == b'{"a": 1}'
+        # Without the reading, hyper closes it as soon as the redirect is dropped.
+        deadline = time.monotonic() + 0.5
+        while time.monotonic() < deadline:
+            assert server.closed == 0
+            time.sleep(0.01)
 
     def test_redirect_loop(self, server: IndexServer, fetcher: Fetcher) -> None:
         server.responses["/a.json"] = [(302, {"Location": "/a.json"}, b"")] * 20
@@ -159,15 +222,18 @@ class TestHttp:
         with pytest.raises(FetchError, match="more than 10 redirects"):
             _ = fetcher.get(f"{server.url}a.json", None)
 
-    def test_refuses_https_downgrade(self, fetcher: Fetcher, monkeypatch: pytest.MonkeyPatch) -> None:
-        class Manager:
-            def request(self, *_: object, **__: object) -> urllib3.HTTPResponse:
-                return urllib3.HTTPResponse(b"", status=302, headers={"Location": "http://index.example/config.json"})
+    def test_refuses_https_downgrade(
+        self, tls_server: IndexServer, ca_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SSL_CERT_FILE", str(ca_file))
+        plain = tls_server.url.replace("https://", "http://")
+        tls_server.responses["/a.json"] = [(302, {"Location": f"{plain}a.json"}, b"")]
 
-        monkeypatch.setattr(fetcher, "_manager", lambda _url: Manager())
-
-        with pytest.raises(FetchError, match=r"refusing to follow a redirect from https to http://index\.example/"):
-            _ = fetcher.get("https://index.example/config.json", None)
+        with (
+            Fetcher(user_agent="t") as f,
+            pytest.raises(FetchError, match=r"refusing to follow a redirect from https to http://127"),
+        ):
+            _ = f.get(f"{tls_server.url}a.json", None)
 
     def test_connection_refused(self, fetcher: Fetcher) -> None:
         with socket.socket() as s:
@@ -246,7 +312,7 @@ class TestDownload:
 
     def test_connection_reused(self, server: IndexServer, fetcher: Fetcher, tmp_path: Path, artifact: str) -> None:
         # Each download releases its connection, so a pool of one isn't exhausted.
-        with Fetcher(user_agent="t", max_connections=1) as one:
+        with Fetcher(user_agent="t", max_requests=1) as one:
             for i in range(3):
                 _ = one.download(f"{server.url}a.tar.gz", str(tmp_path / f"out{i}"), max_size=len(self.BODY))
 
@@ -270,14 +336,9 @@ class TestDownload:
 class TestErrors:
     """Network failures, each reported as its cause rather than urllib3's wrapping."""
 
-    def test_unknown_host(self, fetcher: Fetcher, monkeypatch: pytest.MonkeyPatch) -> None:
-        def fail(*_: object, **__: object) -> list[object]:
-            raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
-
-        monkeypatch.setattr(socket, "getaddrinfo", fail)
-
-        with pytest.raises(FetchError, match=r"index\.example/a\.json: can't resolve the host name: Name or service"):
-            _ = fetcher.get("https://index.example/a.json", None)
+    def test_unknown_host(self, fetcher: Fetcher) -> None:
+        with pytest.raises(FetchError, match=r"index\.invalid/a\.json: can't resolve the host name: "):
+            _ = fetcher.get("https://index.invalid/a.json", None)
 
     def test_tls_error(self, server: IndexServer, fetcher: Fetcher) -> None:
         url = server.url.replace("http://", "https://")
@@ -286,24 +347,24 @@ class TestErrors:
             _ = fetcher.get(f"{url}a.json", None)
 
     def test_timeout(self, server: IndexServer, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(_fetch, "_TIMEOUT", urllib3.Timeout(connect=5, read=0.05))
-        monkeypatch.setattr(_fetch, "_RETRY", _fetch._RETRY.new(total=0))
+        monkeypatch.setattr(_fetch, "_READ_TIMEOUT", 0.05)
+        monkeypatch.setattr(_fetch, "_RETRIES", 0)
         server.delay = 0.5
 
         with Fetcher(user_agent="t") as f, pytest.raises(FetchError, match=r"a\.json: timed out$"):
             _ = f.get(f"{server.url}a.json", None)
 
-    def test_dead_proxy(self, fetcher: Fetcher, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_dead_proxy(self, monkeypatch: pytest.MonkeyPatch) -> None:
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
             port = s.getsockname()[1]
         monkeypatch.setenv("HTTPS_PROXY", f"http://127.0.0.1:{port}")
 
-        with pytest.raises(
-            FetchError,
-            match=rf"proxy error: can't connect: Connection refused \(through the proxy http://127\.0\.0\.1:{port}\)$",
+        with (
+            Fetcher(user_agent="t") as f,
+            pytest.raises(FetchError, match=rf"can't connect: .* \(through the proxy http://127\.0\.0\.1:{port}\)$"),
         ):
-            _ = fetcher.get("https://index.example/a.json", None)
+            _ = f.get("https://index.example/a.json", None)
 
 
 class TestCache:
@@ -415,74 +476,145 @@ class TestProxy:
             ({"HTTPS_PROXY": "http://p:1", "NO_PROXY": "example"}, "https://index.example/", None),
             ({"HTTPS_PROXY": "http://p:1", "NO_PROXY": "other.example"}, "https://index.example/", "http://p:1"),
             ({"HTTPS_PROXY": "http://p:1", "NO_PROXY": "*"}, "https://index.example/", None),
+            # An IP range, which only reqwest's matching understood, so an error once named a proxy it never used.
+            ({"HTTPS_PROXY": "http://p:1", "NO_PROXY": "10.0.0.0/8"}, "https://10.1.2.3/", None),
+            ({"HTTPS_PROXY": "http://p:1", "NO_PROXY": "10.0.0.0/8"}, "https://11.1.2.3/", "http://p:1"),
+            # Never the credentials, which an error would otherwise show.
+            ({"HTTPS_PROXY": "http://user:secret@proxy:3128"}, "https://index.example/", "http://proxy:3128"),
+            ({"ALL_PROXY": "socks5h://proxy:1080"}, "https://index.example/", "socks5h://proxy:1080"),
         ],
     )
-    def test_proxy_for(
-        self, monkeypatch: pytest.MonkeyPatch, env: dict[str, str], url: str, expected: str | None
-    ) -> None:
+    def test_proxy(self, monkeypatch: pytest.MonkeyPatch, env: dict[str, str], url: str, expected: str | None) -> None:
+        # The proxy reqwest uses, by the matcher it uses, read when the client is made.
         for name, value in env.items():
             monkeypatch.setenv(name, value)
+        client = _native.HttpClient("t", connect_timeout=1, read_timeout=1, retries=0, backoff=0, max_idle=1)
 
-        assert proxy_for(url) == expected
+        assert client.proxy(url) == expected
 
-    def test_through_proxy(self, server: IndexServer, fetcher: Fetcher, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_bypassed_proxy_not_named(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        monkeypatch.setenv("HTTP_PROXY", "http://proxy.invalid:3128")
+        monkeypatch.setenv("NO_PROXY", "127.0.0.0/8")
+
+        with Fetcher(user_agent="t") as f, pytest.raises(FetchError) as raised:
+            _ = f.get(f"http://127.0.0.1:{port}/a.json", None)
+
+        assert str(raised.value) == f"http://127.0.0.1:{port}/a.json: can't connect: Connection refused"
+
+    def test_through_proxy(self, server: IndexServer, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The client reads the proxy variables when it's made, not for each request.
         monkeypatch.setenv("HTTP_PROXY", server.url)
 
-        assert fetcher.get("http://index.invalid/a.json", None) == b'{"a": 1}'
+        with Fetcher(user_agent="t") as fetcher:
+            assert fetcher.get("http://index.invalid/a.json", None) == b'{"a": 1}'
         assert server.requests[0].target == "http://index.invalid/a.json"
 
 
 class TestTls:
-    def test_system_trust_store_by_default(self) -> None:
-        assert isinstance(tls_context(system_certs=True), truststore.SSLContext)
+    def test_unknown_ca(self, tls_server: IndexServer, fetcher: Fetcher) -> None:
+        with pytest.raises(FetchError, match=r"a\.json: TLS error: invalid peer certificate: UnknownIssuer"):
+            _ = fetcher.get(f"{tls_server.url}a.json", None)
 
-    def test_off(self) -> None:
-        assert tls_context(system_certs=False) is None
+    def test_cert_file(self, tls_server: IndexServer, ca_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SSL_CERT_FILE", str(ca_file))
 
-    @pytest.mark.parametrize("name", ["SSL_CERT_FILE", "SSL_CERT_DIR"])
-    def test_explicit_bundle_wins(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, name: str) -> None:
-        monkeypatch.setenv(name, str(tmp_path / "bundle.pem"))
-
-        assert tls_context(system_certs=True) is None
-
-    def test_fallback_without_truststore(
-        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        monkeypatch.setitem(sys.modules, "truststore", None)  # importing it raises ImportError
-        monkeypatch.setattr(_output, "verbosity", 1)
-
-        assert tls_context(system_certs=True) is None
-        assert "can't use the system trust store" in capsys.readouterr().err
-
-    def test_keylog_applied(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        # urllib3 only applies it to contexts it builds, so ours has to carry it, expanded the same way.
-        monkeypatch.setenv("KEYS_DIR", str(tmp_path))
-        monkeypatch.setenv("SSLKEYLOGFILE", "$KEYS_DIR/keys.log")
-
-        context = tls_context(system_certs=True)
-
-        assert context is not None
-        assert context.keylog_filename == str(tmp_path / "keys.log")
-
-    def test_pools_use_the_context(self, server: IndexServer, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("HTTPS_PROXY", server.url)
         with Fetcher(user_agent="t") as f:
-            proxy = f._manager("https://index.example/")
+            assert f.get(f"{tls_server.url}a.json", None) == b'{"a": 1}'
 
-            assert isinstance(f._tls, truststore.SSLContext)
-            assert f._pool.connection_pool_kw["ssl_context"] is f._tls
-            assert proxy.connection_pool_kw["ssl_context"] is f._tls
+    def test_cert_dir(
+        self, tls_server: IndexServer, ca_file: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        certs = tmp_path / "certs"
+        certs.mkdir()
+        _ = shutil.copy(ca_file, certs / "ca.pem")
+        monkeypatch.setenv("SSL_CERT_DIR", str(certs))
 
-    def test_keylog_warning(self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+        with Fetcher(user_agent="t") as f:
+            assert f.get(f"{tls_server.url}a.json", None) == b'{"a": 1}'
+
+    def test_bad_cert_file_trusts_nothing(
+        self,
+        tls_server: IndexServer,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        monkeypatch.setattr(_output, "verbosity", 0)
+        monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "missing.pem"))
+
+        with Fetcher(user_agent="t") as f, pytest.raises(FetchError, match="TLS error"):
+            _ = f.get(f"{tls_server.url}a.json", None)
+        assert "no certificates found in SSL_CERT_FILE or SSL_CERT_DIR" in capsys.readouterr().err
+
+    def test_keylog_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+    ) -> None:
         monkeypatch.setattr(_output, "verbosity", 0)
         with Fetcher(user_agent="t"):
             pass
         assert capsys.readouterr().err == ""
-        monkeypatch.setenv("SSLKEYLOGFILE", "/tmp/keys.log")  # noqa: S108  # never written: no connection is made
+        keys = tmp_path / "keys.log"
+        monkeypatch.setenv("SSLKEYLOGFILE", str(keys))
 
-        with Fetcher(user_agent="t", system_certs=False):
+        with Fetcher(user_agent="t"):
             pass
 
         assert capsys.readouterr().err == (
-            "warning: SSLKEYLOGFILE is set: TLS session keys are being written to /tmp/keys.log\n"
+            f"warning: SSLKEYLOGFILE is set: TLS session keys are being written to {keys}\n"
         )
+        # Created as rustls creates it: only its owner can read the keys.
+        assert keys.stat().st_mode & 0o777 == 0o600
+
+    def test_keylog_unopenable(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(_output, "verbosity", 0)
+        keys = tmp_path / "missing" / "keys.log"
+        monkeypatch.setenv("SSLKEYLOGFILE", str(keys))
+
+        with Fetcher(user_agent="t"):
+            pass
+
+        assert capsys.readouterr().err == (
+            f"warning: SSLKEYLOGFILE is set, but {keys} can't be opened, so no TLS session keys are written: "
+            + "No such file or directory\n"
+        )
+
+
+class TestConnections:
+    """How requests to a host share its connections: the first HTTPS request alone, and connecting early."""
+
+    def test_preconnect(self, tls_server: IndexServer, ca_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SSL_CERT_FILE", str(ca_file))
+
+        with Fetcher(user_agent="t") as f:
+            f.preconnect(tls_server.url)
+
+            assert tls_server.wait_for("/")
+        assert [r.method for r in tls_server.requests] == ["HEAD"]
+
+    def test_preconnect_only_https(self, server: IndexServer, fetcher: Fetcher) -> None:
+        fetcher.preconnect(server.url)
+
+        assert not server.wait_for("/", timeout=0.3)
+
+    def test_first_request_waits_at_most_a_second(
+        self, tls_server: IndexServer, ca_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The second request waits for the first's response to share its connection, but not past 1 s, so a host
+        # slow to answer doesn't hold everything else up.
+        monkeypatch.setenv("SSL_CERT_FILE", str(ca_file))
+        tls_server.delays["/slow"] = 3.0
+
+        with Fetcher(user_agent="t") as f:
+            slow = f.fetch(f"{tls_server.url}slow", None)
+            assert tls_server.wait_for("/slow")
+            started = time.monotonic()
+            assert f.get(f"{tls_server.url}a.json", None) == b'{"a": 1}'
+            waited = time.monotonic() - started
+            assert slow.result() is None
+
+        assert 0.8 <= waited < 2.5

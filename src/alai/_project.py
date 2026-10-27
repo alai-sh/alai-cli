@@ -458,11 +458,13 @@ def resolve_project(
     existing: Lock | None,
     *,
     upgrade: Upgrade | None = None,
+    download: bool = False,
 ) -> tuple[Lock, Resolution]:
     """Resolve the project against its indexes, keeping ``existing``'s versions while they fit, except those
-    ``upgrade`` names, and warn of anything the resolution reported. The lock isn't written."""
+    ``upgrade`` names, and warn of anything the resolution reported. The lock isn't written. ``download`` is for a
+    caller that installs next, as for ``resolve_manifest``."""
     names = upgrade.names(manifest) if upgrade is not None else False
-    resolution = resolve_manifest(settings, manifest, locked=existing, upgrade=names)
+    resolution = resolve_manifest(settings, manifest, locked=existing, upgrade=names, download=download)
     root = None
     if manifest.root is not None:
         root = LockedRoot(
@@ -482,9 +484,11 @@ def resolve_manifest(
     installed: _c.Mapping[str, Version] | None = None,
     upgrade: bool | _c.Collection[str] = False,
     origin: str = "the project",
+    download: bool = False,
 ) -> Resolution:
     """Resolve ``manifest`` against the configured indexes, with progress, and warn of anything the resolution
-    reported. ``origin`` names where its requirements came from, in errors."""
+    reported. ``origin`` names where its requirements came from, in errors. With ``download``, for a caller that
+    installs next, each index's download host is connected to while resolving."""
     from ._fetch import open_fetcher
     from ._index import IndexClient
     from ._resolve import resolve
@@ -493,6 +497,9 @@ def resolve_manifest(
         read_archives(settings, manifest, fetcher, locked, upgrade)
         read_git_sources(settings, manifest, locked, upgrade)
         clients = [IndexClient(index, fetcher, settings.cache_dir) for index in settings.indexes]
+        if download:
+            for client in clients:
+                client.preconnect_downloads()
         resolution = resolve(
             manifest,
             clients,

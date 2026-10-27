@@ -82,7 +82,7 @@ It is possible to install alai using any other Python package installer, but
 the `PATH` automatically.
 
 Part of alai is written in Rust, so installing from source requires the Rust
-toolchain. Rust 1.88 or later is required, with `cargo` on your `PATH`
+toolchain. Rust 1.92 or later is required, with `cargo` on your `PATH`
 ([rustup](https://rustup.rs/) installs it), and the build takes a minute or
 so.
 

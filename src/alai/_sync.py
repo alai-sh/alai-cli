@@ -88,7 +88,7 @@ def sync_project(
     if frozen and existing is not None:
         lock = existing
     elif upgrade or locked or existing is None or stale(existing, manifest, {i.url for i in settings.indexes}):
-        lock, resolution = resolve_project(settings, manifest, raw, existing, upgrade=upgrade)
+        lock, resolution = resolve_project(settings, manifest, raw, existing, upgrade=upgrade, download=True)
         if not brief:
             summary("Resolved", len(lock.collections), time.monotonic() - started, dim=True)
         if locked:

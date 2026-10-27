@@ -29,7 +29,6 @@ in snake_case, matching their kebab-case CLI options
 # Settings: Top-level keys come before any [table] in TOML
 cache_dir = "~/.cache/alai"
 link_mode = "auto"
-system_certs = true
 
 # Index: Declares custom indexes in priority order
 [[index]]
@@ -74,7 +73,6 @@ deploy_target = "prod"
 |---|---|---|
 | [`cache_dir`](#cache_dir) | string | Where downloads, extracted collections and index data are kept, as a [path](configuration.md#paths) |
 | [`link_mode`](#link_mode) | string | How files get from the cache into the collections directory |
-| [`system_certs`](#system_certs) | boolean | Verify TLS certificates as the operating system does |
 | [`offline`](#offline) | boolean | Use only what's cached, without connecting to any index |
 | [`[[index]]`](#index) | array of tables | The indexes collections are resolved from, before the default one |
 | [`[tool]`](#tool) | table | Ignored by alai, for other tools to add future configuration values |
@@ -139,55 +137,6 @@ How files get from the cache into the
     only stays valid while the cache contains the collection. Clearing the
     cache breaks every collection installed with `symlink`. It is recommended
     to use another mode unless you have a reason not to.
-
-### `system_certs`
-
-- **Type:** boolean (TOML's `true` or `false`, not a string)
-- **Default:** `true`
-- **Flags:** `--system-certs`, `--no-system-certs`
-- **Environment variable:** `ALAI_SYSTEM_CERTS`, a
-  [boolean](configuration.md#environment-variables)
-
-Whether alai has TLS certificates verified as the operating system verifies
-them, or verifies them itself using the built-in OpenSSL CA bundle that
-alai's Python provides.
-
-With `true`, the default:
-
-- **macOS:** the operating system verifies the certificate, through the
-  Security framework, as it does for Safari and other apps. This includes
-  support for roots in the Keychain as well as trust settings made in Keychain
-  Access.
-- **Linux and other systems:** OpenSSL verifies the certificate against
-  Python's configured CA bundle, falling back to the locations distributions
-  usually keep theirs in, such as `/etc/ssl/certs/ca-certificates.crt`, if
-  Python's is missing or empty.
-
-With `false`, alai uses only OpenSSL's defaults, through Python's `ssl`
-module:
-
-- **macOS:** the bundle that Python's OpenSSL was built to read, never the
-  Keychain. For a Python from python.org, that's empty until you run its
-  *Install Certificates.command*. For Homebrew's Python, it's Homebrew's
-  CA bundle.
-- **Linux and other systems:** the CA bundle and directory compiled into the
-  OpenSSL that alai's Python uses, and nowhere else. The actual bundle is
-  controlled by many factors, such as what built Python in the first place,
-  and Linux distribution configurations.
-
-To see what bundles `false` will use, run
-`python -c "import ssl; print(ssl.get_default_verify_paths())"` with the
-Python alai runs on.
-
-The `SSL_CERT_FILE` or `SSL_CERT_DIR` environment variables can be used to
-override this behavior altogether. Set either to a CA bundle or directory to
-have alai use that for TLS verification and ignore the `system_certs` option.
-
-To capture alai's TLS traffic for debugging, set `SSLKEYLOGFILE` to a file
-path in the environment, as for curl or a browser; alai writes each
-session's keys to it and warns on every run while it's set. Anyone with that
-file and a capture of the traffic can read it, so unset it when you're done.
-It's deliberately not a setting in `alai.toml`.
 
 ### `offline`
 

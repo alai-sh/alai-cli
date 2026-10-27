@@ -163,7 +163,6 @@ class Settings(Record):
         "project",
         "searched",
         "sources",
-        "system_certs",
     )
 
     def __init__(
@@ -175,7 +174,6 @@ class Settings(Record):
         cache_dir: str | None,
         link_mode: LinkMode,
         indexes: tuple[Index, ...],
-        system_certs: bool = True,
         offline: bool = False,
         searched: tuple[ConfigFile, ...] = (),
         no_config: bool = False,
@@ -199,8 +197,6 @@ class Settings(Record):
         self.link_mode = link_mode
         self.indexes = indexes
         """The indexes in resolution order, the default index last."""
-        self.system_certs = system_certs
-        """Verify TLS certificates as the operating system does, with truststore, rather than with OpenSSL's defaults."""
         self.offline = offline
         """Read only what's cached, never the network."""
 
@@ -406,7 +402,6 @@ def load_settings(
     collections_dir = merged.values.get("collections_dir")
     cache_dir = merged.values.get("cache_dir")
     link_mode = merged.values.get("link_mode")
-    system_certs = merged.values.get("system_certs")
     offline = merged.values.get("offline")
     indexes = [i for i in merged.lists.get("indexes", ()) if isinstance(i, Index)]
     sources = {s.target: merged.sources.get(s.target, "default") for s in SETTINGS if not s.many}
@@ -427,7 +422,6 @@ def load_settings(
         cache_dir=cache_dir,
         link_mode=link_mode if isinstance(link_mode, LinkMode) else LinkMode.AUTO,
         indexes=_resolve_indexes(indexes),
-        system_certs=system_certs if isinstance(system_certs, bool) else True,
         offline=offline if isinstance(offline, bool) else False,
     )
 
@@ -685,7 +679,7 @@ def _cli_layer(overrides: Overrides, cwd: str, home: str | None) -> _Layer:
         value = overrides.settings.get(setting.name)
         source = _Source(Level.CLI, setting.flag, cwd, home)
         if isinstance(value, bool):
-            # --system-certs and --no-system-certs give the value itself.
+            # --offline and --no-offline give the value itself.
             layer.add(setting, value, source)
         elif isinstance(value, str):
             # An empty value, such as --link-mode "", leaves the setting unset.
@@ -890,16 +884,6 @@ SETTINGS = (
         help="how files get from the cache into the collections directory",
         parse=_link_mode,
         group="install",
-    ),
-    SettingDefinition(
-        "system_certs",
-        key="system_certs",
-        flag="--system-certs",
-        env="ALAI_SYSTEM_CERTS",
-        help="verify TLS certificates as the operating system does (the default)",
-        parse=_bool_arg,
-        boolean=True,
-        group="resolve",
     ),
     SettingDefinition(
         "offline",

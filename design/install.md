@@ -328,8 +328,7 @@ a `docs` dependency group.
   collections and everything their locked `dependencies` reach. Every group
   stays in one resolution, so switching groups never changes the lock.
 - **Only what the plan installs is downloaded**, and only what isn't
-  cached; with nothing to fetch, the fetcher and urllib3 aren't imported at
-  all. A sync with nothing to do took 0.02 s for the whole process.
+  cached; with nothing to fetch, the fetcher isn't imported at all. A sync with nothing to do took 0.02 s for the whole process.
 - **Output is uv's**, on stderr: `Resolved N collections in …` (not with
   `--frozen`, as uv), `Prepared N …` when anything was downloaded,
   `Uninstalled N …` counting removals and replacements (not an unlinked
@@ -994,12 +993,24 @@ own:
   `GIT_SSL_NO_VERIFY=true` on the fetch for a host given to
   `--allow-insecure-host`, and nothing for `--system-certs`, as git
   already uses the system's store; ansible-galaxy adds `-c
-  http.sslVerify=false` for `--ignore-certs`. alai's `system_certs`
-  doesn't apply to git; if alai gets an insecure-host setting, it sets
-  `GIT_SSL_NO_VERIFY` as uv does.
+  http.sslVerify=false` for `--ignore-certs`. alai verifies with the
+  system's store too ([index-client.md](index-client.md#decisions)), and
+  `SSL_CERT_FILE` reaches git only through its own reading of it; if alai
+  gets an insecure-host setting, it sets `GIT_SSL_NO_VERIFY` as uv does.
 
 ## Not done yet
 
+- **One call to the extension for every artifact** (planned 2026-10-27,
+  after fetches as futures): download, check and extract, with the
+  extension's runtime downloading and a few threads extracting, in place of
+  `get_all`'s two pools and the hand-over between them, and progress back
+  through a callback. Measured reasons and the open question of streaming
+  each download into its extraction are in
+  [performance.md](performance.md#http-in-the-extension). The call takes the
+  HTTP client to use, so a sync opens one `Fetcher` for its resolve and its
+  downloads and passes it to both; the extension's map of clients by
+  configuration (`SHARED` in `http.rs`), there so the two fetchers share
+  connections today, then goes (decided with the user, 2026-10-27).
 - **`alai cache clean [NAME…]`, and the rest of uv's `cache` commands**
   (`prune`, `dir`), so an edited cached collection, or a cache that's grown,
   can be cleared without knowing its layout. Until then the docs say to

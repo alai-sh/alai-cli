@@ -10,7 +10,7 @@ is settled, record it as a decision there and remove it here.
 **Today:** part of alai is Rust, built into the package, with no
 pure-Python fallback (2026-10-22). Installing from a wheel needs nothing
 more; installing from source, as from GitHub now, or from PyPI on a
-platform with no wheel, needs Rust 1.88 or later. Wheels are built for
+platform with no wheel, needs Rust 1.92 or later. Wheels are built for
 Linux x86_64 and aarch64 (glibc 2.17 and later, and musl) and macOS arm64;
 anything else builds from source: 32-bit x86 and ARM, ppc64le, s390x,
 riscv64, Intel macOS, the BSDs, illumos and AIX. The reasoning is in
@@ -154,6 +154,27 @@ collections directory before adding them? Does the warning get read, or do
 unlisted collections end up in runs unnoticed?
 
 See [run.md](run.md#what-uv-run-does).
+
+## TLS certificates and proxies
+
+**Today:** the operating system verifies every TLS certificate, with no
+setting to turn that off or to use certificates bundled with alai
+(2026-10-27, replacing `system_certs`). `SSL_CERT_FILE` or `SSL_CERT_DIR`
+replaces the system's certificates rather than adding to them, as uv and
+OpenSSL do. On Linux, rustls checks the chain, more strictly than OpenSSL,
+and those variables don't loosen it. On macOS, the system's proxy settings
+are used for whatever the proxy environment variables leave unset.
+
+**The alternatives:** a setting for Mozilla's roots bundled with alai, as
+uv's default is, for systems with no CA certificates; certificates that add
+to the system's rather than replace them; an `--allow-insecure-host`, as uv has, for a certificate rustls refuses; or the
+proxy environment variables only, as before.
+
+**Ask:** does anyone run alai where there are no system CA certificates, or
+behind a TLS-intercepting proxy whose certificate alai refuses on Linux? Did
+anyone rely on macOS's proxy settings being ignored?
+
+See [index-client.md](index-client.md#decisions).
 
 ## What marks a project
 

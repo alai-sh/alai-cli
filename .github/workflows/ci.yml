@@ -327,8 +327,11 @@ jobs:
           esac
           docker run --rm -v "${PWD}:/src" -w /src -e "ABI=${ABI}" -e PYTHON_VERSION "ghcr.io/astral-sh/uv:${UV_VERSION}-alpine" sh -euc '
             apk add --no-cache git
-            uv venv --python "${PYTHON_VERSION}" /venv
-            uv pip install --python /venv dist/alai-*-"${ABI}"-*.whl pytest pytest-xdist
+            # What alai and the test group need, at the versions uv.lock pins, as tox installs them on the other jobs;
+            # then the wheel for this ABI on its own.
+            export UV_PROJECT_ENVIRONMENT=/venv
+            uv sync --locked --python "${PYTHON_VERSION}" --no-install-project --no-default-groups --group test
+            uv pip install --python /venv --no-deps dist/alai-*-"${ABI}"-*.whl
             /venv/bin/python -m pytest -p no:cacheprovider -n auto --color=yes tests
           '
         env:

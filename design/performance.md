@@ -395,12 +395,12 @@ scratchpad, not the repository.
   mode exactly, with no umask to pass, for simplicity since the review in
   [the native extension](#the-native-extension), and a default ACL on the
   collections directory would mask a new file's mode instead.
-- **Left: truststore loading the CA store for every connection.** Its
-  Linux backend calls `set_default_verify_paths` in each `wrap_socket`,
+- **Gone: truststore loading the CA store for every connection.** Its
+  Linux backend called `set_default_verify_paths` in each `wrap_socket`,
   under the context's lock: 3.3 ms each, about 52 ms of CPU for 16
-  connections, mostly while waiting on the network. Avoiding it means
-  leaving truststore on Linux and copying how it finds a CA bundle when
-  OpenSSL's defaults point nowhere, as in uv's standalone Pythons.
+  connections, mostly while waiting on the network. The extension's client
+  loads the system's certificates once per client, and makes one connection
+  per host over HTTP/2 ([below](#http-in-the-extension)).
 - **Done: one round trip for `config.json` and what's read next.** On a
   first run the listing is now guessed at `<root>/collections.json` and
   requested with `config.json`, and `alai find` requests the plugin index
@@ -411,8 +411,10 @@ scratchpad, not the repository.
   downloads' own client, which needs only `config.json` but also started
   `collections.json`; it no longer does (97 on 17). Reusing the resolve's
   fetcher for the downloads would save the other, and a round trip, only
-  when a run both resolves and downloads; not done (decided with the user,
-  2026-10-23).
+  when a run both resolves and downloads; not done then (decided with the
+  user, 2026-10-23), and done since by the extension's client, which every
+  fetcher with the same settings shares
+  ([below](#http-in-the-extension)).
 - **Connections per host, swept** (`MAX_CONNECTIONS`, 16 since the client
   was written, chosen while comparing libraries, not measured as a count).
   On this machine, three rounds, each count in turn:
@@ -442,7 +444,9 @@ scratchpad, not the repository.
   file. **Kept at 16** (decided with the user, 2026-10-23): a separate,
   smaller download pool, 8, would save 0.1 to 0.3 s of a 4.8 s cold sync,
   and fewer connections could cost a link with more latency than either
-  machine's, which wants more in flight.
+  machine's, which wants more in flight. That was over HTTP/1.1; over
+  HTTP/2 it's only the downloads' concurrency, and is to measure again
+  ([index-client.md](index-client.md#not-done-yet)).
 - **Done: index lines and the plugin index read by the extension**, with
   `serde_json`, and `memchr` to search the plugin index. A warm resolve of
   `scratch/acd` went from 74–89 ms to 62–72 ms (its parsing from 22 ms to
@@ -451,6 +455,106 @@ scratchpad, not the repository.
   0.6 s for the broadest. The details are in
   [index-client.md](index-client.md#decisions) and
   [find.md](find.md#reading-the-file).
+
+## HTTP in the extension
+
+`alai._native.HttpClient`, reqwest over rustls and aws-lc-rs, replaced
+urllib3 and truststore on 2026-10-27, for HTTP/2; the decisions are in
+[index-client.md](index-client.md#decisions). Measured on the development
+machine, 12 to 50 ms from Cloudflare (`ping`), against `index.alai.sh` and
+`dl.alai.sh`, with two projects: `sivel.acd` and eight collections
+(`community.general`, `ansible.posix`, `community.docker`,
+`kubernetes.core`, `amazon.aws`, `community.crypto`, `ansible.windows` and
+`community.vmware`, 10 collections locked). Each run had an empty cache, in
+a new directory on tmpfs, so these are the network, not the disk; the
+configurations took turns in a shuffled order. The scripts were in the
+session's scratchpad.
+
+**Whether HTTP/2 helps at all**, before writing any of it: curl 8.18 with
+nghttp2, `--parallel`, every URL at once, medians of 7 runs (5 for
+`sivel.acd`'s 130 files, as its resolve fetches every dependency of every
+version):
+
+| URLs | 16 connections, HTTP/1.1 | HTTP/2, one connection |
+|---|---|---|
+| 15 index files | 0.37 s | 0.30 s |
+| 15 tarballs, 9.8 MB | 0.85 s | 0.70 s |
+| 130 index files | 0.69 s | 0.46 s |
+| 130 tarballs, 69 MB | 3.25 s | 2.65 s |
+
+The Python libraries didn't keep it (in
+[index-client.md](index-client.md#decisions)): urllib3's HTTP/2 doesn't
+multiplex and deadlocked, and httpx's first request cost about 0.3 s more
+than urllib3's.
+
+**The extension's client, against urllib3**, medians of 7 runs (5 for a
+`sivel.acd` sync with its lock), whole runs:
+
+| | urllib3 | reqwest, 16 threads | reqwest, 64 threads |
+|---|---|---|---|
+| Eight collections, cold `alai lock` | 0.65 s | 0.44 s | 0.49 s |
+| `sivel.acd`, cold `alai lock` | 1.13 s | 0.85 s | 0.67 s |
+| Eight collections, cold `alai sync` with the lock | 0.96 s | 0.84 s | 0.75 s |
+| `sivel.acd`, cold `alai sync` with the lock | 2.54 s | 1.94 s | 1.97 s |
+
+The threads are the fetcher's, for index files (`_ALAI_FETCH_THREADS`);
+downloads keep their own 16. Connections to the two hosts, counted with
+`ss` through a cold `sivel.acd` lock and sync: 16 and 17 with urllib3, 1
+and 2 with the client. More than curl's numbers predicted, as the client
+also drops urllib3's work in Python and truststore's per connection.
+
+**Sharing the client, and connecting early**, then went on top
+(2026-10-27), medians of 7 runs (5 with the lock):
+
+| Cold `alai sync` | urllib3 | Client | Shared, connecting early |
+|---|---|---|---|
+| Eight collections, no lock | 2.32 s | 1.67 s | 1.45 s |
+| `sivel.acd`, no lock | 4.94 s | 3.46 s | 3.13 s |
+| `sivel.acd`, with the lock | 2.86 s | 2.13 s | 2.16 s |
+
+Without a lock the downloads find connections to both hosts ready, and the
+worst runs went too (1.84 s and 3.73 s, against 4.39 s and 8.85 s); with
+one, there's no resolve to overlap, so nothing changes.
+
+**What it costs**:
+
+| | Before | With the client |
+|---|---|---|
+| `_native` `.so`, release | 1.7 MB | 6.7 MB |
+| abi3 wheel | 0.94 MB | 3.6 MB (3.56 MB manylinux2014, 3.65 MB musllinux, aarch64) |
+| Clean release build, this machine | 19 s | 63 s |
+| Build in the musllinux 1.2 aarch64 container | 33 s | 87 s |
+| `import alai._native`, release | 0.69 ms | 0.78 ms |
+
+aws-lc-rs built with no changes in CI's manylinux2014 (glibc 2.17) and
+musllinux 1.2 aarch64 containers, with no cmake; the wheel built on this
+machine was tagged `manylinux_2_38` only because of the host's glibc. Both
+musl wheels bundle `libgcc_s`, as before. The x86_64 and macOS builds are
+still to see in CI.
+
+**Moving more of the work into the extension**, considered on 2026-10-27,
+with Python about 0.2 s of a cold sync:
+
+- **Next: fetches as futures from the extension**, in
+  [index-client.md](index-client.md#not-done-yet): the measured gain
+  above from more requests in flight, and the fetcher's pool of threads
+  gone.
+- **Next: one call to download, check and extract every artifact**, in
+  [install.md](install.md): the download and extraction pools of
+  `_artifacts.get_all`, about 100 lines of Python, become the extension's
+  (downloads on its runtime, extraction on a few threads), with progress
+  through a callback. Faster only at the end, as extraction ends within
+  0.1 s of the last download already; streaming each download into its
+  extraction would trim that, but extracts bytes before their SHA-256 is
+  checked, a change to decide on its own, though nothing's renamed into
+  place before it matches and the extractor is already hardened against a
+  hostile tarball.
+- **Linking every collection in one call** would be simpler, not faster,
+  as it's the filesystem's time.
+- **Kept in Python**: the index cache and its rules, and building the
+  resolver's table (`_index.py` and `_resolve.py`, about 1,250 lines,
+  mostly behaviour and error wording), for a warm resolve of 62–72 ms all
+  told.
 
 ## The native extension
 
@@ -648,7 +752,7 @@ what's left is installing, by clone ([Cloning](#cloning)).
   (`cpython-314t` and `abi3t`), with `tests/test_native.py` checking, in a
   new interpreter, that importing it leaves the GIL off; none of alai's
   dependencies turns it on either (checked on 3.14t and 3.15t: PyYAML
-  6.0.3's C loader, argcomplete, distlib, resolvelib, truststore, urllib3,
+  6.0.3's C loader, argcomplete, distlib, resolvelib, truststore, urllib3 (since replaced by the extension's HTTP),
   coverage, pytest and pytest-xdist). The `abi3.abi3t` wheel covers 3.16
   and later as `abi3` does, with no new wheel per release, by PEP 803's
   promise rather than a record yet, which the tox runs on each new release

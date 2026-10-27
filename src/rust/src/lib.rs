@@ -13,6 +13,7 @@ compile_error!("alai doesn't run on Windows, as Ansible's control node doesn't")
 
 mod error;
 mod extract;
+mod http;
 mod index;
 mod json;
 mod link;
@@ -26,6 +27,8 @@ use pyo3::prelude::*;
 #[pymodule(gil_used = false)]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("ExtractError", m.py().get_type::<error::ExtractError>())?;
+    m.add("HttpError", m.py().get_type::<http::HttpError>())?;
+    m.add_class::<http::HttpClient>()?;
     m.add("NoSolution", m.py().get_type::<error::NoSolution>())?;
     m.add("TomlError", m.py().get_type::<toml::TomlError>())?;
     m.add("TomlEditError", m.py().get_type::<toml::TomlEditError>())?;

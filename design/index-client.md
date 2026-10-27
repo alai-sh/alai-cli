@@ -1,6 +1,7 @@
 # Index client
 
-How alai reads an index: `src/alai/_fetch.py` fetches and caches files,
+How alai reads an index: `src/alai/_fetch.py` fetches and caches files, over
+the extension's HTTP client (`src/rust/src/http.rs`), and
 `src/alai/_index.py` reads the index format (galaxy-sync's
 `docs/index-spec/README.md`) on top of it. No command uses it yet; `alai lock`
 will be the first. Measurements are from 2026-10-19 against `index.alai.sh`,
@@ -14,9 +15,37 @@ from a machine ~250 ms (TCP plus TLS) from Cloudflare.
   is why there's an index at all. Content from one could still be used
   through an index built from it, if a way to set that up is added; the
   client only ever reads indexes. The docs say so without "yet".
-- **urllib3, on a pool of threads, with synchronous code.** Fetching 60 real
-  index files in parallel took about the same with every option tried (median
-  of 5 runs):
+- **HTTP in the extension, with reqwest** (2026-10-27, replacing urllib3).
+  `_native.HttpClient` makes the requests: reqwest 0.13 on hyper and Tokio,
+  with HTTP/2 negotiated by ALPN and HTTP/1.1 the fallback, as uv does
+  (`crates/uv-client`, read 2026-10-27). `_fetch` keeps the cache,
+  revalidation and its pool of threads, each blocked in the extension with
+  the GIL released, so callers still start fetches and wait on futures.
+  Every `Fetcher` made with the same settings shares one reqwest client, and
+  so its connections, keyed by everything the client is built from, the
+  environment variables it reads included: a sync's downloads reuse its
+  resolve's connection to the index. Why: over HTTP/2 a host's requests
+  share one connection, which a cold `sivel.acd` lock made 1 of, against
+  16, and it took 0.85 s against urllib3's 1.13 s; the measurements, and
+  what it costs in wheel size and build time, are in
+  [performance.md](performance.md#http-in-the-extension). The Python
+  libraries gave the gain back (tried 2026-10-27, against `index.alai.sh`
+  and `dl.alai.sh`, 12 to 50 ms away):
+  - **urllib3's opt-in HTTP/2** (2.8, with h2) sends one request per
+    connection, so it's HTTP/1.1 in other framing, and it deadlocked: 16
+    threads connecting to `dl.alai.sh` at once all waited in
+    `urllib3/http2/probe.py` for its probe of the host.
+  - **httpx's HTTP/2** (0.28, async) multiplexes, and took 130 index files
+    in 0.23 s against urllib3's 0.43 s, but its first request cost about
+    0.3 s more than urllib3's, so it lost overall; its HTTP/1.1 was slower
+    than urllib3's throughout.
+  - **curl**, as a control (8.18, nghttp2, `--parallel`): HTTP/2 beat 16
+    HTTP/1.1 connections by 20 to 35%, for index files and tarballs alike,
+    so the gain is the protocol's, not the library's.
+
+  The choice before it, measured 2026-10-19 from a machine ~250 ms (TCP plus
+  TLS) from Cloudflare, where every option took about the same, fetching 60
+  index files (median of 5 runs):
 
   | Library | Model | Median |
   |---|---|---|
@@ -27,27 +56,46 @@ from a machine ~250 ms (TCP plus TLS) from Cloudflare.
   | aiohttp 3.14 | async | 480 ms |
   | niquests 3.21 | multiplexed HTTP/2 | 343 ms |
 
-  Latency is round trips, so the choice came down to robustness. Over
-  `http.client`, urllib3 gives a thread-safe pool, transparent retry when a
-  kept-alive connection was closed by the server, retries with backoff and
-  `Retry-After`, proxy tunnelling, and decompression, all of which we'd
-  otherwise write. It's one pure-Python package with no dependencies, usually
-  already installed beside requests. httpx's maintenance has stalled.
-  niquests installs `urllib3-future`, which replaces the `urllib3` module for
-  everything in the environment, a risk when alai shares one with
-  ansible-core and requests. Async gained nothing and would make the resolver
-  async too; threads let it stay plain code waiting on futures.
-- **Import cost doesn't matter here.** urllib3 costs ~40 ms to import, and
-  only network commands import `_fetch`, where downloads dominate.
-- **No HTTP/3.** QUIC would save one round trip on the first connection of a
-  run, but there's no stdlib support, many corporate networks block outbound
-  UDP, and HTTP proxies only tunnel TCP, so the networks most likely to be
-  slow would fall back anyway. HTTP/2 didn't beat pooled HTTP/1.1 either.
-  urllib3's opt-in HTTP/2 can be tried later behind the same interface.
-- **Compression: urllib3's default `Accept-Encoding`**, no optional packages.
-  That's `gzip,deflate`, plus `zstd` on Python 3.14 and later, where urllib3
-  uses the stdlib's `compression.zstd`. Cloudflare compresses on the fly,
-  picks zstd whenever it's offered, and caches each encoding separately:
+  urllib3 won on robustness then. niquests installs `urllib3-future`, which
+  replaces the `urllib3` module for everything in the environment, a risk
+  when alai shares one with ansible-core and requests, and httpx's
+  maintenance has stalled; both still hold.
+- **Import cost.** The extension's HTTP adds nothing at import: the release
+  `_native` imports in 0.78 ms against 0.69 ms without it (median of 15),
+  and network commands no longer import urllib3 (~40 ms). Its Tokio runtime,
+  two threads, starts with the first client.
+- **No HTTP/3** (2026-10-27). Neither `index.alai.sh` nor `dl.alai.sh`
+  offers it (no `alt-svc`, and `curl --http3-only` fails), and Cloudflare
+  turns it on per zone. reqwest's is experimental (`--cfg
+  reqwest_unstable`), isn't found from `alt-svc` and isn't raced against
+  TCP, so a network that blocks UDP would fail rather than fall back, and
+  alai would need its own fallback. QUIC would save one round trip per host
+  per run; many corporate networks block outbound UDP, and HTTP proxies only
+  tunnel TCP, so the networks most likely to be slow would fall back
+  anyway. HTTP/2 is never forced (`http2_prior_knowledge`), which would
+  drop the fallback for a host or proxy that only speaks HTTP/1.1.
+- **The first HTTPS request to a host goes alone** (2026-10-27). Whether a
+  host speaks HTTP/2 is only known once a connection's TLS handshake
+  finishes, so 16 downloads started at once opened 16 connections. The
+  first request to each `https` host is sent alone, and the others wait for
+  its response, at most 1 s, then share its connection if they can: a cold
+  `sivel.acd` sync went from 17 connections to 2. reqwest has no hook for
+  "connected", so it's the response; the 1 s cap is for a host slow to
+  answer, as `index.alai.sh` has been, where waiting longer would cost more
+  than separate connections. A test of parallel tarball downloads from a
+  server that waits 0.3 s before answering caught the uncapped first
+  version. Plain `http` isn't gated, as it's never HTTP/2 here.
+- **Commands that download connect early** (2026-10-27). `alai sync`, and
+  `alai add` and `alai remove` when they sync, connect to each index's
+  download host as soon as its `config.json` is read, while resolving, with
+  a `HEAD` whose answer is ignored, through the same gate; `alai lock`
+  doesn't, so it makes no connection it won't use. Without a lock, that
+  took a cold `sivel.acd` sync from 3.46 s to 3.13 s, and with one, where
+  there's no resolve to overlap, it changes nothing.
+- **Compression: gzip, deflate and zstd**, reqwest's features, decompressed
+  in the extension (zstd through the zstd crate's C library). Cloudflare
+  compresses on the fly, picks zstd whenever it's offered, and caches each
+  encoding separately:
 
   | File | Raw | gzip | br | zstd |
   |---|---|---|---|---|
@@ -55,7 +103,8 @@ from a machine ~250 ms (TCP plus TLS) from Cloudflare.
   | `index/community/general.jsonl` | 64,219 B | 13,613 B | 12,016 B | 12,339 B |
 
   br and zstd are ~10% smaller than gzip on index files and zstd is larger on
-  `collections.json`: a few kilobytes per lock, not worth a C extension.
+  `collections.json`: a few kilobytes per lock. zstd is offered as uv offers
+  it, and br isn't, as it would be another decoder for little.
 - **The cache is keyed by index URL**, under
   `<cache_dir>/index/<host>-<sha256 of the root, 16 hex>/`, with the index's
   own paths below that (`config.json`, `collections.json`), as Cargo keys
@@ -218,59 +267,106 @@ from a machine ~250 ms (TCP plus TLS) from Cloudflare.
   request, or rewrites another index's, keeps the name layout and works as
   before, and none of this changes what a client does beyond the template.
 - **404, 410 and 451 mean "not found"** and remove the cached copy. 401 is
-  "credentials required". Anything else is an error. Connection errors, 429
-  and 5xx are retried three times with backoff (0.5 s, 1 s, 2 s).
-- **Redirects are followed by hand**, up to 10, so a redirect from `https` to
-  anything else can be refused, as the spec requires. `moved-to` is followed
-  the same way, with a warning to update the configured URL, and fails on a
-  loop or more than 5 hops.
-- **Proxies follow the usual environment variables**, as curl and requests
-  read them: `HTTPS_PROXY` and `HTTP_PROXY` by scheme, else `ALL_PROXY`, in
-  either case, with `NO_PROXY` bypassing hosts. Only the environment: the
-  stdlib's `getproxies()` also reads macOS and Windows system settings,
-  which would make behaviour differ between machines with the same
-  environment. Custom CAs work through `SSL_CERT_FILE` and `SSL_CERT_DIR`,
-  which OpenSSL reads.
-- **The OS trust store, on by default** (2026-10-20).
-  [truststore](https://github.com/sethmlarson/truststore) gives an
-  `ssl.SSLContext` that verifies with the OS: the Security framework on
-  macOS, CryptoAPI on Windows, OpenSSL's system paths on Linux. It's still
-  the current answer (no stdlib equivalent), pure Python with no
-  dependencies, ~9 ms to import, and pip has used it by default since 24.2.
-  Tested with truststore 0.10.5 and urllib3 2.8:
-  `urllib3.PoolManager(ssl_context=truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT))`,
-  and the same `ssl_context` (plus `proxy_ssl_context` for an HTTPS proxy)
-  on `ProxyManager`. What it fixes: without it, urllib3 uses OpenSSL's
-  default paths (not certifi), which on macOS depends on how Python was
-  built and never sees roots pushed to the Keychain by MDM, and on Windows
-  copies the root store into OpenSSL but skips Windows' own chain building
-  and policy. That's the corporate TLS-interception case (Zscaler, a company
-  root CA). On by default, as pip does, since the people it helps are the
-  least able to diagnose a certificate error; off with the `system_certs`
-  setting (`--system-certs`/`--no-system-certs`, `ALAI_SYSTEM_CERTS`, named
-  after uv's `system-certs`). truststore is a dependency with only a floor,
-  `>= 0.10`, the release tested: an upper bound would conflict in shared
-  environments for a break that hasn't happened, and the part used is tiny.
-  If building its context fails (an `ImportError` or `OSError`, such as an
-  OpenSSL too old for it), alai falls back to OpenSSL's verification with a
-  debug line rather than failing. An explicit
-  `SSL_CERT_FILE` or `SSL_CERT_DIR` wins over it, since truststore bypasses
-  OpenSSL's verification on macOS and Windows and would otherwise ignore
-  them.
+  "credentials required". Anything else is an error. Connection errors, 429,
+  500, 502, 503 and 504 are retried three times with backoff (0.5 s, 1 s,
+  2 s), or after `Retry-After` when it gives seconds, up to 120 s. The loop
+  is the extension's own: reqwest 0.13.5's `retry` module only resends what
+  failed at the protocol level, with no backoff and no `Retry-After`. A
+  download is retried until its body starts, not after, as the file is half
+  written by then.
+- **Redirects are followed by the extension, by hand**, up to 10, with
+  reqwest's own following turned off (`redirect::Policy::none()`,
+  2026-10-27): each hop is returned to `_fetch` for a trace line, as the
+  Python client gave, and a redirect from `https` to anything else is
+  refused, as the spec requires. A custom reqwest policy did the refusing
+  first, but it can't report the hops, since one client serves every
+  request, and the final URL alone isn't enough: reqwest normalises it, so
+  comparing it with the URL requested said "from" with no redirect for a
+  URL written with an explicit port or an uppercase host. Each hop gets
+  the retries, as urllib3 gave. The downgrade check compares the parsed
+  URLs' schemes, not their text, so `HTTPS://` can't slip past it. A
+  redirect's body, up to 64 KiB, is read before following it, as urllib3
+  drained one, so its HTTP/1.1 connection can carry the next hop rather
+  than being closed; a longer body is dropped with its connection. Its test
+  uses a 48 KiB body, as hyper already reuses a connection whose body came
+  in with the headers, so a short one passes with or without the reading.
+  `moved-to` is followed the same way, with a warning to update the
+  configured URL, and fails on a loop or more than 5 hops.
+- **Proxies are reqwest's** (2026-10-27, taking the library's default as
+  the user chose): `HTTPS_PROXY` and `HTTP_PROXY` by scheme, else
+  `ALL_PROXY`, in either case, with `NO_PROXY` bypassing hosts, and on macOS
+  the system settings for whatever those leave unset (hyper-util's
+  `Matcher::from_system`, read in 0.1.21). That's a change from reading the
+  environment only, which kept machines with the same environment alike; a
+  proxy set only in macOS's settings now works, as it does for uv. They're
+  read when the client is made, so a test that sets one makes its `Fetcher`
+  after. reqwest's `NO_PROXY` matching also takes IP ranges, which the
+  stdlib's didn't.
+- **The OS verifies certificates, always** (2026-10-27, decided with the
+  user; it replaced truststore and the `system_certs` setting, removed
+  outright). rustls-platform-verifier hands the chain to the Security
+  framework on macOS, as truststore did; on Linux and other Unixes it loads
+  the system's CA certificates from where OpenSSL keeps them
+  (`rustls-native-certs`, through `openssl-probe`) and checks the chain with
+  rustls's own `webpki`. It's reqwest's default with rustls, and uv's
+  `--system-certs`. No bundled roots, as uv's default has (Mozilla's, in
+  `webpki-root-certs`): adding or distrusting a CA is then the OS vendor's
+  update, never an alai release. `SSL_CERT_FILE` or `SSL_CERT_DIR`, when
+  either is set and not empty, are the only certificates trusted, even if
+  none load, with a warning naming what couldn't be read: uv's rule
+  (`crates/uv-client/src/tls.rs`), and what OpenSSL does. The crypto is
+  aws-lc-rs, reqwest's and uv's choice, rather than ring: it's maintained by
+  AWS's cryptography team, has post-quantum key exchange and a FIPS build if
+  ever wanted, and built unchanged in the manylinux2014 and musllinux 1.2
+  aarch64 containers, with no cmake; ring is smaller and simpler to build,
+  but kept by a small team since its author stepped back in 2025. What's
+  given up:
+  - **rustls is stricter than OpenSSL** about malformed certificates, such
+    as some TLS-interception products issue: version 1 CA certificates, a
+    host named only in the common name, bad encodings. On macOS the OS
+    checks the chain, so this is Linux only. `SSL_CERT_FILE` changes which
+    roots are trusted, not how strictly, so it's no way round; the fix is
+    the certificate. Asked about in [user-questions.md](user-questions.md).
+  - **A system with no CA certificates** fails, as it did with OpenSSL. The
+    client can't be made then, which is only an error for a request that
+    needs it, offline and `file://` runs being unaffected: `TLS error: No CA
+    certificates were loaded from the system`, with a hint to install the
+    `ca-certificates` package or set `SSL_CERT_FILE`. Checked in the
+    musllinux image with `/etc/ssl` removed; that image sets
+    `SSL_CERT_FILE=/opt/_internal/certs.pem` itself, as the manylinux ones
+    do, which a check has to unset.
 - **`SSLKEYLOGFILE` stays environment-only** (2026-10-20). The key
   log decrypts any captured session, credentials included, so it's never a
   config key or flag: a committed `alai.toml` could turn it on for everyone
   who clones the project, and a user file would be forgotten. That's also
-  the convention (curl, browsers, Python's `ssl`, urllib3, uv). urllib3
-  reads it only when it builds its own context, so with truststore's context
-  `_fetch` must set `keylog_filename` from it itself (tested: without that,
-  nothing is written), expanding variables as urllib3 does. While it's set,
-  every run warns that TLS session keys are being written and where, so a
-  leftover export doesn't leak keys unnoticed.
-- **Errors name the URL and the cause**, unwrapped from urllib3's
-  exceptions: `can't resolve the host name`, `can't connect: Connection
-  refused`, `TLS error: …`, `timed out`, and `proxy error: …` with the proxy
-  named.
+  the convention (curl, browsers, Python's `ssl`, uv). reqwest's
+  `tls_sslkeylogfile` has rustls write to it (2026-10-27), as it's given,
+  without urllib3's expansion of variables in it. While it's set, every run
+  warns that TLS session keys are being written and where, so a leftover
+  export doesn't leak keys unnoticed.
+- **Errors name the URL and the cause**, unwrapped from reqwest's errors:
+  `can't resolve the host name: …`, `can't connect: …`, `TLS error: …`,
+  `timed out`, and the proxy named after any of them, `(through the proxy
+  …)`, without the " (os error N)" `io::Error` adds. The proxy comes from
+  the extension (`HttpClient.proxy`), by hyper-util's
+  `Matcher::from_system`, which is what reqwest uses, so it's always the
+  one the request went through (2026-10-27). It replaced `proxy_for`, which
+  read the variables in Python and could disagree: the stdlib's `NO_PROXY`
+  matching has no IP ranges, so with `NO_PROXY=10.0.0.0/8` an error named
+  a proxy reqwest never used for `10.1.2.3`, and it never saw macOS's
+  settings. It's shown as `scheme://host:port`, without any credentials the
+  variable holds, which `proxy_for` showed as written. rustls's error is
+  two `io::Error`s deep, and `io::Error::source()`
+  skips the error it wraps, so finding it takes `get_ref()` at each level;
+  without that, a certificate error read as `can't connect`. The tests run
+  an HTTPS server with a CA made by trustme for it, so an unknown CA,
+  `SSL_CERT_FILE`, `SSL_CERT_DIR`, a missing bundle and the `https`
+  downgrade are all tested against real TLS. They're skipped on uv's musl
+  Python 3.10 only, where cryptography, which trustme needs, can't be
+  imported: that Python loads only `…-linux-musl.so` extensions, and cffi's
+  musllinux wheel for 3.10 names its own `…-linux-gnu.so`, as CPython
+  before 3.13 did on musl (found in CI, 2026-10-27; 3.14t and 3.15 there
+  are fine).
 - **Index lines are read by the extension** (`_native.parse_index_lines`,
   2026-10-23): the JSON, with `serde_json`, and each field's type, in the
   order and with the words the Python reader used, so its messages are
@@ -366,9 +462,27 @@ from a machine ~250 ms (TCP plus TLS) from Cloudflare.
 
 - **Credentials** for private indexes, and for tarball URLs
   ([lockfile.md](lockfile.md#tarballs)). The spec leaves authentication to
-  the host; a `401` already reports "credentials required".
+  the host; a `401` already reports "credentials required". The extension
+  follows redirects itself, sending each hop the request's own headers,
+  which today are only `If-None-Match`, as urllib3's loop did. reqwest's
+  own following drops `Authorization` and cookies on a redirect to another
+  host; with credentials, the loop must too, and not send them from
+  `https` to anything else either.
 - **Prefetching dependencies.** Index files that changed still cost one round
   trip per wave of dependencies. Prefetching every dependency of each file as
   it arrives, in slice 3, turns those into roughly one.
 - **Progress output** while fetching, such as with Rich; see
   [output.md](output.md).
+- **Fetches as futures from the extension**, rather than a thread blocked
+  in it for each (planned 2026-10-27, the next step after the client). The
+  pool of threads and `MAX_REQUESTS` (`_ALAI_FETCH_THREADS`) go, and over
+  HTTP/2 nothing caps the requests in flight: with 64 threads rather than
+  16, a cold `sivel.acd` lock took 0.67 s rather than 0.85 s. The cache and
+  its rules stay in Python.
+- **`Retry-After` as a date.** Only the seconds form is read; urllib3 read
+  both.
+- **`MAX_CONNECTIONS`** was swept over HTTP/1.1 (16, in
+  [performance.md](performance.md#a-cold-sync-profiled-again)); over HTTP/2
+  it's only the downloads' concurrency and the idle connections kept, so
+  it's to measure again, or to go with the downloads' pool
+  ([install.md](install.md)).
