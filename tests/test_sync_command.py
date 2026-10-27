@@ -37,6 +37,21 @@ class TestSync:
         assert installed_versions(project / "collections") == {"a.a": "2.0.0", "b.b": "1.1.0", "c.c": "1.0.0"}
         assert (project / "alai.lock").is_file()
 
+    def test_index_without_listing(self, project: Path, tmp_path: Path) -> None:
+        # An index of index files alone, with no collections.json, resolved and installed from.
+        index = make_index(
+            tmp_path / "plain",
+            {"a.a": [v("1.0.0", {"b.b": "*"})], "b.b": [v("1.0.0")]},
+            artifacts=True,
+            hashed=False,
+            listing=False,
+        )
+        write_project(project, ["a.a"])
+
+        assert sync("--default-index", index) == 0
+
+        assert installed_versions(project / "collections") == {"a.a": "1.0.0", "b.b": "1.0.0"}
+
     def test_connects_to_download_host_early(self, project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # While resolving, as it's about to download: the index's download host is connected to then.
         calls: list[str] = []

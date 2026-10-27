@@ -202,19 +202,20 @@ class TestHttp:
             f"trace: GET {server.url}old.json: 200, 8 bytes from {server.url}a.json\n"
         )
 
-    def test_redirect_keeps_its_connection(self, server: IndexServer, fetcher: Fetcher) -> None:
+    def test_redirect_keeps_its_connection(self, server: IndexServer, site: Path, fetcher: Fetcher) -> None:
         # A redirect's body is read before following it, so its HTTP/1.1 connection goes back to the pool rather than
-        # being closed. Whether the next hop uses it, or a new one hyper opened meanwhile, is a race, so what's checked
-        # is that nothing is closed. The body is bigger than arrives with the headers, as hyper keeps a connection
-        # whose body it already has either way.
-        server.responses["/old.json"] = [(301, {"Location": "/a.json"}, b"m" * (48 << 10))]
+        # being closed; without the reading, hyper closes it as soon as the redirect is dropped. The body is bigger
+        # than arrives with the headers, as hyper keeps a connection whose body it already has either way. The
+        # redirect leads to another server, so the next hop never asks the pool for this one's connection: on the same
+        # host, a race in hyper-util's pool (0.1.21) can drop the drained connection while handing it to that hop.
+        with IndexServer(site) as other:
+            server.responses["/old.json"] = [(301, {"Location": f"{other.url}a.json"}, b"m" * (48 << 10))]
 
-        assert fetcher.get(f"{server.url}old.json", None) == b'{"a": 1}'
-        # Without the reading, hyper closes it as soon as the redirect is dropped.
-        deadline = time.monotonic() + 0.5
-        while time.monotonic() < deadline:
-            assert server.closed == 0
-            time.sleep(0.01)
+            assert fetcher.get(f"{server.url}old.json", None) == b'{"a": 1}'
+            deadline = time.monotonic() + 0.5
+            while time.monotonic() < deadline:
+                assert server.closed == 0
+                time.sleep(0.01)
 
     def test_redirect_loop(self, server: IndexServer, fetcher: Fetcher) -> None:
         server.responses["/a.json"] = [(302, {"Location": "/a.json"}, b"")] * 20

@@ -281,20 +281,21 @@ class _Table:
             listed.extend((f"group '{group}'", group) for _ in items)
         named = [*self._manifest.collections, *(r for items in self._manifest.groups.values() for r in items)]
 
-        # Ask every index's listing at once, then each root's index file.
+        # Ask every index's listing at once, then start each root's index file, which is all an index with no listing
+        # can say whether it has the root from.
         for client in self._indexes.values():
             _ = client.collections()
+        self._prefetch(r.name for r in named)
         roots: list[_Requirement] = []
         for requirement, (parent, group) in zip(named, listed, strict=True):
             if self._index_for(requirement.name) is None:
-                known = [n for client in self._indexes.values() for n in client.collections()]
+                known = [n for client in self._indexes.values() for n in client.collections() or ()]
                 names = ", ".join(f"'{i}'" for i in self._indexes)
                 raise ResolutionError(
                     f"no configured index ({names}) has {requirement.name}" + _did_you_mean(requirement.name, known)
                 )
             req, text = self._overridden(requirement.name, requirement.req, requirement.text)
             roots.append(_Requirement(requirement.name, req, parent=parent, text=text, group=group))
-        self._prefetch(r.name for r in roots)
         return roots
 
     def load(self, roots: _c.Iterable[_Requirement]) -> None:
@@ -551,21 +552,29 @@ class _Table:
             fallback = fallback or f"{locked} needs {text}, but {other} was chosen"
         return fallback
 
-    def _index_for(self, name: str) -> str | None:
+    def _index_for(self, name: str, *, wait: bool = True) -> str | None:
         """Where a collection comes from, whatever asked for it: its ``[project.sources]`` entry, else the first
-        index whose listing has it, as uv's default ``first-index`` strategy does. None if no index has it."""
+        index that has it, as uv's default ``first-index`` strategy does. None if no index has it. An index with no
+        listing has it if its index file is there, which this waits for.
+
+        Without ``wait``, the index to fetch its file from next: an index with no listing that hasn't answered yet ends
+        the search. Later indexes aren't asked until it has, so they never learn a name an earlier one has, such as a
+        private collection's."""
         if name in self._local:
             return _LOCAL
         pin = self._manifest.sources.get(name)
         if isinstance(pin, IndexPin):
             return pin.index
-        return next((index for index, client in self._indexes.items() if client.has(name)), None)
+        if wait:
+            return next((index for index, client in self._indexes.items() if client.has(name)), None)
+        return next((index for index, client in self._indexes.items() if client.known(name) is not False), None)
 
     def _prefetch(self, names: _c.Iterable[str]) -> None:
-        """Start fetching the index files for ``names``, each from the index it comes from."""
+        """Start fetching the index files for ``names``, each from the index it comes from, or the first that has
+        to be asked."""
         by_index: dict[str, set[str]] = {}
         for name in names:
-            index = self._index_for(name)
+            index = self._index_for(name, wait=False)
             if index is not None and index != _LOCAL and (index, name) not in self._files:
                 by_index.setdefault(index, set()).add(name)
         for index, wanted in by_index.items():

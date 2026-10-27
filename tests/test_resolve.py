@@ -8,11 +8,11 @@ from pathlib import Path
 
 import pytest
 from index_data import cksum, index_path, make_index, v
-from index_server import serve
+from index_server import IndexServer, serve
 
 from alai import _resolve
 from alai._config import Index, raw_manifest
-from alai._fetch import Fetcher
+from alai._fetch import Fetcher, FetchError
 from alai._index import IndexClient
 from alai._lock import IndexSource, Lock, LockedCollection
 from alai._manifest import Manifest, parse_manifest
@@ -47,9 +47,10 @@ class Indexes:
         collections: dict[str, list[dict[str, object]]],
         *,
         hashed: bool = True,
+        listing: bool = True,
         **kwargs: dict[str, str],
     ) -> Indexes:
-        url = make_index(self.tmp_path / name, collections, hashed=hashed, **kwargs)
+        url = make_index(self.tmp_path / name, collections, hashed=hashed, listing=listing, **kwargs)
         self.urls[name] = url
         self.clients.append(IndexClient(Index(name, url), self.fetcher, str(self.tmp_path / "cache")))
         return self
@@ -683,6 +684,108 @@ class TestIndexes:
             ResolutionError, match=r"only a\.a==1\.0\.0 is available and the project depends on a\.a>=2\.0\.0"
         ):
             _ = resolve(manifest('[project]\ncollections = ["a.a>=2"]\n'), indexes.clients)
+
+    def test_index_without_listing(self, indexes: Indexes) -> None:
+        # A private index with no collections.json, before one with a listing: asked for each name first.
+        indexes.add("private", {"corp.app": [v("1.0.0", {"a.a": "*"})]}, hashed=False, listing=False)
+        indexes.add("public", {"a.a": [v("1.0.0")], "corp.app": [v("9.0.0")]})
+
+        result = resolve(manifest('[project]\ncollections = ["corp.app"]\n'), indexes.clients)
+
+        assert {c.name: (c.version.text, c.source.url) for c in result.collections} == {
+            "corp.app": ("1.0.0", indexes.urls["private"]),
+            "a.a": ("1.0.0", indexes.urls["public"]),
+        }
+
+    def test_not_in_an_index_without_listing(self, indexes: Indexes) -> None:
+        indexes.add("private", {"corp.app": [v("1.0.0")]}, hashed=False, listing=False)
+        indexes.add("public", {"a.a": [v("1.0.0")]})
+
+        with pytest.raises(
+            ResolutionError, match=r"no configured index \('private', 'public'\) has a\.b; did you mean"
+        ):
+            _ = resolve(manifest('[project]\ncollections = ["a.b"]\n'), indexes.clients)
+
+    def test_later_index_asked_only_after_one_without_listing(self, tmp_path: Path, fetcher: Fetcher) -> None:
+        # A later index never hears of a collection an earlier one has, such as a private one, and is asked for one
+        # it doesn't only once that's known.
+        collections = {"corp.app": [v("1.0.0", {"a.a": "*"})], "corp.lib": [v("1.0.0")]}
+        _ = make_index(tmp_path / "private", collections, hashed=False, listing=False)
+        public = {"a.a": [v("1.0.0")], "corp.app": [v("9.0.0")], "corp.lib": [v("9.0.0")]}
+        _ = make_index(tmp_path / "public", public, hashed=False, listing=False)
+        cache = str(tmp_path / "cache")
+        with IndexServer(tmp_path / "private") as first, IndexServer(tmp_path / "public") as second:
+            clients = [
+                IndexClient(Index("private", first.url), fetcher, cache),
+                IndexClient(Index("public", second.url), fetcher, cache),
+            ]
+
+            result = resolve(manifest('[project]\ncollections = ["corp.app", "corp.lib"]\n'), clients)
+
+        assert chosen(result) == {"a.a": "1.0.0", "corp.app": "1.0.0", "corp.lib": "1.0.0"}
+        assert sorted(p for p in first.paths() if p.startswith("/index/")) == [
+            "/index/a/a.jsonl",
+            "/index/corp/app.jsonl",
+            "/index/corp/lib.jsonl",
+        ]
+        assert [p for p in second.paths() if p.startswith("/index/")] == ["/index/a/a.jsonl"]
+
+    def test_dependency_from_an_earlier_index_without_listing(self, indexes: Indexes) -> None:
+        # corp.app comes from the second index, but its dependency is looked up from the first again, by name.
+        indexes.add("private", {"a.a": [v("1.0.0")]}, hashed=False, listing=False)
+        indexes.add("public", {"corp.app": [v("1.0.0", {"a.a": "*"})], "a.a": [v("9.0.0")]})
+
+        result = resolve(manifest('[project]\ncollections = ["corp.app"]\n'), indexes.clients)
+
+        assert {c.name: (c.version.text, c.source.url) for c in result.collections} == {
+            "corp.app": ("1.0.0", indexes.urls["public"]),
+            "a.a": ("1.0.0", indexes.urls["private"]),
+        }
+
+    def test_index_without_listing_versions_only(self, indexes: Indexes) -> None:
+        # An index with no listing that has the collection is where it comes from, even with no version that fits.
+        indexes.add("private", {"a.a": [v("1.0.0")]}, hashed=False, listing=False)
+        indexes.add("public", {"a.a": [v("2.0.0")]})
+
+        with pytest.raises(
+            ResolutionError, match=r"only a\.a==1\.0\.0 is available and the project depends on a\.a>=2\.0\.0"
+        ):
+            _ = resolve(manifest('[project]\ncollections = ["a.a>=2"]\n'), indexes.clients)
+
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_refused_by_index_without_listing(self, tmp_path: Path, fetcher: Fetcher, status: int) -> None:
+        # Not "not found": the first index might have it, so the second isn't asked in its place.
+        _ = make_index(tmp_path / "private", {"corp.app": [v("1.0.0")]}, hashed=False, listing=False)
+        _ = make_index(tmp_path / "public", {"a.a": [v("1.0.0")]}, hashed=False, listing=False)
+        cache = str(tmp_path / "cache")
+        with IndexServer(tmp_path / "private") as first, IndexServer(tmp_path / "public") as second:
+            first.responses["/index/a/a.jsonl"] = [(status, {}, b"")]
+            clients = [
+                IndexClient(Index("private", first.url), fetcher, cache),
+                IndexClient(Index("public", second.url), fetcher, cache),
+            ]
+
+            with pytest.raises(FetchError, match=rf"a\.jsonl: .*HTTP {status}"):
+                _ = resolve(manifest('[project]\ncollections = ["a.a"]\n'), clients)
+
+        assert [p for p in second.paths() if p.startswith("/index/")] == []
+
+    def test_source_skips_index_without_listing(self, tmp_path: Path, fetcher: Fetcher) -> None:
+        # A collection pinned to the second index is never asked of the first.
+        _ = make_index(tmp_path / "private", {"a.a": [v("1.0.0")]}, hashed=False, listing=False)
+        _ = make_index(tmp_path / "public", {"a.a": [v("2.0.0")]})
+        cache = str(tmp_path / "cache")
+        toml = '[project]\ncollections = ["a.a"]\n[project.sources]\n"a.a" = { index = "public" }\n'
+        with IndexServer(tmp_path / "private") as first, IndexServer(tmp_path / "public") as second:
+            clients = [
+                IndexClient(Index("private", first.url), fetcher, cache),
+                IndexClient(Index("public", second.url), fetcher, cache),
+            ]
+
+            result = resolve(manifest(toml), clients)
+
+        assert chosen(result) == {"a.a": "2.0.0"}
+        assert [p for p in first.paths() if p.startswith("/index/")] == []
 
 
 def lock_of(indexes: Indexes, versions: dict[str, str], index: str = "alai") -> Lock:

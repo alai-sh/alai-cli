@@ -127,6 +127,29 @@ class TestLock:
 
         assert "warning: a.a 1.0.0 is yanked\n" in capsys.readouterr().err
 
+    def test_index_without_listing(self, project: Path, tmp_path: Path) -> None:
+        # An index of index files alone, with no collections.json.
+        index = make_index(
+            tmp_path / "plain", {"a.a": [v("1.0.0", {"b.b": "*"})], "b.b": [v("1.0.0")]}, hashed=False, listing=False
+        )
+        write_project(project, ["a.a"])
+
+        assert lock("--default-index", index) == 0
+
+        text = (project / "alai.lock").read_text()
+        assert 'name = "a.a"\nversion = "1.0.0"' in text
+        assert 'name = "b.b"\nversion = "1.0.0"' in text
+
+    def test_missing_from_index_without_listing(
+        self, project: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        index = make_index(tmp_path / "plain", {"a.a": [v("1.0.0")]}, hashed=False, listing=False)
+        write_project(project, ["z.z"])
+
+        assert lock("--default-index", index) == EXIT_ERROR
+
+        assert "no configured index ('alai') has z.z" in capsys.readouterr().err
+
     def test_quiet(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         write_project(project, ["a.a"])
 
