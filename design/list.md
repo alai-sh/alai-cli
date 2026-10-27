@@ -100,10 +100,9 @@ installed with `uv pip install` (2026-10-22):
   a blank `alai.toml` in `~/dev`, whose collections are in
   `~/dev/ansible_collections`, and got none, as the project's
   `collections_dir` is `collections` (2026-10-22). The directory can also
-  come from `--collections-dir`, `ALAI_COLLECTIONS_DIR` or an
-  `ansible.cfg` found above.
-- **Without `alai.lock`**, in a project marked by `ansible.cfg` or with
-  `--collections-dir`, rows have no marker. No project and no
+  come from `--collections-dir` or `ALAI_COLLECTIONS_DIR`.
+- **Without `alai.lock`**, in a project that has none or with
+  `--collections-dir` outside a project, rows have no marker. No project and no
   `--collections-dir` is the same error as `collection install`'s.
 - **Not listed**: `ansible.builtin`, which isn't in the directory and
   which alai doesn't manage, though `find` counts it as installed.

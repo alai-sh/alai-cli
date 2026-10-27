@@ -3,7 +3,7 @@
 **Status: implemented** (2026-10-21), as the user docs describe
 ([docs/projects.md](../docs/projects.md#a-collections-repository),
 [docs/running-ansible.md](../docs/running-ansible.md#in-a-collections-repository)):
-`galaxy.yml` as a marker, its dependencies and `meta/runtime.yml` as the
+`galaxy.yml` beside `alai.toml`, its dependencies and `meta/runtime.yml` as the
 manifest (`_galaxy.py`, `load_project` in `_project.py`), the collection as
 an editable root in the lock, the tree in the cache with the overlap check
 (`_config.py`), the link (`link_editable` in `_install.py`), and
@@ -31,7 +31,7 @@ through its module_utils, with `alai run ansible-test …` from the checkout:
 these notes and messages:
 
 - **Collection project**: a project whose root defines a collection, today
-  by a `galaxy.yml` (with or without `alai.toml` beside it), later perhaps a
+  by a `galaxy.yml` beside its `alai.toml`, later perhaps a
   `[collection]` table in `alai.toml`. What it defines is **the project's own
   collection**.
 - **Playbook project**: any other project, whatever it holds (playbooks,
@@ -56,7 +56,7 @@ the tree lives (below) differs.
 
 | | Playbook project | Collection project |
 |---|---|---|
-| Marker | `alai.toml`, `ansible.cfg`, `collections/` | `galaxy.yml`, with or without `alai.toml` |
+| Marker | `alai.toml` | `alai.toml` with `galaxy.yml` beside it |
 | Requirements | `[project] collections` in `alai.toml` | `dependencies` in `galaxy.yml`; `[project] collections` is an error ([Decisions](#decisions)) |
 | Target ansible-core | `[project] requires_ansible` | `requires_ansible` in `meta/runtime.yml` |
 | In the lock | No entry: `[project]` holds its inputs | The root entry, `source = { editable = "." }`, as uv locks its own package |
@@ -495,14 +495,16 @@ to the editor's port. Not tried with an editor attached.
 
 ## What today's code must keep possible
 
-- **Discovery**: `galaxy.yml` is a marker between `alai.toml` and
-  `ansible.cfg`, done. That order matters because integration targets
-  sometimes contain an `ansible.cfg`; a nearer `alai.toml` without a
-  `galaxy.yml` beside it still wins, so a source checkout inside a playbook
-  project's `collections/` doesn't become the project. Installed
-  collections (`MANIFEST.json`) are never markers. If `alai.toml` comes to
-  define a collection (see [Open questions](#open-questions)), a repo
-  without `galaxy.yml` is recognised from `alai.toml` instead.
+- **Discovery**: only `alai.toml` marks a root, and a `galaxy.yml` beside it
+  makes it a collection project (2026-10-27, see
+  [configuration.md](configuration.md#decisions)). Until then `galaxy.yml`
+  alone was a marker too, between `alai.toml` and `ansible.cfg`, so a
+  checkout needed no `alai.toml`. An integration target's `ansible.cfg` and
+  a source checkout inside a playbook project's `collections/` are part of
+  the project above them, with nothing to rank. Installed collections
+  (`MANIFEST.json`) are never markers. If `alai.toml` comes to define a
+  collection (see [Open questions](#open-questions)), a repo without
+  `galaxy.yml` is recognised from `alai.toml` instead.
 - **`[project] collections_dir`** moves the tree, done.
 - **`[project.groups.<name>]`** in `alai.toml` holds a collection project's
   test-only collections, done. `tests/*/requirements.yml` could be imported

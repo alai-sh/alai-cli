@@ -154,7 +154,11 @@ What alai takes from it:
   [collection-development.md](collection-development.md)).
 - **A project is required.** `uv run` runs outside a project, but without
   one alai has no collections directory to point Ansible at, so both
-  commands fail without an `alai.toml`, `--no-sync` included.
+  commands fail without an `alai.toml`, `--no-sync` included, with the hint
+  every command has (see [configuration.md](configuration.md#decisions)).
+  What `uv run` does outside a project is mostly `--python`'s, picking an
+  interpreter to run with, and alai has no equivalent for Python or
+  ansible-core yet, so there's nothing for it to do there (2026-10-27).
 - **The sync reports briefly**, as `uv run`'s does: no `Resolved` or
   `Checked` line, only the phases that changed something, and each
   collection's line only with `-v`.

@@ -63,8 +63,8 @@ searches locally is the reason the index has one.
   aren't counted, though plain `ansible-playbook` would load them.
   On disk: every collection under the project's
   `collections_dir`, with its version from `MANIFEST.json`, found the way
-  `alai collection install` finds the project (an `alai.toml`,
-  `ansible.cfg` or `collections/ansible_collections`), so it works
+  `alai collection install` finds the project (an `alai.toml`, or
+  `--collections-dir`), so it works
   without a lock. Outside any project, only `ansible.builtin` counts, and
   a dim status line says so. **`ansible.builtin` is always installed**, as
   it's part of ansible-core.

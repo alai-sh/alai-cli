@@ -12,7 +12,7 @@ import re
 import typing as _t
 
 from ._common import ConfigError, Record, home_path, inside, read_toml, selects, sha256_file
-from ._config import RawManifest, Settings, raw_manifest
+from ._config import RawManifest, Settings, no_project, raw_manifest
 from ._lock import (
     ArchiveSource,
     ArchiveUrlSource,
@@ -80,23 +80,12 @@ class Upgrade(Record):
 def load_project(settings: Settings, why: str) -> tuple[RawManifest, Manifest]:
     """The project's ``alai.toml`` as written and as parsed; ``why`` says, in the error, why a command needs one.
 
-    In a collection project, ``alai.toml`` is optional: see ``with_root``.
+    In a collection project, it's resolved with ``galaxy.yml``: see ``with_root``.
     """
     project = settings.project
     if project.config_file is None:
-        if project.collection_file is None:
-            raise ConfigError(f"there's no alai.toml in {home_path(project.root)}: {why}")
-        raw = RawManifest(
-            project.collection_file,
-            collections=[],
-            requires_ansible=None,
-            groups={},
-            overrides={},
-            ignore_requires_ansible=[],
-        )
-    else:
-        raw = raw_manifest(read_toml(project.config_file), project.config_file)
-    return with_root(settings, raw)
+        raise no_project(project, why)
+    return with_root(settings, raw_manifest(read_toml(project.config_file), project.config_file))
 
 
 def with_root(

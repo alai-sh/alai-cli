@@ -351,7 +351,7 @@ class TestErrors:
     def test_no_project_file(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         assert lock() == EXIT_ERROR
 
-        assert "there's no alai.toml in" in capsys.readouterr().err
+        assert "no alai.toml found in" in capsys.readouterr().err
 
     def test_resolution_failure(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         write_project(project, ["a.a>=3"])

@@ -64,8 +64,8 @@ def _show_key(settings: Settings, key: str) -> None:
 
 def _show_all(settings: Settings, *, verbose: bool) -> None:
     project = settings.project
-    found = f"found by {project.marker}" if project.marker else "no marker found"
-    _section("Project", [("root", f"{home_path(project.root)} ({found})")])
+    root = home_path(project.root) + ("" if project.config_file else " (no alai.toml found)")
+    _section("Project", [("root", root)])
 
     if settings.no_config:
         files = [("none", "--no-config given")]

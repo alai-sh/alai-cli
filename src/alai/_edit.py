@@ -14,7 +14,7 @@ import secrets
 import time
 
 from ._common import NAME_RE, ConfigError, home_path, read_toml_document
-from ._config import Settings, raw_manifest
+from ._config import Settings, no_project, raw_manifest
 from ._lock import Lock, lock_path, read_lock, write_lock
 from ._manifest import (
     GitSource,
@@ -292,9 +292,7 @@ def _read(settings: Settings, group: str | None) -> tuple[str, TomlDocument]:
             + "for collections only its tests need"
         )
     if config is None:
-        raise ConfigError(
-            f"there's no alai.toml in {home_path(settings.project.root)}: create one with a [project] table first"
-        )
+        raise no_project(settings.project, "it's where the project's collections are listed")
     return config, read_toml_document(config)
 
 

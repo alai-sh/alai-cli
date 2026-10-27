@@ -668,7 +668,7 @@ class TestAddRemove:
 class TestCollectionInstall:
     def test_directory_copied_every_time(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         src = collection_source(project.parent / "src", dependencies={"c.c": "*"})
-        (project / "collections" / "ansible_collections").mkdir(parents=True)
+        _ = (project / "alai.toml").write_text("")
 
         assert main(["collection", "install", "../src"]) == 0
         assert lines(capsys.readouterr().err)[-2:] == [" + c.c==1.0.0", f" + ns.src==1.0.0 (from {src})"]
@@ -678,7 +678,7 @@ class TestCollectionInstall:
 
     def test_editable(self, project: Path) -> None:
         src = collection_source(project.parent / "src")
-        (project / "collections" / "ansible_collections").mkdir(parents=True)
+        _ = (project / "alai.toml").write_text("")
 
         assert main(["collection", "install", "-q", "-e", "../src"]) == 0
 

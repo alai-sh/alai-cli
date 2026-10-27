@@ -70,7 +70,7 @@ url = "https://ansible-index.example.com/"
 $ ALAI_LINK_MODE=clone alai -v config show --index staging=https://staging.example.com/
 debug: Ignoring index 'internal' from ~/.config/alai/alai.toml, already defined at a higher level
 Project
-  root  ~/project (found by alai.toml)
+  root  ~/project
 
 Config files, highest precedence first
   project  ~/project/alai.toml

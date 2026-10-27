@@ -135,14 +135,14 @@ An `alai.toml`, even an empty one, marks the project's directory, and collection
 alai looks for the project from the current directory upwards, so run from `playbooks/`, it finds the `alai.toml` above and installs into the project's `collections/`, not one in `playbooks/`.
 {: .alai-cast-description }
 
-[Installing into a project marked by ansible.cfg](casts/collection-install-ansible-cfg.cast){ .alai-cast }
+[Installing where there's only an ansible.cfg](casts/collection-install-ansible-cfg.cast){ .alai-cast }
 
-Without an `alai.toml`, an `ansible.cfg` marks the project's directory too, so collections still go into `collections/` beside it. alai only uses it to find the project; it doesn't read Ansible's settings from it.
+An `ansible.cfg` doesn't mark a project, only an `alai.toml` does. Without one, alai names the nearest `ansible.cfg` or `galaxy.yml` it passed, as the directory most likely to be the project's root. An empty `alai.toml` there makes it one.
 {: .alai-cast-description }
 
 [Installing outside a project](casts/collection-install-outside.cast){ .alai-cast }
 
-With no `alai.toml`, `ansible.cfg` or `collections/ansible_collections` in the current directory or above it, there's no project, and alai won't guess where to install: `--collections-dir` says where.
+With no `alai.toml` in the current directory or above it, there's no project, and alai won't guess where to install. `--collections-dir` says where.
 {: .alai-cast-description }
 
 ```console

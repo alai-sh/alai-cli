@@ -417,7 +417,7 @@ class TestErrors:
     def test_no_project_file(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         assert main(["add", "c.c"]) == EXIT_ERROR
 
-        assert "there's no alai.toml in" in capsys.readouterr().err
+        assert "no alai.toml found in" in capsys.readouterr().err
 
     @pytest.mark.parametrize(
         ("argv", "message"),

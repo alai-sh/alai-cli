@@ -2,9 +2,8 @@
 # MIT License (see LICENSE or https://opensource.org/licenses/MIT)
 
 """``alai collection install`` and ``uninstall``: collections installed by hand, outside the project's requirements and
-lock, as ``uv pip install`` and ``uv pip uninstall`` are. An ``alai.toml``, if the project has one, still marks it and its
-settings apply; without one, an ``ansible.cfg`` or ``collections/ansible_collections`` marks it. The design is in
-``design/install.md``."""
+lock, as ``uv pip install`` and ``uv pip uninstall`` are. The project's ``alai.toml`` still marks it and its settings
+apply; without one, ``--collections-dir`` says where. The design is in ``design/install.md``."""
 
 from __future__ import annotations
 
@@ -14,7 +13,7 @@ import time
 import typing as _t
 
 from ._common import ConfigError, home_path
-from ._config import Settings
+from ._config import Settings, no_project
 from ._install import Installed, installed, remove
 from ._manifest import (
     Manifest,
@@ -36,11 +35,8 @@ def target(settings: Settings) -> str:
     """The collections directory to work on: the project's, or one set explicitly. With neither, an error, as uv won't
     install without an environment to install into, rather than make a ``collections/`` wherever alai runs."""
     project = settings.project
-    if project.marker is None and not settings.collections_dir_set:
-        raise ConfigError(
-            f"no project found from {home_path(project.root)} (no alai.toml, ansible.cfg or collections/ansible_collections in "
-            + "it or a directory above it); pass --collections-dir to say where to install"
-        )
+    if project.config_file is None and not settings.collections_dir_set:
+        raise no_project(project, "pass --collections-dir to say where to install")
     return settings.collections_dir
 
 

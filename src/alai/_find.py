@@ -211,7 +211,7 @@ def load_catalog(settings: Settings) -> Catalog:
 def installed_collections(settings: Settings) -> dict[str, Installed] | None:
     """The project's installed collections, or None if there's no project: with no collections directory, only
     ``ansible.builtin`` is installed."""
-    if settings.project.marker is None and not settings.collections_dir_set:
+    if settings.project.config_file is None and not settings.collections_dir_set:
         return None
     return installed(settings.collections_dir)
 

@@ -155,6 +155,43 @@ unlisted collections end up in runs unnoticed?
 
 See [run.md](run.md#what-uv-run-does).
 
+## What marks a project
+
+**Today:** only an `alai.toml`, even an empty one, marks a project's root.
+A `galaxy.yml` beside it makes it a collection project. Without one, the
+error's hint names the directory of the nearest `galaxy.yml` or
+`ansible.cfg` as the place for an empty `alai.toml` (2026-10-27).
+
+**The alternative:** `galaxy.yml` as a marker again, so a collection
+checkout works with no `alai.toml`, and possibly `ansible.cfg`, so a repo
+moving from ansible-galaxy works with none. Both were markers before.
+
+**Ask:** does creating an empty `alai.toml` get in anyone's way, for
+example in a collection whose maintainers don't use alai? Did anyone run
+alai in a repo with only an `ansible.cfg`, and which directory did they
+expect to be the root?
+
+See [configuration.md](configuration.md#decisions).
+
+## Finding a collections directory without a project
+
+**Today:** `alai collection install`, `uninstall` and `list` use the
+project's collections directory, or `--collections-dir`. With no
+`alai.toml`, they fail, even beside an existing
+`collections/ansible_collections/` (2026-10-27).
+
+**The alternative:** as `uv pip` walks up to the nearest `.venv`, walk up to
+the nearest `collections/ansible_collections/` when there's no `alai.toml`.
+Only these commands would look, and a project, when there is one, would
+always decide. Nothing would be created.
+
+**Ask:** do people run `alai collection install` by hand in a repo with
+no `alai.toml`, for example straight after moving from ansible-galaxy? Is
+their collections directory named `collections/`, or something else
+`--collections-dir` has to name anyway?
+
+See [install.md](install.md#installing-by-hand).
+
 ## Where a collection's test tree lives
 
 **Today (planned):** a collection project installs into a

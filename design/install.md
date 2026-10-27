@@ -360,12 +360,10 @@ are. Tested with uv 0.13 on 2026-10-20 in a venv:
 - **Nothing is removed that wasn't asked for**: `install_locked` runs with
   `exact=False`. The project's `[project]` requirements and `alai.lock` are
   neither used nor written. An `alai.toml`, where the project has one, is
-  still read as for any command: it's the first marker discovery looks
-  for, and its settings (the indexes, `collections_dir`, `link_mode`)
-  apply, as uv's `pip` commands still read `uv.toml` (a `uv.toml` index
-  URL was used by `uv pip install`). Without one, an `ansible.cfg` or
-  `collections/ansible_collections/` marks the project. A failure names the requirement as `(from the
-  command line)`.
+  still read as for any command: it marks the project, and its settings
+  (the indexes, `collections_dir`, `link_mode`) apply, as uv's `pip`
+  commands still read `uv.toml` (a `uv.toml` index URL was used by `uv pip
+  install`). A failure names the requirement as `(from the command line)`.
 - **Uninstall removes only the collections named**; what they depend on
   stays, as uv left `idna`, `certifi` and the rest after `uv pip uninstall
   requests`. One that isn't installed is a warning, and with none left it's
@@ -373,12 +371,21 @@ are. Tested with uv 0.13 on 2026-10-20 in a venv:
   installed" and "No packages to uninstall".
 - **Where: the project's collections directory, or an explicit one.** uv
   won't install without an environment ("No virtual environment found;
-  run `uv venv` … or pass `--system`"). Here a project is any of
-  discovery's markers, so an `ansible.cfg` or an existing
-  `collections/ansible_collections/` counts without an `alai.toml`; with
-  no marker, `collections_dir` has to be set (`--collections-dir`,
-  `ALAI_COLLECTIONS_DIR`, a config file), or it's an error, rather than a
-  `collections/` in whatever directory alai runs from.
+  run `uv venv` … or pass `--system`"). Here that's a project's
+  `alai.toml`, even an empty one. Without one, `collections_dir` has to be
+  set (`--collections-dir`, `ALAI_COLLECTIONS_DIR`, a config file), or it's
+  an error, rather than a `collections/` in whatever directory alai runs
+  from. Until 2026-10-27 an `ansible.cfg` or an existing
+  `collections/ansible_collections/` counted as a project too (see
+  [configuration.md](configuration.md#decisions)); now the error's hint
+  names the nearest `ansible.cfg` or `galaxy.yml` instead. uv 0.13.5's
+  `uv pip` walks up to the nearest `.venv` whatever the project, as it used
+  one a directory above a nested `pyproject.toml` without one, and fails
+  with "No virtual environment found" rather than create one. Finding an
+  existing `collections/ansible_collections/` the same way is left as a
+  question ([user-questions.md](user-questions.md#finding-a-collections-directory-without-a-project)):
+  next to `alai.toml` it needs a precedence rule, since `collections_dir`
+  can be anywhere, and there's no `uv venv` to create one.
 - **Which directory is said first**, dim, on stderr:
   `Using collections directory at: ~/project/collections`, unless it's
   `collections/` in the current directory. uv 0.13.0 (2026-10-21) prints
@@ -673,8 +680,8 @@ rather than one file taking precedence over the other
   `cache_keys` hashes `galaxy.yml`, `MANIFEST.json` and
   `meta/runtime.yml`, whichever exist. `MANIFEST.json` holds `FILES.json`'s
   checksum, so a new build changes it.
-- **A collection project's root is still only a `galaxy.yml`**: an
-  installed collection's `MANIFEST.json` is never a project marker
+- **A collection project still needs a `galaxy.yml`** beside its
+  `alai.toml`: an installed collection's `MANIFEST.json` never makes one
   ([collection-development.md](collection-development.md#what-todays-code-must-keep-possible)).
 
 A git checkout goes through the same reader, so a repository that commits

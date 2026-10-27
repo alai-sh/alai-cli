@@ -2,8 +2,8 @@
 
 Most alai commands revolve around a single setup, which it calls a "project".
 A project contains the settings and metadata needed by alai to manage the
-requirements of the project itself. It also typically functions as a marker to
-signal what directory is the "root" of a project.
+requirements of the project itself. Its `alai.toml` also marks which directory
+is the "root" of a project.
 
 This page goes through what a project is, how to start and use each kind,
 how a project is found, and where its collections are installed.
@@ -25,7 +25,7 @@ including in a **playbook** project.
 
 | | Playbook project | Collection project |
 |---|---|---|
-| Marked by | `alai.toml` without a `galaxy.yml` beside it, `ansible.cfg` or `collections/ansible_collections/` | `galaxy.yml`, with or without an `alai.toml` beside it |
+| Marked by | `alai.toml` | `alai.toml` with a `galaxy.yml` beside it |
 | The collections it needs | [`project.collections`](alai-toml.md#projectcollections) in `alai.toml` | `dependencies` in `galaxy.yml` |
 | The ansible-core versions it targets | [`project.requires_ansible`](alai-toml.md#projectrequires_ansible) in `alai.toml` | `requires_ansible` in `meta/runtime.yml` |
 | Collections only some tasks need, such as tests | [`[project.groups.<name>]`](alai-toml.md#projectgroupsname) in `alai.toml` | [`[project.groups.<name>]`](alai-toml.md#projectgroupsname) in `alai.toml` |
@@ -191,9 +191,9 @@ $ touch alai.toml
 $ alai sync
 ```
 
-While an `alai.toml` file is not required, it is recommended, as it removes
-any ambiguity when alai looks for the project root. Commit `alai.toml` and
-`alai.lock`, and ignore what ansible-test writes:
+The `alai.toml` is what makes the checkout a project. A `galaxy.yml` on its
+own isn't enough. Commit `alai.toml` and `alai.lock`, and ignore what
+ansible-test writes:
 
 ```text
 # .gitignore
@@ -289,34 +289,37 @@ For alai to manage a project, it must determine what the root of the
 project is. The root is used for things like determining where the lock file is
 created and where collections are installed to. To find the project root,
 alai walks up from the current directory (or from `--project`,
-`ALAI_PROJECT`) to the filesystem root. The project root is the directory
-holding, in order of preference:
+`ALAI_PROJECT`) to the filesystem root. The root is the nearest directory
+holding an `alai.toml`. Even an empty one works.
 
-1. the nearest `alai.toml`
-2. else the nearest `galaxy.yml`
-3. else the nearest `ansible.cfg`
-4. else the nearest `collections/ansible_collections/`
-5. else the starting directory
-
-A marker earlier in the list wins over a nearer one later in it, so running
-from `repo/playbooks/`, which has its own `ansible.cfg`, still finds
-`repo/alai.toml`, and running from an integration test target with an
-`ansible.cfg` still finds the collection's `galaxy.yml`. The root is the
-same whichever directory inside the project alai runs from.
-
-!!! tip "Give every project an `alai.toml`"
-
-    It's the strongest marker, so alai never takes a directory inside the
-    project, such as a subdirectory with its own `ansible.cfg`, as a project
-    of its own. Even an empty one works.
+Nothing else marks a project. A subdirectory with its own `ansible.cfg`, or
+an integration test target with one, is still part of the project above it.
+The root is the same whichever directory inside the project alai runs from.
+A collection checkout inside a playbook project, such as one in
+`collections_src/`, is part of the playbook project unless it has an
+`alai.toml` of its own.
 
 A repository can hold several projects, each in its own directory with its
 own `alai.toml`. alai uses the nearest one, so each project has its own
 `alai.lock` and collections.
 
-Regardless of the marker that is used, alai settings are only read from
-`alai.toml`. `ansible.cfg` only marks where the project is if no earlier
-marker is present. alai doesn't read Ansible's settings from it.
+With no `alai.toml` in the current directory or above it, there's no
+project. Commands that need one fail, and say which directory to make the
+project if alai passed a `galaxy.yml` or an `ansible.cfg` on the way up:
+
+```console
+$ cd my_col/plugins
+$ alai sync
+error: no alai.toml found in ~/my_col/plugins or any directory above it: alai sync installs what it lists
+
+hint: ~/my_col has a galaxy.yml. To make it a collection project, create an empty alai.toml there
+```
+
+`--project` only changes where alai starts looking. It doesn't create an
+`alai.toml`.
+
+alai settings are only read from `alai.toml`. alai doesn't read Ansible's
+settings from `ansible.cfg`.
 
 Discovery is the same with `--no-config` and `--config-file`, as those
 arguments only change which settings are read, not where the project is.

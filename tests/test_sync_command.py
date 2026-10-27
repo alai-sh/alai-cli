@@ -459,7 +459,7 @@ class TestErrors:
     def test_no_project_file(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         assert sync() == EXIT_ERROR
 
-        assert "there's no alai.toml in" in capsys.readouterr().err
+        assert "no alai.toml found in" in capsys.readouterr().err
 
     def test_offline_miss(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         # Locked from a file index, then installed offline: file artifacts are read directly, so use an http one.

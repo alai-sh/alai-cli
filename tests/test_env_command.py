@@ -96,7 +96,7 @@ class TestEnv:
     def test_needs_a_project(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         assert main(["env"]) == EXIT_ERROR
 
-        assert "there's no alai.toml" in capsys.readouterr().err
+        assert "no alai.toml found in" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(

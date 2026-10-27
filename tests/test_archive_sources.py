@@ -345,7 +345,7 @@ class TestCollectionInstall:
     def test_path(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         path = project.parent / "ns-src-1.0.0.tar.gz"
         _ = tarball(path, dependencies={"c.c": "*"})
-        (project / "collections" / "ansible_collections").mkdir(parents=True)
+        _ = (project / "alai.toml").write_text("")
 
         assert main(["collection", "install", "../ns-src-1.0.0.tar.gz"]) == 0
         assert lines(capsys.readouterr().err)[-2:] == [" + c.c==1.0.0", f" + ns.src==1.0.0 (from {path})"]
@@ -360,7 +360,7 @@ class TestCollectionInstall:
     def test_url(self, project: Path, server: IndexServer, capsys: pytest.CaptureFixture[str]) -> None:
         _ = tarball(Path(server.root) / "ns-src-1.0.0.tar.gz")
         url = f"{server.url}ns-src-1.0.0.tar.gz"
-        (project / "collections" / "ansible_collections").mkdir(parents=True)
+        _ = (project / "alai.toml").write_text("")
 
         assert main(["collection", "install", url]) == 0
 
@@ -368,7 +368,7 @@ class TestCollectionInstall:
         assert downloads(server) == 1
 
     def test_url_not_editable(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        (project / "collections" / "ansible_collections").mkdir(parents=True)
+        _ = (project / "alai.toml").write_text("")
 
         assert main(["collection", "install", "-e", "https://example.invalid/x.tar.gz"]) == EXIT_ERROR
 
