@@ -9,6 +9,7 @@ import hashlib
 import io
 import json
 import os
+import socket
 import stat
 import tarfile
 from pathlib import Path
@@ -17,7 +18,7 @@ import pytest
 from artifact_data import Link, build_artifact
 from index_server import IndexServer, serve
 
-from alai import _artifacts, _native
+from alai import _artifacts, _fetch, _native
 from alai._artifacts import Artifact, ArtifactCache, ArtifactError
 from alai._fetch import Fetcher
 from alai._semver import Version
@@ -177,6 +178,42 @@ class TestDownloadErrors:
 
         with pytest.raises(ArtifactError, match=r"can't download ns\.coll 1\.0\.0: .*not found"):
             _ = cache.get(Artifact("ns.coll", Version("1.0.0"), url=url, cksum="0" * 64, size=1))
+
+    def test_unreadable(self, tmp_path: Path, cache: ArtifactCache) -> None:
+        url = tmp_path.as_uri()
+
+        with pytest.raises(ArtifactError, match=rf"can't download ns\.coll 1\.0\.0: {tmp_path}: Is a directory$"):
+            _ = cache.get(Artifact("ns.coll", Version("1.0.0"), url=url, cksum="0" * 64, size=1))
+
+    @pytest.mark.parametrize(
+        ("status", "message"),
+        [(404, r"not found \(HTTP 404\)"), (410, r"not found \(HTTP 410\)"), (403, "HTTP 403 Forbidden")],
+    )
+    def test_error_status(self, tmp_path: Path, cache: ArtifactCache, status: int, message: str) -> None:
+        server: IndexServer
+        for server in serve(tmp_path):
+            server.responses["/x.tar.gz"] = [(status, {}, b"")]
+            url = f"{server.url}x.tar.gz"
+
+            with pytest.raises(ArtifactError, match=rf"can't download ns\.coll 1\.0\.0: {url}: {message}$"):
+                _ = cache.get(Artifact("ns.coll", Version("1.0.0"), url=url, cksum="0" * 64, size=1))
+        assert leftovers(cache) == []
+
+    def test_connection_refused(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Retried without waiting: the client takes the backoff when the Fetcher is made, so it's made after this.
+        monkeypatch.setattr(_fetch, "_BACKOFF", 0.0)
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        url = f"http://127.0.0.1:{port}/x.tar.gz"
+
+        with (
+            Fetcher(user_agent="t") as fetcher,
+            pytest.raises(ArtifactError, match=rf"can't download ns\.coll 1\.0\.0: {url}: can't connect: "),
+        ):
+            _ = ArtifactCache(str(tmp_path / "cache"), fetcher).get(
+                Artifact("ns.coll", Version("1.0.0"), url=url, cksum="0" * 64, size=1)
+            )
 
     def test_offline_miss(self, tmp_path: Path) -> None:
         with Fetcher(user_agent="t", offline=True) as fetcher:

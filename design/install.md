@@ -1000,17 +1000,16 @@ own:
 
 ## Not done yet
 
-- **One call to the extension for every artifact** (planned 2026-10-27,
-  after fetches as futures): download, check and extract, with the
-  extension's runtime downloading and a few threads extracting, in place of
-  `get_all`'s two pools and the hand-over between them, and progress back
-  through a callback. Measured reasons and the open question of streaming
-  each download into its extraction are in
-  [performance.md](performance.md#http-in-the-extension). The call takes the
-  HTTP client to use, so a sync opens one `Fetcher` for its resolve and its
-  downloads and passes it to both; the extension's map of clients by
-  configuration (`SHARED` in `http.rs`), there so the two fetchers share
-  connections today, then goes (decided with the user, 2026-10-27).
+- **Streaming each download into its extraction**, rather than writing
+  its tarball first: it would trim the end of a cold sync, as extraction
+  ends within 0.1 s of the last download. The extractor reads the tarball
+  twice, its headers checked before anything is written, so it would need
+  to keep the whole tarball in memory or extract in one pass, and it would
+  extract bytes before their SHA-256 is checked, a change to decide on its
+  own, though nothing's renamed into place before it matches. Moving the
+  downloading and extracting into one call to the extension, without
+  streaming, was tried and gained nothing
+  ([index-client.md](index-client.md#decisions)).
 - **`alai cache clean [NAME…]`, and the rest of uv's `cache` commands**
   (`prune`, `dir`), so an edited cached collection, or a cache that's grown,
   can be cleared without knowing its layout. Until then the docs say to

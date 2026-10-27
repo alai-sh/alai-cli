@@ -497,11 +497,12 @@ than urllib3's.
 | Eight collections, cold `alai sync` with the lock | 0.96 s | 0.84 s | 0.75 s |
 | `sivel.acd`, cold `alai sync` with the lock | 2.54 s | 1.94 s | 1.97 s |
 
-The threads are the fetcher's, for index files (`_ALAI_FETCH_THREADS`);
-downloads keep their own 16. Connections to the two hosts, counted with
-`ss` through a cold `sivel.acd` lock and sync: 16 and 17 with urllib3, 1
-and 2 with the client. More than curl's numbers predicted, as the client
-also drops urllib3's work in Python and truststore's per connection.
+The threads are the fetcher's, for index files (`_ALAI_FETCH_THREADS`),
+64 by default since (below); downloads keep their own 16. Connections to
+the two hosts, counted with `ss` through a cold `sivel.acd` lock and sync:
+16 and 17 with urllib3, 1 and 2 with the client. More than curl's numbers
+predicted, as the client also drops urllib3's work in Python and
+truststore's per connection.
 
 **Sharing the client, and connecting early**, then went on top
 (2026-10-27), medians of 7 runs (5 with the lock):
@@ -529,26 +530,29 @@ one, there's no resolve to overlap, so nothing changes.
 aws-lc-rs built with no changes in CI's manylinux2014 (glibc 2.17) and
 musllinux 1.2 aarch64 containers, with no cmake; the wheel built on this
 machine was tagged `manylinux_2_38` only because of the host's glibc. Both
-musl wheels bundle `libgcc_s`, as before. The x86_64 and macOS builds are
-still to see in CI.
+musl wheels bundle `libgcc_s`, as before. The x86_64 and macOS wheels built
+and passed their tests in CI too (2026-10-27).
 
 **Moving more of the work into the extension**, considered on 2026-10-27,
 with Python about 0.2 s of a cold sync:
 
-- **Next: fetches as futures from the extension**, in
-  [index-client.md](index-client.md#not-done-yet): the measured gain
-  above from more requests in flight, and the fetcher's pool of threads
-  gone.
-- **Next: one call to download, check and extract every artifact**, in
-  [install.md](install.md): the download and extraction pools of
-  `_artifacts.get_all`, about 100 lines of Python, become the extension's
-  (downloads on its runtime, extraction on a few threads), with progress
-  through a callback. Faster only at the end, as extraction ends within
-  0.1 s of the last download already; streaming each download into its
-  extraction would trim that, but extracts bytes before their SHA-256 is
-  checked, a change to decide on its own, though nothing's renamed into
-  place before it matches and the extractor is already hardened against a
-  hostile tarball.
+- **Done instead: 64 threads for the fetcher** (2026-10-27,
+  [index-client.md](index-client.md#decisions)). Fetches started in the
+  extension, and one call to download, check and extract every artifact,
+  were both built first, and neither beat the threads they'd replace once
+  there were 64 of them. Medians of 7 runs, interleaved, each with an empty
+  cache, whole runs:
+
+  | `sivel.acd` | 16 threads | 64 threads | Both built |
+  |---|---|---|---|
+  | Cold `alai lock` | 1.06 s | 0.94 s | 0.91 s |
+  | Cold `alai sync` with no lock | 2.77 s | 2.44 s | 2.59 s |
+
+  Preparing with its lock took as long either way (1.97 s with the pools,
+  2.03 s with the one call, nine runs each, the ranges overlapping), and
+  the runtime's worker threads, which hashed and wrote each tarball there,
+  made no difference at four rather than two. Streaming each download into
+  its extraction is still open, in [install.md](install.md#not-done-yet).
 - **Linking every collection in one call** would be simpler, not faster,
   as it's the filesystem's time.
 - **Kept in Python**: the index cache and its rules, and building the
@@ -849,7 +853,10 @@ what's left is installing, by clone ([Cloning](#cloning)).
     checked as built by `ci.yml` from the tag, with `gh attestation verify
     <file> --repo alai-sh/alai-cli --signer-workflow
     alai-sh/alai-cli/.github/workflows/ci.yml --source-ref
-    refs/tags/<tag>`. GitHub's attestation of an immutable release and
+    refs/tags/<tag>`. With the first release, the install docs get a short
+    section on it, and that it works on a file from PyPI too, as
+    attestations are keyed by the file's SHA-256; not before, as `docs/`
+    describes only what works. GitHub's attestation of an immutable release and
     PyPI's publish attestations say what was released and how it reached
     PyPI; only this says CI built it, as a file uploaded to the draft by
     hand would pass both. So `publish.yml` verifies each file this way
