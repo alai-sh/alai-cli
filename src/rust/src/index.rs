@@ -19,16 +19,14 @@ pub(crate) enum Deprecated {
     Message(String),
 }
 
-/// A line's fields once their types are checked: `cksum`, `size`, `yanked`, `origin`, `published`, `deprecated`,
-/// `upstream_conflict`, each of `deps` as `(name, req)`, and `requires_ansible`.
+/// A line's fields once their types are checked: `cksum`, `size`, `yanked`, `published`, `deprecated`, each
+/// of `deps` as `(name, req)`, and `requires_ansible`.
 type Fields = (
     String,
     u64,
     bool,
     String,
-    String,
     Deprecated,
-    bool,
     Vec<(String, String)>,
     Option<String>,
 );
@@ -104,7 +102,6 @@ fn fields(obj: &Map<String, Value>, name: &str) -> Result<(String, Fields), (Opt
         _ => return Err(fail(required("size", "an integer"))),
     };
     let yanked = boolean(obj, "yanked").map_err(fail)?;
-    let origin = string(obj, "origin").map_err(fail)?;
     let published = string(obj, "published").map_err(fail)?;
     let Some(raw_deps) = obj.get("deps").and_then(Value::as_array) else {
         return Err(fail(required("deps", "an array")));
@@ -114,11 +111,6 @@ fn fields(obj: &Map<String, Value>, name: &str) -> Result<(String, Fields), (Opt
         Some(Value::Bool(flag)) => Deprecated::Flag(*flag),
         Some(Value::String(message)) => Deprecated::Message(message.clone()),
         Some(_) => return Err(fail(format!("{vers}: 'deprecated' must be true or a message"))),
-    };
-    let upstream_conflict = match obj.get("upstream_conflict") {
-        None => false,
-        Some(Value::Bool(flag)) => *flag,
-        Some(_) => return Err(fail(format!("{vers}: 'upstream_conflict' must be a boolean"))),
     };
     let mut deps = Vec::with_capacity(raw_deps.len());
     for dep in raw_deps {
@@ -139,10 +131,8 @@ fn fields(obj: &Map<String, Value>, name: &str) -> Result<(String, Fields), (Opt
         cksum.to_owned(),
         size,
         yanked,
-        origin.to_owned(),
         published.to_owned(),
         deprecated,
-        upstream_conflict,
         deps,
         requires_ansible,
     );

@@ -85,7 +85,6 @@ def make_index(
                 "cksum": cksum(name, str(spec["vers"])),
                 "size": 100,
                 "yanked": spec["yanked"],
-                "origin": "native",
                 "published": "2026-01-01T00:00:00Z",
             }
             tarball = spec.get("tarball")

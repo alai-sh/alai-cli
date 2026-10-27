@@ -101,12 +101,10 @@ class CollectionVersion(Record):
         "deprecated",
         "deps",
         "name",
-        "origin",
         "problem",
         "published",
         "requires_ansible",
         "size",
-        "upstream_conflict",
         "version",
         "yanked",
     )
@@ -121,10 +119,8 @@ class CollectionVersion(Record):
         size: int,
         requires_ansible: SpecifierSet | None,
         yanked: bool,
-        origin: str,
         published: str,
         deprecated: bool | str = False,
-        upstream_conflict: bool = False,
         problem: str | None = None,
     ) -> None:
         self.name = name
@@ -136,11 +132,9 @@ class CollectionVersion(Record):
         self.requires_ansible = requires_ansible
         """The ansible-core versions it supports, or None for any."""
         self.yanked = yanked
-        self.origin = origin
         self.published = published
         self.deprecated = deprecated
         """False, True, or a message for the user."""
-        self.upstream_conflict = upstream_conflict
         self.problem = problem
         """Why this version can't be used, such as a dependency requirement ansible-galaxy can't read, or None.
 
@@ -510,7 +504,7 @@ def artifact_url(config: IndexConfig, name: str, version: Version, cksum: str) -
 def _version_from(name: str, version: Version, fields: _IndexFields) -> CollectionVersion:
     """A line the extension has read as a version: what follows makes it unusable rather than unreadable, as the line
     is fine and its metadata isn't."""
-    cksum, size, yanked, origin, published, deprecated, upstream_conflict, raw_deps, text = fields
+    cksum, size, yanked, published, deprecated, raw_deps, text = fields
     problems: list[str] = []
     deps: list[tuple[str, VersionReq]] = []
     for dep_name, req in raw_deps:
@@ -535,10 +529,8 @@ def _version_from(name: str, version: Version, fields: _IndexFields) -> Collecti
         size=size,
         requires_ansible=requires_ansible,
         yanked=yanked,
-        origin=origin,
         published=published,
         deprecated=deprecated,
-        upstream_conflict=upstream_conflict,
         problem="; ".join(problems) or None,
     )
 
