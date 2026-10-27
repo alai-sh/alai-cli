@@ -44,22 +44,6 @@ Next (2026-10-22):
    collection whose metadata lives in `alai.toml` is how they'll work in a
    collection project. The open questions are in
    [collection-development.md](collection-development.md#open-questions).
-2. **Wheels for the native extension**, before the first release: the
-   workflow builds and tests manylinux2014 and musllinux wheels for x86_64
-   and aarch64, and macOS arm64 ones, and publishes them with the sdist in
-   one step ([performance.md](performance.md#shipping)); what's left is
-   seeing it run on GitHub, which couldn't be tried locally. With the first
-   release, add a short section on verifying a download to the install
-   docs: the `gh attestation verify` command from performance.md, and that
-   it works on a file from PyPI too, as attestations are keyed by the
-   file's SHA-256. Not before, as `docs/` describes only what works.
-3. **More of fetching in the extension**, on the `http-in-rust` branch,
-   which moved HTTP there (2026-10-27): fetches as futures from the
-   extension rather than a thread blocked in it for each
-   ([index-client.md](index-client.md#not-done-yet)), then one call to
-   download, check and extract every artifact
-   ([install.md](install.md#not-done-yet)), and seeing the x86_64 and macOS
-   wheels build with aws-lc-rs in CI.
 
 Done on 2026-10-21: `alai run` and `alai env` ([run.md](run.md)), and
 collection projects

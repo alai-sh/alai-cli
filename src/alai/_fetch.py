@@ -27,8 +27,9 @@ from ._output import trace, warn
 
 MAX_CONNECTIONS = 16
 """Concurrent downloads, and connections kept open per host over HTTP/1.1."""
-MAX_REQUESTS = int(os.environ.get("_ALAI_FETCH_THREADS", MAX_CONNECTIONS))
-"""Concurrent index requests: the fetcher's threads, each blocked in the client without the GIL."""
+MAX_REQUESTS = int(os.environ.get("_ALAI_FETCH_THREADS", "64"))
+"""Concurrent index requests: the fetcher's threads, each blocked in the client without the GIL, so more cost little.
+Over HTTP/2 they share a host's connection; a host that only speaks HTTP/1.1 gets one for each."""
 _NOT_FOUND = frozenset((404, 410, 451))
 _CACHE_VERSION = 1
 # Connection errors and 429, 500, 502, 503 and 504 are retried with backoff (0.5 s, 1 s, 2 s), honouring Retry-After.

@@ -60,6 +60,28 @@ from a machine ~250 ms (TCP plus TLS) from Cloudflare.
   replaces the `urllib3` module for everything in the environment, a risk
   when alai shares one with ansible-core and requests, and httpx's
   maintenance has stalled; both still hold.
+- **64 threads for the fetcher, blocked in the extension** (2026-10-27,
+  `MAX_REQUESTS`, from 16, the HTTP/1.1 connection count it was swept as).
+  Each holds no GIL while it waits, so more cost little, and over HTTP/2
+  they share a host's connection; a host that only speaks HTTP/1.1 gets one
+  each, still more requests in flight than 16, and most environments
+  negotiate HTTP/2. Downloads keep their 16 (`MAX_CONNECTIONS`). A cold
+  `sivel.acd` lock took 0.94 s against 1.06 s, and a cold sync with no lock
+  2.44 s against 2.77 s; eight collections, at most 15 index files a wave,
+  don't change. Two ways of doing more of this in the extension were built
+  and measured that day, and dropped, as neither beat these 64 threads
+  ([performance.md](performance.md#http-in-the-extension)):
+  - **Fetches started in the extension**, a GET spawned on its runtime with
+    a handle Python waits on, and a cap on requests in flight instead of
+    threads: the lock took 0.91 s and the sync 2.59 s, so the gain was the
+    requests in flight, which threads give as well.
+  - **One call to download, check and extract every artifact**, with one
+    `Fetcher` for a command's resolve and downloads: preparing took as long
+    as with the pools (2.03 s against 1.97 s, the ranges overlapping), and
+    saved only the downloads' second `config.json`.
+
+  Together they added about 200 lines of Python and 400 of Rust, for
+  nothing a user would notice; the patch was kept outside the repository.
 - **Import cost.** The extension's HTTP adds nothing at import: the release
   `_native` imports in 0.78 ms against 0.69 ms without it (median of 15),
   and network commands no longer import urllib3 (~40 ms). Its Tokio runtime,
@@ -473,12 +495,6 @@ from a machine ~250 ms (TCP plus TLS) from Cloudflare.
   it arrives, in slice 3, turns those into roughly one.
 - **Progress output** while fetching, such as with Rich; see
   [output.md](output.md).
-- **Fetches as futures from the extension**, rather than a thread blocked
-  in it for each (planned 2026-10-27, the next step after the client). The
-  pool of threads and `MAX_REQUESTS` (`_ALAI_FETCH_THREADS`) go, and over
-  HTTP/2 nothing caps the requests in flight: with 64 threads rather than
-  16, a cold `sivel.acd` lock took 0.67 s rather than 0.85 s. The cache and
-  its rules stay in Python.
 - **`Retry-After` as a date.** Only the seconds form is read; urllib3 read
   both.
 - **`MAX_CONNECTIONS`** was swept over HTTP/1.1 (16, in
