@@ -12,6 +12,7 @@ import stat
 from pathlib import Path
 
 import pytest
+from alai_core.semver import Version
 from helpers import installed_at
 
 from alai import _install, _native
@@ -27,7 +28,6 @@ from alai._install import (
     remove,
     unlink_namespace,
 )
-from alai._semver import Version
 
 
 def collection(path: Path, name: str = "ns.coll", version: str | None = "1.0.0", *, manifest: bool = True) -> Path:

@@ -37,8 +37,6 @@ project are:
 
 ### Python
 
-- **[PyYAML](https://pyyaml.org/)** reads a collection's `galaxy.yml` and
-  `meta/runtime.yml`, with the same parser ansible-core uses.
 - **[distlib](https://github.com/pypa/distlib)** applies the `manifest`
   directives in `galaxy.yml` when installing a collection from its source
   directory, as `ansible-galaxy` does.
@@ -68,6 +66,9 @@ in Python.
   has the operating system verify their certificates.
 - **[serde_json](https://crates.io/crates/serde_json)** reads index files
   and each collection's `MANIFEST.json` and `FILES.json`.
+- **[libyaml-safer](https://crates.io/crates/libyaml-safer)**, a Rust port
+  of the libyaml parser ansible-core reads YAML with, reads a collection's
+  `galaxy.yml` and `meta/runtime.yml`.
 - **[toml_edit](https://crates.io/crates/toml_edit)** reads `alai.toml`,
   `alai.lock` and the config files, and edits `alai.toml` while keeping the
   rest of its text, as Cargo and uv do.

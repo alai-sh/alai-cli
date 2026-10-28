@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 
 import pytest
+from alai_core.toml import loads
 from helpers import lines
 
 from alai import _config
@@ -20,7 +21,6 @@ from alai._common import EXIT_ERROR, ConfigError
 from alai._config import Overrides, find_project, load_settings
 from alai._galaxy import read_source_collection
 from alai._lock import EditableSource, LockError, parse_lock, read_lock, render_lock
-from alai._native import toml_loads
 
 
 def galaxy(
@@ -180,6 +180,8 @@ class TestGalaxy:
             ("namespace: ns\nname: Col\nversion: 1.0.0\n", "collection names are lowercase"),
             ("namespace: ns\nname: col\n", "'version' is required"),
             ("namespace: ns\nname: col\nversion: one\n", "'version': "),
+            # Kept as written, so it's refused as a version rather than read as the float 1.1, as PyYAML would.
+            ("namespace: ns\nname: col\nversion: 1.10\n", "'version': "),
             ("namespace: ns\nname: col\nversion: 1.0.0\ndependencies: [a.a]\n", "'dependencies' must be a mapping"),
             ("namespace: ns\nname: col\nversion: 1.0.0\ndependencies: {a.a: 1}\n", "dependencies.a.a: expected"),
             ("namespace: ns\nname: col\nversion: 1.0.0\ndependencies: {a.a: '^1'}\n", "dependencies.a.a: invalid"),
@@ -193,6 +195,14 @@ class TestGalaxy:
 
         with pytest.raises(ConfigError, match=error.replace("(", "\\(").replace("^", "\\^")):
             _ = read_source_collection(str(tmp_path / "galaxy.yml"))
+
+    def test_duplicate_key_warned(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        _ = (tmp_path / "galaxy.yml").write_text("namespace: ns\nname: col\nversion: 1.0.0\nversion: 1.1.0\n")
+
+        root = read_source_collection(str(tmp_path / "galaxy.yml"))
+
+        assert root.version.text == "1.1.0"
+        assert "galaxy.yml: found duplicate mapping key 'version' (at line 4, column 1)" in capsys.readouterr().err
 
     def test_invalid_requires_ansible(self, tmp_path: Path) -> None:
         galaxy(tmp_path)
@@ -255,7 +265,7 @@ class TestSync:
         assert main(["lock", "-q"]) == 0
 
         text = (project / "alai.lock").read_text()
-        data = toml_loads(text)
+        data = loads(text)
         assert data["project"] == {"requires_ansible": ">=2.15", "collections": ["a.a>=1.0.0", "c.c"]}
         assert [c["name"] for c in data["collection"]] == ["a.a", "b.b", "c.c", "ns.col"]
         assert data["collection"][-1] == {

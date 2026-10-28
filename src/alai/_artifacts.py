@@ -18,12 +18,12 @@ import tempfile
 import threading
 import typing as _t
 
+from alai_core.semver import Version
+
 from ._common import SHA256_RE, ConfigError, Error, Record, worker_threads
 from ._output import trace
-from ._semver import Version
 
 if _t.TYPE_CHECKING:
-    from . import _native
     from ._fetch import Fetcher
 
 LAYOUT = "collections-v1"
@@ -280,11 +280,13 @@ def extract(
     name, since one symlink can lead another out. Files are ``0644``, or ``0755`` if the tarball marks them
     executable, and directories ``0755``, both masked by the process umask: not the tarball's own modes. More than
     ``limit`` bytes unpacked from the tarball is refused, counting what a hard link copies and a symlink's checksum
-    reads; 0 is no limit. The work is the extension's (``_native.extract_collection``); the design is in
+    reads; 0 is no limit. The work is alai-core's (``alai_core.artifact.extract``); the design is in
     ``design/performance.md``.
     """
     # Imported here, so commands that never extract don't load it.
-    from . import _native
+    from alai_core.artifact import ExtractError
+    from alai_core.artifact import extract as extract_artifact
+
     from ._manifest import collection_name
 
     want = None
@@ -292,12 +294,14 @@ def extract(
         namespace, short = expected[0].split(".")
         want = (namespace, short, expected[1].text)
     try:
-        namespace, short, text = _native.extract_collection(tarball, dest, limit, want)
-    except _native.ExtractError as e:
-        kind, entry, _ = e.args
-        if want is None and kind == "missing" and entry == "MANIFEST.json":
+        namespace, short, text = extract_artifact(tarball, dest, limit=limit, expected=want)
+    except ExtractError as e:
+        if want is None and e.kind == "missing" and e.entry == "MANIFEST.json":
             raise ArtifactError(f"{shown} has no MANIFEST.json, so it isn't a built collection") from None
-        raise ArtifactError(f"{shown}: {_message(e)}") from None
+        hint = ""
+        if e.kind == "too_large":
+            hint = f"; set {MAX_UNPACKED_SIZE_ENV} to a larger number of bytes, or 0 for no limit, if it's genuine"
+        raise ArtifactError(f"{shown}: {e}{hint}") from None
     except OSError as e:
         raise ArtifactError(f"{shown}: can't extract the artifact: {e.strerror or e}") from None
     if expected is not None:
@@ -306,38 +310,6 @@ def extract(
         return collection_name(f"{namespace}.{short}"), Version(text)
     except ValueError as e:
         raise ArtifactError(f"{shown}: MANIFEST.json: {e}") from None
-
-
-_MESSAGES = {
-    "corrupt": "can't extract the artifact: {detail}",
-    "missing": "the artifact doesn't contain {entry}, which FILES.json lists",
-    "not_file": "{entry} in the artifact isn't a file, as FILES.json says",
-    "not_dir": "{entry} in the artifact isn't a directory, as FILES.json says",
-    "path": "the artifact has a path outside the collection: {entry}",
-    "link": "{entry} in the artifact links outside the collection, to {detail}",
-    "escape": "{entry} in the artifact leads outside the collection, through a symlink",
-    "unreadable": "{entry} in the artifact can't be read",
-    "checksum": "{entry} in the artifact doesn't match its checksum in FILES.json",
-    "json": "{entry} in the artifact isn't valid JSON: {detail}",
-    "not_object": "{entry} in the artifact isn't a JSON object",
-    "manifest": "the artifact's MANIFEST.json is for {detail}",
-    "manifest_fields": "MANIFEST.json's collection_info has no namespace, name and version",
-    "files_list": "the artifact's FILES.json has no 'files' list",
-    "files_entry": "the artifact's FILES.json has an unreadable entry: {detail}",
-    "files_checksum": "the artifact's FILES.json has no checksum for {entry}",
-    "files_special": "the artifact's FILES.json lists {entry}, which a build never does",
-    "files_twice": "the artifact's FILES.json lists {entry} more than once, differently",
-    "too_large": (
-        "can't extract the artifact: it unpacks to more than {detail} bytes; set "
-        + MAX_UNPACKED_SIZE_ENV
-        + " to a larger number of bytes, or 0 for no limit, if it's genuine"
-    ),
-}
-
-
-def _message(e: _native.ExtractError) -> str:
-    kind, entry, detail = e.args
-    return _MESSAGES[kind].format(entry=entry, detail=detail)
 
 
 def max_unpacked_size(environ: _c.Mapping[str, str]) -> int:

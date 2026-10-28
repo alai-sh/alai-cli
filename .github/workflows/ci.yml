@@ -326,7 +326,8 @@ jobs:
             *) ABI=cp310-abi3 ;;
           esac
           docker run --rm -v "${PWD}:/src" -w /src -e "ABI=${ABI}" -e PYTHON_VERSION "ghcr.io/astral-sh/uv:${UV_VERSION}-alpine" sh -euc '
-            apk add --no-cache git
+            # cargo builds alai-core from its git commit, as it has no wheels to install until it is on PyPI.
+            apk add --no-cache git cargo
             # What alai and the test group need, at the versions uv.lock pins, as tox installs them on the other jobs;
             # then the wheel for this ABI on its own.
             export UV_PROJECT_ENVIRONMENT=/venv

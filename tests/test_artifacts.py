@@ -15,13 +15,13 @@ import tarfile
 from pathlib import Path
 
 import pytest
+from alai_core.semver import Version
 from artifact_data import Link, build_artifact
 from index_server import IndexServer, serve
 
-from alai import _artifacts, _fetch, _native
+from alai import _artifacts, _fetch
 from alai._artifacts import Artifact, ArtifactCache, ArtifactError
 from alai._fetch import Fetcher
-from alai._semver import Version
 
 
 @pytest.fixture
@@ -290,17 +290,6 @@ class TestAppended:
         path = Path(cache.get(item))
 
         assert (path / "extra.txt").read_bytes() == b"e"
-
-    def test_extract_collection_reads_the_last_manifest(self, tmp_path: Path) -> None:
-        item = appended(
-            artifact(tmp_path, manifest=json.loads(manifest("other", "0.9.0"))), {"MANIFEST.json": manifest()}
-        )
-        tarball = item.url.removeprefix("file://")
-
-        found = _native.extract_collection(tarball, str(tmp_path / "out"), 0)
-
-        assert found == ("ns", "coll", "1.0.0")
-        assert (tmp_path / "out" / "MANIFEST.json").read_bytes() == manifest()
 
     def test_collection_of_a_tarball(self, tmp_path: Path, cache: ArtifactCache) -> None:
         # The collection a tarball is for, when it isn't known beforehand, is read from the same MANIFEST.json.

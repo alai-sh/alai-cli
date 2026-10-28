@@ -13,7 +13,7 @@ import re
 # typing.TYPE_CHECKING without importing typing, which this module, loaded by every command, otherwise doesn't need.
 TYPE_CHECKING = False
 if TYPE_CHECKING:
-    from ._native import TomlDocument
+    from alai_core.toml import Document
 
 NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
 """Index and group names: lowercase, so each is spelled one way in files and on the command line."""
@@ -133,20 +133,20 @@ def inside(path: str, parent: str) -> bool:
 def read_toml(path: str) -> dict[str, object]:
     """The TOML file at ``path``: a config file, ``alai.toml`` or ``alai.lock``."""
     # Imported here so a command run without any config files never loads the extension for it.
-    from ._native import TomlError, toml_read
+    from alai_core.toml import TomlError, read
 
     try:
-        return toml_read(path)
+        return read(path)
     except (TomlError, OSError) as e:
         raise _toml_error(path, e) from None
 
 
-def read_toml_document(path: str) -> TomlDocument:
+def read_toml_document(path: str) -> Document:
     """The TOML file at ``path`` to edit, ``alai.toml`` for ``alai add``, read as ``read_toml`` reads one."""
-    from ._native import TomlDocument, TomlError
+    from alai_core.toml import Document, TomlError
 
     try:
-        return TomlDocument.read(path)
+        return Document.from_path(path)
     except (TomlError, OSError) as e:
         raise _toml_error(path, e) from None
 

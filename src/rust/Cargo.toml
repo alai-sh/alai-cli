@@ -13,16 +13,11 @@ name = "_native"
 crate-type = ["cdylib"]
 
 [dependencies]
-# zlib-rs, the fastest of flate2's backends and still pure Rust, so no C toolchain is needed.
-flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 # Only to name the proxy a request went through in an error, by the matcher reqwest uses, so the two never disagree.
 http = "1"
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 # The FICLONE ioctl and macOS's clonefile, which std has no wrapper for.
 libc = "0.2"
-# Substring search over plugins.jsonl, with SIMD where the CPU has it, as Python's bytes.find. Already built for
-# serde_json, which depends on it.
-memchr = "2"
 # The version resolver (see design/resolver.md). 0.4 needs Rust 1.92, which sets the workspace's rust-version.
 pubgrub = "0.4"
 # The stable ABIs, so three wheels per platform cover every CPython from 3.10: built for 3.10 to 3.14, one abi3 wheel for
@@ -38,14 +33,8 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "h
 rustls = { version = "0.23", default-features = false }
 # SSL_CERT_FILE and SSL_CERT_DIR, read as OpenSSL reads them, as uv does.
 rustls-native-certs = "0.8"
-# MANIFEST.json and FILES.json, read and checked here so a tarball is extracted in one call.
-serde_json = "1"
 # Uses the CPU's SHA-256 instructions, where it has them, found at runtime. 0.11.1 at least, for the fix to how its
 # AArch64 code loads the round constants (RustCrypto/hashes#922).
 sha2 = "0.11.1"
-tar = { version = "0.4", default-features = false }
 # The runtime reqwest runs on; each request blocks its Python thread on it, with the GIL released.
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "sync", "time"] }
-# alai.toml, the config files and alai.lock: read as TOML 1.1, alai.lock written, and alai.toml edited keeping the rest
-# of its text, as cargo and uv use it (see design/manifest-editing.md).
-toml_edit = "0.25.17"

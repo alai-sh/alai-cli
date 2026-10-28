@@ -8,14 +8,14 @@ with its logic in `src/alai/_sync.py`. The user documentation is
 
 ## Decisions
 
-- **Artifacts are fetched by the lock's `cksum`, from the index's `dl`
+- **Artifacts are fetched by the lock's `sha256`, from the index's `dl`
   template** (`artifact_url`), streamed to a file and hashed as they arrive
   (`Fetcher.download`). A download stops once it passes the lock's `size`,
   so a wrong or hostile response can't fill the disk, and the SHA-256 and
   size must both match the lock, as the index spec requires ("MUST verify
-  the sha256 of every download against `cksum`"). Transport compression is
+  the sha256 of every download against `sha256`"). Transport compression is
   undone first, so the hash is over the file itself.
-- **The cache holds extracted collections, keyed by `cksum` alone**:
+- **The cache holds extracted collections, keyed by `sha256` alone**:
   `<cache_dir>/collections-v1/<sha256>/`, as the spec's client rules
   suggest, so one artifact from two indexes is stored once and moving an
   index invalidates nothing. The tarball is downloaded into a temporary
@@ -195,7 +195,7 @@ with its logic in `src/alai/_sync.py`. The user documentation is
   2026-10-20: `uv sync` left a package at its locked version alone ("Checked
   1 package"), replaced one pip had put there at another version
   (`- idna==3.6`, `+ idna==3.10`), and kept an edit to an installed file. A
-  record file mapping names to `cksum` was considered, to tell two
+  record file mapping names to `sha256` was considered, to tell two
   artifacts of one version apart and to know which directories alai made,
   and dropped: uv does without one, and installing custom content is what
   path and git sources are for. A `uv pip install`-style command,
@@ -414,7 +414,7 @@ on 2026-10-21 in a project with `requests` and its four dependencies:
   don't.
 - **From the cache, not downloaded again**: `uv sync --reinstall --offline`
   reinstalled all five, and an edited cached file was installed as edited
-  (above). The extracted cache is checked against the lock's `cksum` when
+  (above). The extracted cache is checked against the lock's `sha256` when
   it's made and trusted after, as uv trusts its own, so nothing is
   re-extracted. uv's summary says `Prepared 5 packages` even then, since
   `--reinstall` implies its `--refresh`; here `Prepared` counts downloads,
@@ -728,7 +728,7 @@ and `{ url = "<url>" }` ([lockfile.md](lockfile.md#tarballs)), and
   (`ArtifactCache.add` for a file, `ArtifactCache.download` for a URL),
   since its metadata is inside, so `sync` usually finds it cached. When it
   isn't, as with `--frozen` on a fresh cache, it's fetched from its URL,
-  or its file as a `file://` URL, and checked against `cksum` and `size`
+  or its file as a `file://` URL, and checked against `sha256` and `size`
   like any download.
 - **URLs are downloaded in parallel while locking**, up to the fetcher's
   16 connections, as `sync` downloads artifacts, through one

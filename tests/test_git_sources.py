@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 
 import pytest
+from alai_core.semver import Version
+from alai_core.toml import loads
 from helpers import Repo, install_record, installed_at, lines, write_sources
 
 from alai import _git
@@ -23,8 +25,6 @@ from alai._common import EXIT_ERROR, ConfigError
 from alai._git import _hint  # pyright: ignore[reportPrivateUsage]
 from alai._lock import GitCommitSource, read_lock, render_lock
 from alai._manifest import GitSource, parse_git
-from alai._native import toml_loads
-from alai._semver import Version
 
 
 @pytest.fixture
@@ -38,7 +38,7 @@ def manifest_version(project: Path, name: str = "ns.src") -> str:
 
 
 def entry(project: Path, name: str = "ns.src") -> dict[str, object]:
-    data = toml_loads((project / "alai.lock").read_text())
+    data = loads((project / "alai.lock").read_text())
     return next(c for c in data["collection"] if c["name"] == name)
 
 
@@ -53,7 +53,7 @@ class TestLock:
 
         assert main(["lock", "-q"]) == 0
 
-        data = toml_loads((project / "alai.lock").read_text())
+        data = loads((project / "alai.lock").read_text())
         assert data["sources"] == {"ns.src": {"git": repo.url, "rev": "v1.0.0"}}
         # An annotated tag is locked as the commit it points at, not the tag object.
         assert entry(project) == {

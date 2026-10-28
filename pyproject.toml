@@ -25,13 +25,14 @@ classifiers = [
 ]
 
 dependencies = [
+    # A commit of alai-core's repository until it's on PyPI, given here rather than in [tool.uv.sources] so installs from
+    # GitHub or the sdist find it too.
+    "alai-core @ git+https://github.com/alai-sh/alai-core@e3aa06d7197f8d9289bed4be3f8ae268838cc050",
     # Older releases fail on the argparse internals of current Python 3.12 and later releases.
     "argcomplete >= 3.5.2",
     # galaxy.yml's manifest directives, for installing a collection from its source directory, as ansible-galaxy
     # uses it; the floor is the release tested.
     "distlib >= 0.4.4",
-    # galaxy.yml and meta/runtime.yml, read with the same parser ansible-core uses.
-    "pyyaml >= 6.0",
 ]
 
 [project.urls]
@@ -57,8 +58,6 @@ dev = [
     "ruff >= 0.17.0",
     "pre-commit",
     "tox-uv",
-    # Type stubs for PyYAML, for basedpyright.
-    "types-pyyaml",
 ]
 docs = [
     # zensical needs Python 3.11 or later; the marker lets uv still lock this group for 3.10.

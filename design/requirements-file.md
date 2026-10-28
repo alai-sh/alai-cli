@@ -9,9 +9,8 @@ file's `source:` and `signatures:` should mean to alai needs input from
 people using Automation Hub and signed collections, and its git, path and
 URL entries need the sources that aren't built yet
 ([lockfile.md](lockfile.md#other-sources); directories exist now). Decided so far:
-PyYAML is the parser (`safe_load`, the libyaml loader when present;
-6.0.3 imports in ~11 ms, only `-r` would load it, and ansible-core depends
-on it anyway), both commands take `-r`, and roles are warned about and
+`alai_core.yaml` is the parser, as for `galaxy.yml`
+([performance.md](performance.md#yaml-in-the-extension)), both commands take `-r`, and roles are warned about and
 skipped.
 
 ## The format, as ansible-galaxy reads it

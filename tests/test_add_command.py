@@ -6,12 +6,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from alai_core.toml import Document, TomlEditError
 from helpers import edit, edited, installed_versions, lines
 
 from alai import _edit
 from alai._cli import main
 from alai._common import EXIT_ERROR, EXIT_STALE
-from alai._native import TomlDocument, TomlEditError
 
 # The index (from test_sync_command): a.a 1.0.0 and 2.0.0 (which needs b.b>=1.0.0), b.b 1.0.0 and 1.1.0, c.c and d.d.
 
@@ -449,7 +449,7 @@ class TestErrors:
         # by hand.
         class Refusing:
             def __init__(self, text: str) -> None:
-                self.doc = TomlDocument(text)
+                self.doc = Document(text)
 
             def __getattr__(self, name: str) -> object:
                 return getattr(self.doc, name)

@@ -13,6 +13,8 @@ import os
 import secrets
 import time
 
+from alai_core.toml import Document, TomlEditError
+
 from ._common import NAME_RE, ConfigError, home_path, read_toml_document
 from ._config import Settings, no_project, raw_manifest
 from ._lock import Lock, lock_path, read_lock, write_lock
@@ -27,7 +29,6 @@ from ._manifest import (
     is_source,
     source_key,
 )
-from ._native import TomlDocument, TomlEditError
 from ._output import error, shown_path, summary
 from ._project import (
     Upgrade,
@@ -83,16 +84,12 @@ def add(
                 fetched[collection.name] = collection
         bare: list[str] = []
         for requirement in parsed:
-            current = doc.values(path)
-            if current is None:
-                doc.create(path, [requirement.text])
-            else:
-                names = [_name_of(v) for v in current]
-                if requirement.name in names:
-                    if requirement.req.clauses:
-                        doc.replace(path, names.index(requirement.name), requirement.text)
-                    continue
-                doc.insert(path, _position(names, requirement.name), requirement.text)
+            names = [_name_of(v) for v in doc.values(path)]
+            if requirement.name in names:
+                if requirement.req.clauses:
+                    doc.replace(path, names.index(requirement.name), requirement.text)
+                continue
+            doc.insert(path, _position(names, requirement.name), requirement.text)
             # One from a directory stays bare, as uv writes a path dependency: there's only ever its one version.
             if not requirement.req.clauses and requirement.name not in sources:
                 bare.append(requirement.name)
@@ -118,11 +115,10 @@ def add(
             _write(config, str(doc))
             return True
 
-        def bound(doc: TomlDocument, lock: Lock) -> None:
+        def bound(doc: Document, lock: Lock) -> None:
             # Each name added alone gets >= its locked version, as uv writes one.
             for name in bare:
-                current = doc.values(path) or []
-                names = [_name_of(v) for v in current]
+                names = [_name_of(v) for v in doc.values(path)]
                 locked = lock.get(name)
                 if locked is not None and name in names:
                     doc.replace(path, names.index(name), f"{name}>={locked.version}")
@@ -162,8 +158,7 @@ def remove(
                 name = collection_name(given)
             except ValueError as e:
                 raise ConfigError(_by_source(settings, doc, given) or str(e)) from None
-            current = doc.values(path) or []
-            found = [_name_of(v) for v in current]
+            found = [_name_of(v) for v in doc.values(path)]
             if name not in found:
                 raise ConfigError(_not_there(doc, name, group))
             doc.remove(path, found.index(name))
@@ -199,8 +194,8 @@ def _editing(settings: Settings, group: str | None, verb: str) -> _c.Generator[N
 def _lock_and_sync(
     settings: Settings,
     config: str,
-    doc: TomlDocument,
-    finish: _c.Callable[[TomlDocument, Lock], None],
+    doc: Document,
+    finish: _c.Callable[[Document, Lock], None],
     *,
     group: str | None,
     sync: bool,
@@ -250,7 +245,7 @@ def _lock_and_sync(
     return True
 
 
-def _by_source(settings: Settings, doc: TomlDocument, given: str) -> str | None:
+def _by_source(settings: Settings, doc: Document, given: str) -> str | None:
     """What to say when ``alai remove`` is given a source, such as ``git+...``, rather than a collection name: the
     collections ``[project.sources]`` takes from it, to remove by name, as ``uv remove`` takes names alone. None when
     ``given`` isn't a source, for the error about collection names to stand."""
@@ -267,7 +262,7 @@ def _by_source(settings: Settings, doc: TomlDocument, given: str) -> str | None:
     )
 
 
-def _drop_path_source(doc: TomlDocument, name: str) -> None:
+def _drop_path_source(doc: Document, name: str) -> None:
     """Remove ``name``'s ``[project.sources]`` entry when it's a directory, a tarball or a git repository and
     nothing lists the collection any more, as ``uv remove`` drops its source. An index pin stays: it also applies to what other
     collections depend on."""
@@ -281,7 +276,7 @@ def _drop_path_source(doc: TomlDocument, name: str) -> None:
     doc.remove_key(("project", "sources", name))
 
 
-def _read(settings: Settings, group: str | None) -> tuple[str, TomlDocument]:
+def _read(settings: Settings, group: str | None) -> tuple[str, Document]:
     """The project's ``alai.toml`` path and document, its newlines kept, so edits keep them too. In a
     collection project only a group can be edited, as the rest is in ``galaxy.yml``."""
     config = settings.project.config_file
@@ -340,16 +335,15 @@ def _position(names: list[str], name: str) -> int:
     return len(names)
 
 
-def _not_there(doc: TomlDocument, name: str, group: str | None) -> str:
+def _not_there(doc: Document, name: str, group: str | None) -> str:
     where = "project.collections" if group is None else f"group '{group}'"
     message = f"{name} isn't in {where}"
     places: list[str] = []
-    if group is not None and name in [_name_of(v) for v in doc.values(("project", "collections")) or []]:
+    if group is not None and name in [_name_of(v) for v in doc.values(("project", "collections"))]:
         places.append(f"project.collections (try: alai remove {name})")
     for other in sorted(raw_manifest(doc.data(), "alai.toml").groups):
         if other == group:
             continue
-        found = doc.values(("project", "groups", other, "collections")) or []
-        if name in [_name_of(v) for v in found]:
+        if name in [_name_of(v) for v in doc.values(("project", "groups", other, "collections"))]:
             places.append(f"group '{other}' (try: alai remove {name} --group {other})")
     return message + (f"; it's in {', '.join(places)}" if places else "")

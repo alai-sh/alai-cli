@@ -12,12 +12,12 @@ import os
 from pathlib import Path
 
 import pytest
+from alai_core.toml import loads
 from helpers import collection_source, install_record, installed_at, lines, write_sources
 
 from alai._cli import main
 from alai._common import EXIT_ERROR
 from alai._lock import DirectorySource, EditableSource, parse_lock, read_lock, render_lock
-from alai._native import toml_loads
 
 
 class TestLock:
@@ -27,7 +27,7 @@ class TestLock:
 
         assert main(["lock", "-q"]) == 0
 
-        data = toml_loads((project / "alai.lock").read_text())
+        data = loads((project / "alai.lock").read_text())
         assert data["sources"] == {"ns.src": {"path": "../src"}}
         entries = {c["name"]: c for c in data["collection"]}
         assert sorted(entries) == ["a.a", "b.b", "ns.src"]
@@ -166,7 +166,7 @@ class TestLock:
 
         text = render_lock(parse_lock(table, "alai.lock"))
 
-        assert toml_loads(text) == {**table, "project": {"collections": []}}
+        assert loads(text) == {**table, "project": {"collections": []}}
 
 
 class TestRequiresAnsible:
@@ -512,8 +512,9 @@ class TestBuiltDirectory:
     galaxy.yml: copied as it is, as an artifact is extracted."""
 
     def built(self, project: Path, dependencies: dict[str, str] | None = None) -> Path:
+        from alai_core.semver import Version
+
         from alai._build import build
-        from alai._semver import Version
 
         src = collection_source(project.parent / "src-source", dependencies=dependencies)
         built = project.parent / "built"

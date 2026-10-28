@@ -189,7 +189,7 @@ what's planned on top of it, and the questions still open.
 
 Errors in a config file name the file, and the key path (`project.collections[2]`,
 `index[1]`) for anything past TOML syntax, but only syntax errors carry a line:
-`_native.toml_loads` reports positions for those, and returns plain dicts
+`alai_core.toml.loads` reports positions for those, and returns plain dicts
 and lists with none once a file parses. uv, ruff and Cargo show a line,
 column and snippet, from the spans their TOML parser keeps.
 

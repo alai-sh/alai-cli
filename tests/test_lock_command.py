@@ -6,6 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from alai_core.toml import loads
 from conftest import COLLECTIONS
 from helpers import lines, write_project
 from index_data import make_index, v
@@ -13,7 +14,6 @@ from index_data import make_index, v
 from alai._cli import main
 from alai._common import EXIT_ERROR, EXIT_STALE
 from alai._index import IndexClient
-from alai._native import toml_loads
 
 
 def lock(*args: str) -> int:
@@ -303,7 +303,7 @@ class TestCheck:
 
 def versions(project: Path) -> dict[str, str]:
     """What alai.lock locks, by name."""
-    table = toml_loads((project / "alai.lock").read_text())
+    table = loads((project / "alai.lock").read_text())
     return {c["name"]: c["version"] for c in table["collection"]}
 
 
