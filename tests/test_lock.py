@@ -8,6 +8,8 @@ import stat
 from pathlib import Path
 
 import pytest
+from alai_core.semver import Version
+from alai_core.toml import loads
 
 from alai._config import RawManifest, raw_manifest
 from alai._lock import (
@@ -25,8 +27,6 @@ from alai._lock import (
     write_lock,
 )
 from alai._manifest import parse_manifest
-from alai._native import toml_loads
-from alai._semver import Version
 
 INDEX = IndexSource("https://index.alai.sh/")
 CKSUM_A = "a" * 64
@@ -86,7 +86,7 @@ def example() -> Lock:
 
 
 def reparse(text: str) -> Lock:
-    return parse_lock(toml_loads(text), "alai.lock")
+    return parse_lock(loads(text), "alai.lock")
 
 
 def same(a: Lock | None, b: Lock) -> bool:
@@ -120,7 +120,7 @@ groups.test.collections = ["ansible.posix"]
 name = "ansible.posix"
 version = "2.0.0"
 source = {{ index = "https://index.alai.sh/" }}
-cksum = "{CKSUM_A}"
+sha256 = "{CKSUM_A}"
 size = 10
 dependencies = []
 
@@ -128,7 +128,7 @@ dependencies = []
 name = "ansible.windows"
 version = "3.2.0"
 source = {{ index = "https://index.alai.sh/" }}
-cksum = "{CKSUM_A}"
+sha256 = "{CKSUM_A}"
 size = 10
 requires_ansible = ">=2.16"
 dependencies = []
@@ -137,7 +137,7 @@ dependencies = []
 name = "community.general"
 version = "10.7.2"
 source = {{ index = "https://index.alai.sh/" }}
-cksum = "{CKSUM_B}"
+sha256 = "{CKSUM_B}"
 size = 2913455
 requires_ansible = ">=2.16.0"
 dependencies = ["community.library_inventory_filtering_v1"]
@@ -146,7 +146,7 @@ dependencies = ["community.library_inventory_filtering_v1"]
 name = "community.library_inventory_filtering_v1"
 version = "1.1.5"
 source = {{ index = "https://index.alai.sh/" }}
-cksum = "{CKSUM_A}"
+sha256 = "{CKSUM_A}"
 size = 10
 dependencies = []
 """
@@ -232,7 +232,7 @@ class TestParse:
             (('version = "2.0.0"', 'version = "2.0"'), r"collection\[0\]: invalid version '2\.0'"),
             (('name = "ansible.posix"', 'name = ""'), "'name' is required and must be a non-empty string"),
             (
-                ('source = { index = "https://index.alai.sh/" }\ncksum = "' + "a" * 64, 'cksum = "' + "a" * 64),
+                ('source = { index = "https://index.alai.sh/" }\nsha256 = "' + "a" * 64, 'sha256 = "' + "a" * 64),
                 r"'source' is required and must be a table",
             ),
             (
@@ -255,10 +255,17 @@ class TestParse:
                 "'commit' must be a full lowercase hex commit hash",
             ),
             (
+                (
+                    'source = { index = "https://index.alai.sh/" }',
+                    'source = { git = "https://g/x.git", subdirectory = "../x", commit = "' + "a" * 40 + '" }',
+                ),
+                "'subdirectory' must be a relative path inside the repository",
+            ),
+            (
                 ('source = { index = "https://index.alai.sh/" }', 'source = { index = "u", path = "p" }'),
                 r"unknown source \(index, path\)",
             ),
-            (('cksum = "' + "a" * 64 + '"', 'cksum = "ABC"'), "'cksum' must be a lowercase hex sha256"),
+            (('sha256 = "' + "a" * 64 + '"', 'sha256 = "ABC"'), "'sha256' must be a lowercase hex sha256"),
             (("size = 10", "size = -1"), "'size' is required and must be a non-negative integer"),
             (("size = 10", "size = true"), "'size' is required and must be a non-negative integer"),
             (('requires_ansible = ">=2.16"', "requires_ansible = 2"), "'requires_ansible' must be a string"),
@@ -361,7 +368,7 @@ class TestFile:
 class TestIsCurrent:
     @staticmethod
     def manifest(toml: str) -> object:
-        return parse_manifest(raw_manifest(toml_loads(toml), "alai.toml"))
+        return parse_manifest(raw_manifest(loads(toml), "alai.toml"))
 
     BASE = """\
 [project]

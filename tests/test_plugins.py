@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 import pytest
+from alai_core.semver import Version
 from index_data import plugin
 
 from alai import _ansible_package
@@ -31,7 +32,6 @@ from alai._plugins import (
     parse_line,
     rank,
 )
-from alai._semver import Version
 
 EXAMPLE = Path(__file__).parent / "data" / "index" / "plugins.jsonl"
 

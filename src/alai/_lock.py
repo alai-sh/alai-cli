@@ -14,7 +14,8 @@ import os
 import re
 import secrets
 
-from . import _native
+from alai_core.semver import Version
+
 from ._common import SHA256_RE, Error, Record, as_list, as_str, as_table, read_toml, string_list
 from ._config import RawManifest
 from ._manifest import (
@@ -28,7 +29,6 @@ from ._manifest import (
     collection_name,
     parse_manifest,
 )
-from ._semver import Version
 
 LOCK_FILE_NAME = "alai.lock"
 LOCK_VERSION = 1
@@ -615,7 +615,7 @@ def render_lock(lock: Lock) -> str:
             root = None
         table: dict[str, object] = {"name": c.name, "version": c.version.text, "source": _inline(c.source.table())}
         if c.cksum is not None:
-            table["cksum"] = c.cksum
+            table["sha256"] = c.cksum
         if c.size is not None:
             table["size"] = c.size
         if c.requires_ansible is not None:
@@ -628,7 +628,9 @@ def render_lock(lock: Lock) -> str:
         collections.append(_root_table(root))
     if collections:
         doc["collection"] = collections
-    return _native.toml_dumps(doc, _HEADER, _INLINE_ARRAY_WIDTH)
+    from alai_core.toml import dumps
+
+    return _HEADER + dumps(doc, width=_INLINE_ARRAY_WIDTH)
 
 
 def _root_table(root: LockedRoot) -> dict[str, object]:
@@ -776,9 +778,9 @@ def _parse_collection(entry: object, where: str) -> LockedCollection | LockedRoo
             dependencies=names,
         )
 
-    cksum = _string_field(table, "cksum", where)
+    cksum = _string_field(table, "sha256", where)
     if not SHA256_RE.fullmatch(cksum):
-        raise LockError(f"{where}: 'cksum' must be a lowercase hex sha256")
+        raise LockError(f"{where}: 'sha256' must be a lowercase hex sha256")
     size = table.get("size")
     if not isinstance(size, int) or isinstance(size, bool) or size < 0:
         raise LockError(f"{where}: 'size' is required and must be a non-negative integer")
@@ -823,7 +825,10 @@ def _git_source(table: _c.Mapping[str, object], where: str) -> GitCommitSource:
     for key, value in (("rev", rev), ("subdirectory", subdirectory)):
         if value is not None and (not isinstance(value, str) or not value):
             raise LockError(f"{where}: '{key}' must be a non-empty string")
-    return GitCommitSource(url, commit, rev=as_str(rev), subdirectory=as_str(subdirectory))
+    subdirectory = as_str(subdirectory)
+    if subdirectory is not None and subdirectory != "." and any(p in ("", ".", "..") for p in subdirectory.split("/")):
+        raise LockError(f"{where}: 'subdirectory' must be a relative path inside the repository")
+    return GitCommitSource(url, commit, rev=as_str(rev), subdirectory=subdirectory)
 
 
 def _string_field(table: _c.Mapping[str, object], key: str, where: str) -> str:

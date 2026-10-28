@@ -150,7 +150,7 @@ from a machine ~250 ms (TCP plus TLS) from Cloudflare.
 - **The cache is trusted, so who can write it matters** (2026-10-20). A
   cached `collections.json` whose `ETag` still matches is used after a 304,
   so anyone able to rewrite it, and the index files it hashes, chooses which
-  `cksum` an artifact is checked against. Files are `0600` (`mkstemp`'s
+  `sha256` an artifact is checked against. Files are `0600` (`mkstemp`'s
   mode, kept by `os.replace`) and directories follow the umask, so the
   default `~/.cache/alai` is writable only by its owner. alai doesn't check a
   custom `cache_dir`'s ownership or mode, as neither pip nor uv does; the
@@ -444,25 +444,16 @@ from a machine ~250 ms (TCP plus TLS) from Cloudflare.
   musllinux wheel for 3.10 names its own `…-linux-gnu.so`, as CPython
   before 3.13 did on musl (found in CI, 2026-10-27; 3.14t and 3.15 there
   are fine).
-- **Index lines are read by the extension** (`_native.parse_index_lines`,
-  2026-10-23): the JSON, with `serde_json`, and each field's type, in the
-  order and with the words the Python reader used, so its messages are
-  unchanged. A line that got as far as `vers` comes back with it, and
-  Python parses the version before using the extension's verdict, as the
-  version was checked before the fields after it. The version, its
-  requirements and `requires_ansible` are still parsed in Python, so
-  SemVer and PEP 440 have one implementation each. Where it reads JSON
-  differently from `json.loads`, it's stricter, and only on what no index
-  writes: `NaN` and `Infinity`, a lone surrogate escape, an integer beyond
-  64 bits, nesting deeper than 128. Blank is still `bytes.strip`'s
-  whitespace, a byte order mark is still skipped, and a `v` of `1.0` is
-  still 1, as Python compared it by value. Measured on the 94 index files
-  `scratch/acd` (the ansible 15 package, nothing pinned) reads, 5,199 lines,
-  a first pass: 22 ms in Python, 14.7 ms now; a warm offline `alai lock` of
-  it went from 74 to 89 ms to 62 to 72 ms. What's left is mostly building
-  the Python objects. `collections.json` was tried too and left in Python:
-  one 724 KB document, which the C decoder in `json` reads as fast (5.4 ms
-  against 4.8 ms).
+- **alai-core reads and writes the files** (`alai_core.index`, 2026-10-28).
+  That's `config.json`, `collections.json` and each index file, with the
+  versions, requirements and `requires_ansible` parsed in Rust as each line
+  is read. This module adds the URLs, the scheme checks and alai's wording,
+  such as "needs a newer alai", around it. The messages are the old
+  reader's, apart from two inputs no index writes. A `v` of `1.0` is no
+  longer taken as 1, and a vertical tab no longer makes a line blank. On the
+  132 index files alai's cache had (6,375 lines), core reads them in 19.3 ms
+  against 22.1 ms for the Python reader. The 708 KB `collections.json`
+  takes 3.2 ms.
 - **Index lines are judged one by one.** A line that can't be read at all
   (bad JSON, a missing or wrongly typed required field, a `name` that isn't
   the file's, a `vers` that isn't SemVer, a duplicate version) is skipped,

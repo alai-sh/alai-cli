@@ -40,9 +40,10 @@ from ._output import detail, lock_change, status, warn
 from ._progress import Live, Task
 
 if _t.TYPE_CHECKING:
+    from alai_core.semver import Version
+
     from ._fetch import Fetcher
     from ._resolve import Resolution
-    from ._semver import Version
 
 
 class Upgrade(Record):

@@ -24,8 +24,20 @@ How alai chooses one version of every collection a project needs, in
   versions with their dependencies as clauses, why a version can't be
   chosen (a predicate: `is yanked`), the version to prefer, and the words
   for the roots. The Rust side chooses, or explains; nothing crosses the
-  boundary during the search. Versions cross as `Version._key` and their
-  text, so Rust orders them exactly as Python does without parsing, and a
+  boundary during the search. Versions cross as their text, and requirements
+  as `(operator, version text)` clauses, with one table giving every text
+  its precedence's rank, its place among every precedence in the call, and
+  whether it's a pre-release. Python ranks them with `alai_core.semver`'s
+  `Version.precedence`, so Rust needs no version parsing and alai's Rust
+  doesn't link alai-core's crate (decided with the user, 2026-10-28). That
+  keeps one copy of core's code in the process and one `rev` to keep in
+  step. Ranking only each distinct text keeps it cheap. Passing each entry
+  already ranked rebuilt every tuple in Python and cost 6 to 17 ms a warm
+  resolve, where the table costs 1 to 2 ms (sivel.acd's 97 collections,
+  20,114 versions and requirements but 2,089 distinct texts: 79 ms before,
+  80 ms after; 66 collections 47 ms before, 49 ms after, medians of 12).
+  Before, Rust parsed the text with alai-core's crate, and before that
+  (until 2026-10-28) Python passed `Version._key`. A
   requirement's bound is the first or last text a precedence can have, so
   `==1.0.0` matches `1.0.0+build` as ansible-galaxy's does. The lock,
   `reasons` and the warnings are computed in Python from the result, as

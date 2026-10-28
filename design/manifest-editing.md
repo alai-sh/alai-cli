@@ -1,8 +1,8 @@
 # Editing alai.toml
 
 How `alai add` and `alai remove` change the project's requirements, in
-`src/alai/_edit.py` (the commands) and `src/rust/src/toml.rs` (the
-editor, `alai._native.TomlDocument`). The user documentation is
+`src/alai/_edit.py` (the commands) and alai-core's `alai_core.toml`
+(the editor, `Document`). The user documentation is
 `docs/managing-collections.md#adding-and-removing-collections`.
 
 ## The commands
@@ -159,12 +159,13 @@ Tested against `uv add` and `uv remove` (uv 0.13) on 2026-10-20, with a
   the user, 2026-10-23, replacing `_toml_edit.py`, a scanner of our own
   that spliced each edit into the text). It's the mature format-preserving
   editor, with no maintained Python binding, so it's exposed from
-  `alai._native` as `TomlDocument`. It reads every valid file tried, moves
+  `alai._native` as `TomlDocument`, now alai-core's `alai_core.toml.Document`
+  (2026-10-28). It reads every valid file tried, moves
   nothing it isn't asked to (an out-of-order array-of-tables sub-table and
   a three-level one, which tomlkit moves or can't read, stay as they are),
   and edits arrays and sources inside inline tables and dotted keys, which
   `_toml_edit` refused. Reading `alai.toml`, the config files and
-  `alai.lock` moved to it too, with `toml_loads` in place of `tomllib`, so
+  `alai.lock` moved to it too, with `loads` in place of `tomllib`, so
   every Python reads TOML 1.1 the same way and `tomli` is no longer a
   dependency ([performance.md](performance.md#toml-in-the-extension)).
 - **uv's layout for a requirement array**, ported from `uv-project-edit`

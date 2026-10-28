@@ -6,13 +6,13 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from alai_core.pep440 import Version as AnsibleVersion
+from alai_core.semver import Version, VersionReq
 from helpers import write_file
 
 from alai._common import ConfigError
 from alai._config import LinkMode, Overrides, find_project, load_settings
 from alai._manifest import IndexPin, Manifest, Requirement, collection_name, load_manifest
-from alai._pep440 import Version as AnsibleVersion
-from alai._semver import Version, VersionReq
 
 
 def manifest(cwd: Path) -> Manifest:
@@ -113,8 +113,8 @@ ignore_requires_ansible = ["some.collection"]
             "lint-only": [],
         }
         assert result.overrides == {
-            "ansible.netcommon": VersionReq.parse(">=6"),
-            "community.crypto": VersionReq("*", ()),
+            "ansible.netcommon": VersionReq(">=6"),
+            "community.crypto": VersionReq("*"),
         }
         assert result.ignore_requires_ansible == ("some.collection",)
         assert result.overrides["ansible.netcommon"].contains(Version("6.0.0"))

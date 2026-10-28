@@ -5,7 +5,7 @@
 routing as ansible-core does, and ranking what's found.
 
 The format is ``plugins.md`` in galaxy-sync's ``docs/index-spec/``. The file is ~100k lines, so a search scans the
-raw bytes for the query and parses only the lines that contain it, both in the extension (``_native.plugin_lines``).
+raw bytes for the query and parses only the lines that contain it, both in alai-core (``alai_core.plugins``).
 What needs every line, which collections look like copies of others, is worked out once per change to the file and
 cached. The design is in ``design/find.md``.
 """
@@ -22,13 +22,12 @@ import re
 import tempfile
 import typing as _t
 
-from . import _ansible_package, _native
+from alai_core.plugins import PluginEntry, Plugins
+from alai_core.semver import Version
+
+from . import _ansible_package
 from ._common import Record, as_str, as_table
 from ._output import debug, trace
-from ._semver import Version
-
-if _t.TYPE_CHECKING:
-    from ._native import _PluginLine
 
 BUILTIN = "ansible.builtin"
 """ansible-core's own plugins, which are always installed where Ansible is."""
@@ -107,23 +106,24 @@ class Plugin(Record):
 def parse_line(line: bytes, index: str = "") -> Plugin | None:
     """One line as a plugin, or None if it can't be read or needs a newer alai: a plugin index is a search aid, so a
     bad line is skipped rather than an error."""
-    return next(iter(_plugins(_native.plugin_lines(line, []), index)), None)
+    entry = PluginEntry.parse(line)
+    return None if entry is None else _plugins([entry], index)[0]
 
 
-def _plugins(lines: list[_PluginLine], index: str) -> list[Plugin]:
+def _plugins(entries: list[PluginEntry], index: str) -> list[Plugin]:
     return [
         Plugin(
-            type_,
-            name,
-            collection,
-            since=since,
-            until=until,
-            short_description=description,
-            routing=routing,
+            e.type,
+            e.name,
+            e.collection,
+            since=e.since,
+            until=e.until,
+            short_description=e.short_description,
+            routing=e.routing,
             index=index,
-            line=line,
+            line=e.line or b"",
         )
-        for type_, name, collection, since, until, description, routing, line in lines
+        for e in entries
     ]
 
 
@@ -175,10 +175,11 @@ class PluginIndex:
     def __init__(self, index: str, data: bytes) -> None:
         self.index = index
         self.data = data
+        self._file = Plugins(data)
 
     def with_tokens(self, tokens: _c.Sequence[bytes] = ()) -> list[Plugin]:
         """Every plugin whose line contains all of ``tokens``; every plugin if there are none."""
-        return _plugins(_native.plugin_lines(self.data, list(tokens)), self.index)
+        return _plugins(self._file.search(tokens), self.index)
 
     def search(self, query: Query) -> list[Plugin]:
         return [plugin for plugin in self.with_tokens(query.tokens()) if query.matches(plugin)]
@@ -194,11 +195,11 @@ class PluginIndex:
     def named(self, names: _c.Collection[str]) -> list[Plugin]:
         """Every plugin whose line has a ``name`` field that may be one of ``names``, found in one pass over the
         file."""
-        return _plugins(_native.plugin_lines_named(self.data, set(names)), self.index) if names else []
+        return _plugins(self._file.named(names), self.index) if names else []
 
     def names(self) -> set[str]:
         """Every plugin's short name, for suggestions, read without parsing each line."""
-        return _native.plugin_names(self.data)
+        return self._file.names()
 
     def plugins(self) -> list[Plugin]:
         return self.with_tokens()

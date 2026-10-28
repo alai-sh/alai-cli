@@ -21,10 +21,11 @@ import secrets
 import shutil
 import threading
 
+from alai_core.semver import Version
+
 from ._common import Error, Record, selects
 from ._config import LinkMode
 from ._output import debug, trace, warn
-from ._semver import Version
 
 _TEMP = ".alai-"
 """The prefix of alai's temporary directories beside a namespace's collections."""

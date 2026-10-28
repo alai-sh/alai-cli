@@ -366,12 +366,12 @@ into `ansible.builtin`, which the index lacked until it was synced.
   pass per hop (`Catalog.preload_routes`): one pass per target made
   `community.general.*` take 1.2 s. A search takes ~0.3 s, most of it the
   two revalidation requests.
-- **The scanning and parsing are the extension's** (2026-10-23):
-  `_native.plugin_lines` finds the lines holding every token with
-  `memchr`'s SIMD search, as `bytes.find` did, and reads them with
-  `serde_json`; `plugin_lines_named` replaces the redirect lookups' regex,
+- **The scanning and parsing are alai-core's** (`alai_core.plugins`, moved
+  from the extension on 2026-10-28). Its search finds the lines holding
+  every token with `memchr`'s SIMD search, as `bytes.find` did, and reads
+  them with `serde_json`. Its `named` replaces the redirect lookups' regex,
   an alternation of every target's name, which Python's `re` was slow to
-  scan 17 MB with (0.87 s of `find a`); `plugin_names` the suggestions'.
+  scan 17 MB with (0.87 s of `find a`), and `names` gives the suggestions'.
   Each returns the fields `Plugin` needs and the line itself, which
   `Plugin.raw` parses only when asked, for JSON output. A line is skipped
   as before, but for the stricter JSON in [index-client.md](index-client.md).
@@ -391,7 +391,10 @@ into `ansible.builtin`, which the index lacked until it was synced.
   | `zzzqqq` (none, so suggestions) | 0.19–0.20 s | 0.14 s | 0.21–0.30 s |
 
   What's left of `find a` is in Python: assessing and ranking 73k matches
-  (about 0.3 s), then the extension's parsing (about 0.12 s).
+  (about 0.3 s), then the extension's parsing (about 0.12 s). After the move to
+  alai-core, `find a` took 0.62 s against 0.57 s just before, offline and
+  best of five. The difference is copying each of core's entries into a
+  `Plugin`. The other queries were unchanged.
 - **What needs every line is cached per change to the file**: the probable
   copies, in `<cache_dir>/plugins-v1/<hash of the URL>.json`, keyed by the
   file's SHA-256 (~7 ms) and the `ansible` package list's releases. The

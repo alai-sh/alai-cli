@@ -11,6 +11,8 @@ import json
 import os
 import sys
 
+from alai_core.semver import Version
+
 from . import _output
 from ._common import ConfigError, Record, home_path
 from ._config import Settings
@@ -18,7 +20,6 @@ from ._install import Installed, installed, namespace_links
 from ._lock import IndexSource, Lock, LockedCollection, LockedRoot, lock_path, read_lock
 from ._manifest import parse_manifest
 from ._output import BLUE, BOLD, CYAN, DIM, GREEN, RED, YELLOW, status, styled, terminal_width
-from ._semver import Version
 
 LOCKED = "locked"
 """Installed as ``alai.lock`` has it."""

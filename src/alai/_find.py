@@ -14,6 +14,8 @@ import os
 import re
 import sys
 
+from alai_core.semver import Version
+
 from . import _output
 from ._common import EXIT_NOT_FOUND, Error, home_path
 from ._config import Settings
@@ -57,7 +59,6 @@ from ._plugins import (
     has_file,
     rank,
 )
-from ._semver import Version
 
 DEFAULT_LIMIT = 20
 """How many matches are listed on a terminal, unless ``--limit`` says otherwise: with the headings, ``… N more`` lines

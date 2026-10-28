@@ -7,7 +7,7 @@ Two version schemes meet in a project, and they compare differently:
 | Versions | SemVer 2.0.0 (`1.2.3-rc.1+build`) | PEP 440 (`2.19.0rc1`) |
 | Requirement syntax | ansible-galaxy's (`>=1.0,<2`, `*`, bare `1.2.3` means `==`) | PEP 440 specifiers (`>=2.17`, `~=2.17`, `==2.18.*`) |
 | ansible-core's code | `meets_requirements` in `lib/ansible/galaxy/dependency_resolution/versioning.py` | `_does_collection_support_ansible_version` in `lib/ansible/plugins/loader.py`, using `packaging` |
-| alai | `src/alai/_semver.py` | `src/alai/_pep440.py` |
+| alai | `alai_core.semver` (alai-core's `src/rust/core/src/semver.rs`) | `alai_core.pep440` (`src/rust/core/src/pep440.rs`) |
 
 The index spec's "Requirement syntax" section covers `deps[].req`, and its
 "`requires_ansible` syntax" section the PEP 440 specifiers.
@@ -17,18 +17,18 @@ Checked against ansible-core at `616e7c05e0` (2026-10-15) and `packaging`
 
 ## Decisions
 
-- **Two parsers for collection requirements.** `VersionReq.parse_index`
+- **Two parsers for collection requirements.** `VersionReq.from_galaxy`
   follows `meets_requirements` exactly, for an index's `deps[].req`, which
   galaxy-sync copies verbatim from each collection's metadata. Index data is
   whatever authors published, and resolving it differently from
-  ansible-galaxy would install something else. `VersionReq.parse` is the
+  ansible-galaxy would install something else. `VersionReq(text)` is the
   stricter form `alai.toml` takes. It drops the parts that read as something
   else: a bare version (`1.2.3`, easily read as "1.2.3 or later"), `=`, build
   metadata (which comparisons ignore, so `==1.0.0+a` matches `1.0.0+b`), and
   `LooseVersion` input such as `1.2.3.4`, which silently means `1.2.3`. It adds
   whitespace around parts, which ansible-galaxy fails on. Each rejected form
   gets an error saying what to write instead.
-- **`parse_index` rejects a bad clause up front.** ansible-galaxy checks
+- **`from_galaxy` rejects a bad clause up front.** ansible-galaxy checks
   clauses in order and stops at the first that fails, so a bad later clause
   (`>=1.0.0,` has an empty one) only raises for versions that pass the clauses
   before it. alai rejects the whole requirement.
@@ -50,12 +50,26 @@ Checked against ansible-core at `616e7c05e0` (2026-10-15) and `packaging`
   ~30 ms to import (it pulls in `packaging.tags`), which would land on every
   command that reads a manifest with `requires_ansible`. The resolver also
   needs to know whether two specifier sets overlap, which `packaging` doesn't
-  offer. `_pep440` implements PEP 440 ordering and every specifier operator,
+  offer. alai-core's `pep440` implements PEP 440 ordering and every specifier operator,
   except local versions (`+local`), which only `==` and `!=` allow and which
   no `requires_ansible` uses.
 - **`SpecifierSet.contains` compares the base version**, as ansible-core
   does: it drops its own pre-release, post-release and dev parts before
   checking, so ansible-core 2.19.0rc1 meets `>=2.19`.
+- **In alai-core, in Rust** (2026-10-28), so alai, its resolver, and the
+  tools that write indexes (galaxy-sync, alai-index) share one definition.
+  The resolver orders versions by ranks Python takes from
+  `Version.precedence`, so alai's Rust doesn't link core's crate
+  ([resolver.md](resolver.md)).
+  Before, alai's resolver compared precomputed `Version._key` tuples that
+  Python built, and galaxy-sync had its own SemVer code, which allowed
+  `1.0.0-01`. Versions are parsed by the `semver` crate. Requirements in
+  both syntaxes, `LooseVersion` included, and PEP 440 are alai-core's own.
+  `pep440_rs` was tried and not taken. It's been unmaintained since 2024-12,
+  as uv moved to its internal `uv-pep440`. It adds four dependencies, and it
+  rejects `>=2.17,`, which `packaging` accepts. Unlike the Python they
+  replaced, versions are ASCII only (Python's `\d` took other scripts'
+  digits) and each number fits a `u64`.
 
 ## Checked against
 
@@ -63,13 +77,13 @@ Both parsers were compared with the code they follow, using every
 `dependencies` value and `requires_ansible` in a sample of 24,157 Galaxy
 collection versions, the same strings galaxy-sync writes into the index:
 
-- `parse_index` against `meets_requirements`: 1,083 distinct requirements
+- `from_galaxy` against `meets_requirements`: 1,083 distinct requirements
   (the corpus plus edge cases), each against 407 versions. All 440,781 results
   agree, apart from the 97 that differ only as described above: alai raises
   where ansible-galaxy returns false.
-- `_pep440` against `packaging`: 255 specifier sets against all 359 ansible-core
-  releases on PyPI, matching ansible-core's base-version call. All 89,391
-  results agree. The one parse difference is `==2.17+local`, by design.
+- alai-core's `pep440` against `packaging`: 255 specifier sets against all
+  359 ansible-core releases on PyPI, matching ansible-core's base-version
+  call. All 89,391 results agree. The one parse difference is `==2.17+local`, by design.
   Version ordering matches `packaging` for every pair of a set of pre, post,
   dev and epoch versions.
 

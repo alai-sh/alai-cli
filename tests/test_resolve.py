@@ -7,6 +7,9 @@ import collections.abc as _c
 from pathlib import Path
 
 import pytest
+from alai_core.pep440 import Version as AnsibleVersion
+from alai_core.semver import Version
+from alai_core.toml import loads
 from index_data import cksum, index_path, make_index, v
 from index_server import IndexServer, serve
 
@@ -16,15 +19,11 @@ from alai._fetch import Fetcher, FetchError
 from alai._index import IndexClient
 from alai._lock import IndexSource, Lock, LockedCollection
 from alai._manifest import Manifest, parse_manifest
-from alai._native import toml_loads
-from alai._pep440 import SpecifierSet
-from alai._pep440 import Version as AnsibleVersion
-from alai._resolve import ResolutionError, admits_lower_bound, narrower_than, resolve
-from alai._semver import Version
+from alai._resolve import ResolutionError, resolve
 
 
 def manifest(toml: str) -> Manifest:
-    return parse_manifest(raw_manifest(toml_loads(toml), "alai.toml"))
+    return parse_manifest(raw_manifest(loads(toml), "alai.toml"))
 
 
 @pytest.fixture
@@ -457,6 +456,22 @@ class TestCandidates:
             "a.a: skipped 1 unreadable lines in index 'alai'",
         )
 
+    def test_index_file_notes_explain_no_solution(self, indexes: Indexes) -> None:
+        # Every line unreadable, as an index file from before a field was renamed would be to a newer alai.
+        indexes.add("alai", {"a.a": [v("1.0.0", v=2)]}, raw_lines={"a.a": "{not json"})
+
+        with pytest.raises(ResolutionError) as e:
+            _ = resolve(manifest(PROJECT), indexes.clients)
+
+        message = str(e.value)
+        assert message.startswith(
+            "no solution found when resolving collections:\n  Because there are no versions of a.a"
+        )
+        hints = message.split("\n\n", 1)[1].splitlines()
+        assert hints[0] == "hint: a.a: 1 versions in index 'alai' need a newer alai"
+        assert hints[1].startswith("hint: a.a: skipped 1 unreadable lines in index 'alai', the first at ")
+        assert len(hints) == 2
+
 
 class TestRequiresAnsible:
     TOML = '[project]\nrequires_ansible = ">=2.17"\ncollections = ["a.a"]\n'
@@ -551,40 +566,6 @@ class TestRequiresAnsible:
             ResolutionError, match=r"^ansible-core 2\.16\.0 isn't in the project's requires_ansible >=2\.17$"
         ):
             _ = resolve(manifest(self.TOML), indexes.clients, ansible_version=AnsibleVersion("2.16.0"))
-
-    @pytest.mark.parametrize(
-        ("collection", "project", "expected"),
-        [
-            (">=2.15", ">=2.17", True),
-            (">=2.17", ">=2.17", True),
-            (">=2.18", ">=2.17", False),
-            (">2.17", ">=2.17", False),
-            (">2.17", ">2.17", True),
-            (">=2.17", ">2.17", True),
-            (">=2.15,<2.16", ">=2.17", True),  # upper bounds are ignored
-            ("<2.20", ">=2.17", True),
-            (">=2.99", "<2.20", True),  # a project with no lower bound filters nothing
-            ("~=2.16", ">=2.17", True),
-            ("==2.18.*", ">=2.17", False),
-        ],
-    )
-    def test_admits_lower_bound(self, collection: str, project: str, expected: bool) -> None:
-        assert admits_lower_bound(SpecifierSet(collection), SpecifierSet(project)) is expected
-
-    @pytest.mark.parametrize(
-        ("collection", "project", "expected"),
-        [
-            (">=2.15", ">=2.17", False),
-            ("<2.20", ">=2.17", True),
-            ("<2.20", ">=2.17,<2.20", False),
-            ("<2.20", ">=2.17,<=2.20", True),
-            ("<=2.20", ">=2.17,<=2.20", False),
-            ("<2.19", ">=2.17,<2.20", True),
-            ("~=2.15", ">=2.17", True),
-        ],
-    )
-    def test_narrower_than(self, collection: str, project: str, expected: bool) -> None:
-        assert narrower_than(SpecifierSet(collection), SpecifierSet(project)) is expected
 
 
 class TestOverrides:

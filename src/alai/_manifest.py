@@ -15,10 +15,11 @@ import os
 import re
 import typing as _t
 
+from alai_core.pep440 import SpecifierSet
+from alai_core.semver import Version, VersionReq
+
 from ._common import NAME_RE, ConfigError, Record, file_url_to_path, read_toml
 from ._config import Project, RawManifest, raw_manifest
-from ._pep440 import SpecifierSet
-from ._semver import Version, VersionReq
 
 _NAME_PART_RE = re.compile(r"[a-z_][a-z0-9_]*")
 # The name, up to the first character that can only start a version requirement.
@@ -47,7 +48,7 @@ class Requirement(Record):
         name = collection_name(match.group("name"))
         req = match.group("req")
         try:
-            version_req = VersionReq.parse(req) if req else VersionReq("*", ())
+            version_req = VersionReq(req) if req else VersionReq("*")
         except ValueError as e:
             raise ValueError(f"invalid requirement '{text}': {e}") from None
         return cls(name, version_req, text)
@@ -454,7 +455,7 @@ def parse_manifest(raw: RawManifest) -> Manifest:
     for key, value in raw.overrides.items():
         where = f'project.overrides."{key}"'
         try:
-            overrides[collection_name(key)] = VersionReq.parse(value)
+            overrides[collection_name(key)] = VersionReq(value)
         except ValueError as e:
             raise ConfigError(f"{path}: {where}: {e}") from None
 

@@ -3,15 +3,14 @@
 
 //! Placing a cached collection's files where it's installed.
 
-use std::fs::{self, DirBuilder, File};
+use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io;
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt, symlink};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 
 use pyo3::prelude::*;
 
 use crate::error::{Error, OsContext};
-use crate::paths::create;
 
 /// Recreate the directory `source` as the new directory `dest`: directories with their modes and symlinks as they are,
 /// and each file cloned, hardlinked, copied with its mode, or symlinked to its absolute path in the cache (`mode`).
@@ -61,11 +60,13 @@ fn link_dir(source: &Path, dest: &Path, link: Link) -> Result<(), Error> {
 fn open_pair(source: &Path, dest: &Path) -> Result<(File, File), Error> {
     let src = File::open(source).at(source)?;
     let mode = src.metadata().at(source)?.permissions().mode() & 0o7777;
-    let dst = create(dest, mode).map_err(|e| match e {
-        Error::Os(err, _) => Error::Os(err, source.to_owned()),
-        other => other,
-    })?;
-    // The process umask masked the mode `create` gave, so a cached file keeps its own, as a hardlink of it would.
+    let dst = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(mode)
+        .open(dest)
+        .at(source)?;
+    // The process umask masked the mode it was made with, so a cached file keeps its own, as a hardlink of it would.
     dst.set_permissions(fs::Permissions::from_mode(mode)).at(source)?;
     Ok((src, dst))
 }

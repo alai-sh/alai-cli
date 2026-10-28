@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import os
 
+from alai_core.pep440 import SpecifierSet
+from alai_core.semver import Version, VersionReq
+
 from ._common import ConfigError, as_table, json_object
 from ._manifest import SourceCollection, collection_name
 from ._output import warn
-from ._pep440 import SpecifierSet
-from ._semver import Version, VersionReq
 
 GALAXY_FILE_NAME = "galaxy.yml"
 MANIFEST_FILE_NAME = "MANIFEST.json"
@@ -156,7 +157,7 @@ def _collection(
         try:
             dependency = collection_name(key)
             # The syntax ansible-galaxy installs dependencies with, as it does an index's.
-            req = VersionReq.parse_index(value)
+            req = VersionReq.from_galaxy(value)
         except ValueError as e:
             raise ConfigError(f"{at}: {e}") from None
         if dependency == name:
@@ -188,20 +189,23 @@ def _collection(
 def yaml_mapping(path: str, *, required: bool, shown: str | None = None) -> dict[str, object]:
     """The YAML file at ``path`` as a mapping, empty if it's empty or, unless ``required``, doesn't exist; messages
     call it ``shown`` when given."""
-    import yaml
+    from alai_core.yaml import YamlError, loads
 
     where = path if shown is None else shown
-    loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
     try:
         with open(path, encoding="utf-8") as f:
-            data = yaml.load(f, Loader=loader)  # noqa: S506 # a safe loader, the C one when PyYAML has it
+            text = f.read()
     except FileNotFoundError:
         if required:
             raise ConfigError(f"{where} doesn't exist") from None
         return {}
     except OSError as e:
         raise ConfigError(f"can't read {where}: {e.strerror or e}") from None
-    except yaml.YAMLError as e:
+    except UnicodeDecodeError as e:
+        raise ConfigError(f"{where} isn't UTF-8: {e}") from None
+    try:
+        data = loads(text, on_warning=lambda w: warn(f"{where}: {w}"))
+    except YamlError as e:
         raise ConfigError(f"{where} isn't valid YAML: {e}") from None
     if data is None:
         return {}

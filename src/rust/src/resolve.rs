@@ -17,38 +17,10 @@ use pubgrub::{
     DefaultStringReporter, Dependencies, DependencyProvider, DerivationTree, Derived, External, Map,
     PackageResolutionStatistics, PubGrubError, Ranges, ReportFormatter, Reporter, Term,
 };
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
 use crate::error::NoSolution;
-
-/// A pre-release identifier as Python's `Version._key` holds it: `(0, number)` or `(1, text)`, so numbers sort first.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, FromPyObject)]
-pub(crate) enum PreId {
-    Num(u64),
-    Str(String),
-}
-
-/// `Version._key` from `_semver.py`: major, minor, patch, 1 for a release or 0 for a pre-release, then the pre-release
-/// identifiers. Comparing it is comparing SemVer precedence.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, FromPyObject)]
-pub(crate) struct Key(u64, u64, u64, u8, Vec<(u8, PreId)>);
-
-impl fmt::Display for Key {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}.{}.{}", self.0, self.1, self.2)?;
-        if self.3 == 0 {
-            for (i, (_, id)) in self.4.iter().enumerate() {
-                f.write_str(if i == 0 { "-" } else { "." })?;
-                match id {
-                    PreId::Num(n) => write!(f, "{n}")?,
-                    PreId::Str(s) => f.write_str(s)?,
-                }
-            }
-        }
-        Ok(())
-    }
-}
 
 /// The lowest and highest texts a version with a given key can have, for a requirement's bounds: `>=1.0.0` is every
 /// version from the first with that precedence, `<=1.0.0` every one up to the last, as a requirement compares
@@ -56,18 +28,32 @@ impl fmt::Display for Key {
 const LOWEST: &str = "";
 const HIGHEST: &str = "\u{10FFFF}";
 
-/// A version ordered as Python orders them: by precedence, then by text.
+/// A version ordered as Python orders them: by precedence, then by text. Python gives the precedence as its rank
+/// among every precedence in the call, so this needs no version parsing of its own.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Version {
-    key: Key,
+    rank: u32,
     text: String,
+    /// For a requirement's bound, the version it was written with, as messages show it.
+    shown: String,
+}
+
+/// Each version text's precedence rank and whether it's a pre-release, as Python gives them.
+type Ranks = HashMap<String, (u32, bool)>;
+
+fn rank_of(ranks: &Ranks, text: &str) -> PyResult<(u32, bool)> {
+    ranks
+        .get(text)
+        .copied()
+        .ok_or_else(|| PyValueError::new_err(format!("no rank given for version '{text}'")))
 }
 
 impl Version {
-    fn bound(key: &Key, text: &str) -> Self {
+    fn bound(rank: u32, text: &str, shown: &str) -> Self {
         Version {
-            key: key.clone(),
+            rank,
             text: text.to_owned(),
+            shown: shown.to_owned(),
         }
     }
 }
@@ -75,8 +61,7 @@ impl Version {
 impl fmt::Display for Version {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.text == LOWEST || self.text == HIGHEST {
-            // A requirement's bound: the precedence it was written with.
-            self.key.fmt(f)
+            f.write_str(&self.shown)
         } else {
             f.write_str(&self.text)
         }
@@ -84,14 +69,17 @@ impl fmt::Display for Version {
 }
 
 type Set = Ranges<Version>;
-pub(crate) type Clause = (String, Key);
+pub(crate) type Clause = (String, String);
 
 /// The versions a requirement's clauses accept, all of which must hold; none is every version.
-fn set_of(clauses: &[Clause]) -> Set {
+fn set_of(clauses: &[Clause], ranks: &Ranks) -> PyResult<Set> {
     let mut set = Ranges::full();
-    for (op, key) in clauses {
-        let lowest = Version::bound(key, LOWEST);
-        let highest = Version::bound(key, HIGHEST);
+    for (op, text) in clauses {
+        let (rank, _) = rank_of(ranks, text)?;
+        // A bound is shown as its precedence, so without build metadata, as a requirement compares it.
+        let shown = text.split('+').next().unwrap_or(text);
+        let lowest = Version::bound(rank, LOWEST, shown);
+        let highest = Version::bound(rank, HIGHEST, shown);
         let clause: Set = match op.as_str() {
             ">=" => Ranges::higher_than(lowest),
             ">" => Ranges::strictly_higher_than(highest),
@@ -99,12 +87,11 @@ fn set_of(clauses: &[Clause]) -> Set {
             "<=" => Ranges::lower_than(highest),
             "==" => Ranges::from_range_bounds(lowest..=highest),
             "!=" => Ranges::from_range_bounds(lowest..=highest).complement(),
-            // Python validated the operators; anything else accepts everything rather than failing here.
-            _ => Ranges::full(),
+            _ => return Err(PyValueError::new_err(format!("unknown operator '{op}'"))),
         };
         set = set.intersection(&clause);
     }
-    set
+    Ok(set)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -243,7 +230,7 @@ fn bounds_text(set: &Set) -> String {
     let mut segments = set.iter();
     if let (Some((Bound::Unbounded, Bound::Excluded(a))), Some((Bound::Excluded(b), Bound::Unbounded)), None) =
         (segments.next(), segments.next(), segments.next())
-        && a.key == b.key
+        && a.rank == b.rank
     {
         return format!("!={a}");
     }
@@ -251,7 +238,7 @@ fn bounds_text(set: &Set) -> String {
     for (lower, upper) in set.iter() {
         let mut clauses = Vec::new();
         match (lower, upper) {
-            (Bound::Included(a), Bound::Included(b)) if a.key == b.key => clauses.push(format!("=={a}")),
+            (Bound::Included(a), Bound::Included(b)) if a.rank == b.rank => clauses.push(format!("=={a}")),
             (lower, upper) => {
                 match lower {
                     Bound::Included(v) => clauses.push(format!(">={v}")),
@@ -276,7 +263,7 @@ fn bounds_text(set: &Set) -> String {
 fn exact(set: &Set) -> Option<&Version> {
     let mut segments = set.iter();
     match (segments.next(), segments.next()) {
-        (Some((Bound::Included(a), Bound::Included(b))), None) if a.key == b.key => Some(a),
+        (Some((Bound::Included(a), Bound::Included(b))), None) if a.rank == b.rank => Some(a),
         _ => None,
     }
 }
@@ -703,23 +690,19 @@ impl ReportFormatter<Package, Set, String> for Formatter<'_> {
 }
 
 pub(crate) type Requirement = Vec<Clause>;
-/// A version as Python passes it: text, key, whether it's a pre-release, why it can't be used or None, and its
-/// dependencies.
-pub(crate) type VersionEntry = (String, Key, bool, Option<String>, Vec<(String, Requirement)>);
+/// A version as Python passes it, with its text, why it can't be used or None, and its dependencies.
+pub(crate) type VersionEntry = (String, Option<String>, Vec<(String, Requirement)>);
 
-fn dependencies(deps: &[(String, Requirement)]) -> Vec<(Package, Set)> {
+fn dependencies(deps: &[(String, Requirement)], ranks: &Ranks) -> PyResult<Vec<(Package, Set)>> {
     deps.iter()
-        .map(|(name, clauses)| (Package::Collection(name.clone()), set_of(clauses)))
+        .map(|(name, clauses)| Ok((Package::Collection(name.clone()), set_of(clauses, ranks)?)))
         .collect()
 }
 
 fn one_version(deps: Vec<(Package, Set)>) -> PackageData {
     PackageData {
         versions: vec![VersionData {
-            version: Version {
-                key: Key(0, 0, 0, 1, Vec::new()),
-                text: "0.0.0".to_owned(),
-            },
+            version: Version::bound(0, "0.0.0", ""),
             prerelease: false,
             unavailable: None,
             deps,
@@ -734,6 +717,7 @@ fn one_version(deps: Vec<(Package, Set)>) -> PackageData {
 pub(crate) fn resolve(
     py: Python<'_>,
     packages: HashMap<String, Vec<VersionEntry>>,
+    versions: Ranks,
     roots: Vec<(String, Requirement)>,
     groups: Vec<(String, Vec<(String, Requirement)>)>,
     preferred: HashMap<String, String>,
@@ -753,15 +737,22 @@ pub(crate) fn resolve(
         root_unsat,
     };
     for (name, entries) in packages {
-        let mut versions: Vec<VersionData> = entries
+        let mut versions = entries
             .into_iter()
-            .map(|(text, key, prerelease, unavailable, deps)| VersionData {
-                version: Version { key, text },
-                prerelease,
-                unavailable,
-                deps: dependencies(&deps),
+            .map(|(text, unavailable, deps)| {
+                let (rank, prerelease) = rank_of(&versions, &text)?;
+                Ok(VersionData {
+                    version: Version {
+                        rank,
+                        text,
+                        shown: String::new(),
+                    },
+                    prerelease,
+                    unavailable,
+                    deps: dependencies(&deps, &versions)?,
+                })
             })
-            .collect();
+            .collect::<PyResult<Vec<VersionData>>>()?;
         versions.sort_by(|a, b| a.version.cmp(&b.version));
         let preferred = preferred
             .get(&name)
@@ -771,10 +762,10 @@ pub(crate) fn resolve(
             .packages
             .insert(Package::Collection(name), PackageData { versions, preferred });
     }
-    let mut root_deps = dependencies(&roots);
+    let mut root_deps = dependencies(&roots, &versions)?;
     table.direct.extend(root_deps.iter().map(|(p, _)| p.clone()));
     for (group, deps) in groups {
-        let deps = dependencies(&deps);
+        let deps = dependencies(&deps, &versions)?;
         table.direct.extend(deps.iter().map(|(p, _)| p.clone()));
         root_deps.push((Package::Group(group.clone()), Ranges::full()));
         table.packages.insert(Package::Group(group), one_version(deps));

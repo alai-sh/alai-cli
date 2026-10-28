@@ -15,13 +15,16 @@ import collections.abc as _c
 import difflib
 import typing as _t
 
-from . import _native, _semver
+from alai_core import semver
+from alai_core.index import CollectionVersion
+from alai_core.pep440 import SpecifierSet, Version
+from alai_core.semver import VersionReq
+
+from . import _native
 from ._common import Error, Record, selects
-from ._index import CollectionVersion, IndexClient, IndexFile
+from ._index import IndexClient, IndexFile
 from ._lock import GitCommitSource, IndexSource, Lock, LockedCollection, locked_source
 from ._manifest import GitSource, IndexPin, Manifest, PathSource, Requirement, SourceCollection
-from ._pep440 import SpecifierSet, Version
-from ._semver import VersionReq
 
 if _t.TYPE_CHECKING:
     from ._native import _Clauses, _Entry
@@ -83,7 +86,7 @@ class _Requirement(Record):
 class _Chosen(Record):
     __slots__ = ("index", "name", "version")
 
-    def __init__(self, name: str, version: CollectionVersion, index: str) -> None:
+    def __init__(self, name: str, version: _Candidate, index: str) -> None:
         self.name = name
         self.version = version
         self.index = index
@@ -97,7 +100,7 @@ def resolve(
     indexes: _c.Sequence[IndexClient],
     *,
     locked: Lock | None = None,
-    installed: _c.Mapping[str, _semver.Version] | None = None,
+    installed: _c.Mapping[str, semver.Version] | None = None,
     upgrade: bool | _c.Collection[str] = False,
     ansible_version: Version | None = None,
     report: _c.Callable[[str, int], None] | None = None,
@@ -137,21 +140,26 @@ def resolve(
         picked = _native.resolve(*table.arguments(roots))
     except _native.NoSolution as e:
         explanation = "\n".join(f"  {line}" if line else "" for line in str(e).splitlines())
-        raise ResolutionError(f"no solution found when resolving collections:\n{explanation}") from None
+        # A version left out of an index file may be why there's none, so say so, as a warning would have.
+        hints = "".join(f"\nhint: {note}" for note in table.file_notes(why=True))
+        message = f"no solution found when resolving collections:\n{explanation}"
+        raise ResolutionError(message + (f"\n{hints}" if hints else "")) from None
     chosen = table.chosen(picked)
 
     collections: list[LockedCollection] = []
     for c in sorted(chosen.values(), key=lambda c: c.name):
         dependencies = tuple(sorted({name for name, _ in c.version.deps}))
         if c.index != _LOCAL:
-            requires_ansible = c.version.requires_ansible
+            version = c.version
+            assert isinstance(version, CollectionVersion)  # noqa: S101  # Only local collections aren't from an index.
+            requires_ansible = version.requires_ansible
             collections.append(
                 LockedCollection(
                     c.name,
-                    c.version.version,
+                    version.version,
                     source=IndexSource(by_name[c.index].config().root),
-                    cksum=c.version.cksum,
-                    size=c.version.size,
+                    cksum=version.sha256,
+                    size=version.size,
                     requires_ansible=requires_ansible.text if requires_ansible is not None else None,
                     dependencies=dependencies,
                 )
@@ -176,36 +184,7 @@ def resolve(
     return Resolution(tuple(collections), tuple(table.warnings(chosen)), reasons)
 
 
-def admits_lower_bound(collection: SpecifierSet, project: SpecifierSet) -> bool:
-    """Whether a collection version's ``requires_ansible`` admits the project's, by lower bounds alone.
-
-    The collection must not start later than the project: its upper bounds are ignored, as uv ignores dependencies'
-    ``requires-python`` upper bounds. A project range with no lower bound filters nothing.
-    """
-    want = project.lower_bound()
-    have = collection.lower_bound()
-    if want is None or have is None:
-        return True
-    if have.version != want.version:
-        return have.version < want.version
-    return have.inclusive or not want.inclusive
-
-
-def narrower_than(collection: SpecifierSet, project: SpecifierSet) -> bool:
-    """Whether a collection version's upper bound ends inside the project's range, so the lock doesn't cover all of
-    it."""
-    theirs = collection.upper_bound()
-    if theirs is None:
-        return False
-    ours = project.upper_bound()
-    if ours is None or ours.version > theirs.version:
-        return True
-    return ours.version == theirs.version and ours.inclusive and not theirs.inclusive
-
-
-def _kept(
-    installed: _c.Mapping[str, _semver.Version], upgrade: bool | _c.Collection[str]
-) -> dict[str, _semver.Version]:
+def _kept(installed: _c.Mapping[str, semver.Version], upgrade: bool | _c.Collection[str]) -> dict[str, semver.Version]:
     """The installed versions to prefer: all of them, unless ``upgrade`` says otherwise."""
     return {name: version for name, version in installed.items() if not selects(upgrade, name)}
 
@@ -217,8 +196,13 @@ def _preferences(locked: Lock | None, upgrade: bool | _c.Collection[str]) -> dic
     return {c.name: c for c in locked.collections if not selects(upgrade, c.name)}
 
 
-def _clauses(req: VersionReq) -> _Clauses:
-    return tuple((op, version._key) for op, version in req.clauses)
+def _ranks(versions: _c.Iterable[semver.Version]) -> dict[str, tuple[int, bool]]:
+    """Each version's place among the distinct precedences of ``versions``, by text, and whether it's a pre-release.
+    The resolver orders versions by these, then by text, so it needs no version parsing of its own."""
+    precedence = {v.text: v.precedence for v in versions}
+    rank = {p: n for n, p in enumerate(sorted(set(precedence.values())))}
+    # A release's precedence ends (1,), a pre-release's (0, ...).
+    return {text: (rank[p], p[3] == 0) for text, p in precedence.items()}
 
 
 class _Table:
@@ -231,7 +215,7 @@ class _Table:
         preferred: dict[str, LockedCollection],
         ansible_version: Version | None,
         report: _c.Callable[[str, int], None] | None = None,
-        installed: dict[str, _semver.Version] | None = None,
+        installed: dict[str, semver.Version] | None = None,
         origin: str = "the project",
     ) -> None:
         self._manifest = manifest
@@ -252,6 +236,8 @@ class _Table:
         self._packages: dict[str, tuple[_Entry, ...]] = {}
         """Every collection the requirements can reach, as the search takes it: each version with its dependencies,
         and why it can't be chosen if it can't."""
+        self._versions: dict[str, semver.Version] = {}
+        """Every version the search compares, by text: each collection's, and each a requirement names."""
         self._missing: dict[str, str] = {}
         """Collections something depends on that have no versions: no configured index has them, or the index's
         listing says it does but the file isn't there."""
@@ -318,7 +304,7 @@ class _Table:
                     if root is not None and name == root.name
                     else f"from {self._manifest.sources[name]}"
                 )
-                versions: _c.Sequence[CollectionVersion] = (local,)
+                versions: _c.Sequence[_Candidate] = (local,)
             elif index is None:
                 self._missing[name] = f"no configured index has {name}"
                 continue
@@ -336,12 +322,13 @@ class _Table:
                 if keep is not None and any(v.version == keep for v in file.versions):
                     self._preferred_texts[name] = keep.text
                 versions = file.versions
-            queue.extend(dep for version in versions for dep, _ in version.deps)
+            queue.extend(dep for version in versions if version.problem is None for dep, _ in version.deps)
 
     def arguments(
         self, roots: _c.Sequence[_Requirement]
     ) -> tuple[
         dict[str, tuple[_Entry, ...]],
+        dict[str, tuple[int, bool]],
         tuple[tuple[str, _Clauses], ...],
         tuple[tuple[str, tuple[tuple[str, _Clauses], ...]], ...],
         dict[str, str],
@@ -356,7 +343,8 @@ class _Table:
         groups: dict[str, list[tuple[str, _Clauses]]] = {}
         for r in roots:
             if r.group is not None:
-                groups.setdefault(r.group, []).append((r.name, _clauses(r.req)))
+                groups.setdefault(r.group, []).append((r.name, self._clauses(r.req)))
+        top = tuple((r.name, self._clauses(r.req)) for r in roots if r.group is None)
         if self._origin == "the command line":
             # uv's words for `uv pip`, whose requirements are the command line's too.
             depends, unsatisfiable = "you require", "your requirements are unsatisfiable"
@@ -365,7 +353,8 @@ class _Table:
             unsatisfiable = f"{self._origin}'s requirements are unsatisfiable"
         return (
             self._packages,
-            tuple((r.name, _clauses(r.req)) for r in roots if r.group is None),
+            _ranks(self._versions.values()),
+            top,
             tuple((group, tuple(items)) for group, items in groups.items()),
             self._preferred_texts,
             self._missing,
@@ -375,20 +364,24 @@ class _Table:
             unsatisfiable,
         )
 
-    def _entry(self, name: str, version: CollectionVersion, *, allow_yanked: bool) -> _Entry:
-        dependencies: list[tuple[str, _Clauses]] = []
-        for dep, req in version.deps:
-            req, _ = self._overridden(dep, req, "")
-            dependencies.append((dep, _clauses(req)))
-        return (
-            version.version.text,
-            version.version._key,
-            version.version.is_prerelease,
-            self._unavailable_because(name, version, allow_yanked=allow_yanked),
-            tuple(dependencies),
-        )
+    def _clauses(self, req: VersionReq) -> _Clauses:
+        clauses: list[tuple[str, str]] = []
+        for op, version in req.clauses:
+            self._versions[version.text] = version
+            clauses.append((op, version.text))
+        return tuple(clauses)
 
-    def _keep(self, name: str, index: str) -> _semver.Version | None:
+    def _entry(self, name: str, version: _Candidate, *, allow_yanked: bool) -> _Entry:
+        unavailable = self._unavailable_because(name, version, allow_yanked=allow_yanked)
+        self._versions[version.version.text] = version.version
+        dependencies: list[tuple[str, _Clauses]] = []
+        # The resolver never reads an unavailable version's dependencies, and an unusable one's can't be read.
+        for dep, req in () if unavailable else version.deps:
+            req, _ = self._overridden(dep, req, "")
+            dependencies.append((dep, self._clauses(req)))
+        return (version.version.text, unavailable, tuple(dependencies))
+
+    def _keep(self, name: str, index: str) -> semver.Version | None:
         """The locked version, else the installed one: either is kept while it still fits."""
         preferred = self._preferred.get(name)
         if preferred is not None and preferred.source == IndexSource(self._indexes[index].config().root):
@@ -419,7 +412,9 @@ class _Table:
                 on.setdefault(name, []).append(_Requirement(name, req, parent=str(c), text=text, parent_name=c.name))
         return on
 
-    def warnings(self, chosen: _c.Mapping[str, _Chosen]) -> list[str]:
+    def file_notes(self, *, why: bool = False) -> list[str]:
+        """What the index files read left out: versions that need a newer alai, and lines that couldn't be read, with
+        the first such line and why, if ``why``."""
         out: list[str] = []
         for (index, name), file in sorted(self._files.items()):
             if file is None:
@@ -427,7 +422,12 @@ class _Table:
             if file.newer:
                 out.append(f"{name}: {file.newer} versions in index '{index}' need a newer alai")
             if file.invalid:
-                out.append(f"{name}: skipped {len(file.invalid)} unreadable lines in index '{index}'")
+                first = f", the first at {file.invalid[0]}" if why else ""
+                out.append(f"{name}: skipped {len(file.invalid)} unreadable lines in index '{index}'{first}")
+        return out
+
+    def warnings(self, chosen: _c.Mapping[str, _Chosen]) -> list[str]:
+        out = self.file_notes()
         project = self._manifest.requires_ansible
         for name in sorted(chosen):
             candidate = chosen[name]
@@ -447,7 +447,7 @@ class _Table:
                 and project is not None
                 and theirs is not None
                 and name not in self._manifest.ignore_requires_ansible
-                and narrower_than(theirs, project)
+                and theirs.narrower_than(project)
             ):
                 out.append(
                     f"{candidate} supports ansible-core {theirs}, which ends inside the project's requires_ansible "
@@ -586,7 +586,7 @@ class _Table:
             file = self._files[key] = self._indexes[index].versions(name)
             if file is not None:
                 # Every dependency any version names, fetched now rather than when the table gets to it.
-                self._prefetch({dep for version in file.versions for dep, _ in version.deps})
+                self._prefetch({dep for v in file.versions if v.problem is None for dep, _ in v.deps})
         return self._files[key]
 
     def _overridden(self, name: str, req: VersionReq, text: str) -> tuple[VersionReq, str]:
@@ -595,7 +595,7 @@ class _Table:
             return req, text
         return override, f"{name}{override.text if override.clauses else ''} ([project.overrides], replacing {text})"
 
-    def _unavailable_because(self, name: str, version: CollectionVersion, *, allow_yanked: bool) -> str | None:
+    def _unavailable_because(self, name: str, version: _Candidate, *, allow_yanked: bool) -> str | None:
         """Why a version can't be chosen, as a predicate for messages (``is yanked``), or None if it can."""
         if version.problem is not None:
             self._unusable.setdefault(name, {})[version.version.text] = version.problem
@@ -612,12 +612,37 @@ class _Table:
                 return f"doesn't support ansible-core {self._ansible_version}"
             return None
         project = self._manifest.requires_ansible
-        if project is not None and not admits_lower_bound(theirs, project):
+        if project is not None and not theirs.admits_lower_bound(project):
             return f"needs a newer ansible-core than the project's {project}"
         return None
 
 
-def _local_version(collection: SourceCollection, *, root: bool = False) -> CollectionVersion:
+class _LocalVersion(Record):
+    """A collection from a directory, tarball or commit, read as an index line would describe it, with no artifact
+    to download."""
+
+    __slots__ = ("deps", "name", "problem", "requires_ansible", "version", "yanked")
+
+    def __init__(
+        self,
+        name: str,
+        version: semver.Version,
+        *,
+        deps: tuple[tuple[str, VersionReq], ...],
+        requires_ansible: SpecifierSet | None,
+    ) -> None:
+        self.name = name
+        self.version = version
+        self.deps = deps
+        self.requires_ansible = requires_ansible
+        self.yanked = False
+        self.problem: str | None = None
+
+
+_Candidate = CollectionVersion | _LocalVersion
+
+
+def _local_version(collection: SourceCollection, *, root: bool = False) -> _LocalVersion:
     """A collection in a directory as an index entry would describe it, with no artifact. The project's own has no
     dependencies or ``requires_ansible`` here: its galaxy.yml's are the project's requirements, and its
     ``meta/runtime.yml``'s the project's range."""
@@ -625,15 +650,11 @@ def _local_version(collection: SourceCollection, *, root: bool = False) -> Colle
     requires_ansible = (
         None if root or collection.requires_ansible is None else SpecifierSet(collection.requires_ansible)
     )
-    return CollectionVersion(
+    return _LocalVersion(
         collection.name,
         collection.version,
         deps=tuple((r.name, r.req) for r in requirements),
-        cksum="",
-        size=0,
         requires_ansible=requires_ansible,
-        yanked=False,
-        published="",
     )
 
 

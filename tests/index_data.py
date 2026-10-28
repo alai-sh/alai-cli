@@ -45,7 +45,7 @@ def make_index(
     """Write an index in the spec's layout, returning its file:// root URL.
 
     With ``artifacts``, each version gets a real tarball under ``root/dl``, which ``dl`` points at, and its line the
-    tarball's ``cksum`` and ``size``, so it can be installed: one holding only a README, or the file a version's
+    tarball's ``sha256`` and ``size``, so it can be installed: one holding only a README, or the file a version's
     ``tarball`` key names, such as a collection downloaded from Galaxy. With ``plugins``, it has a plugin index of those lines
     (see ``plugin``). Index files are found by their SHA-256, ``index/<aa>/<sha256>.jsonl``, as ``index.alai.sh``
     serves them, or with ``hashed=False`` by name, ``index/<namespace>/<name>.jsonl``. With ``listing=False``, which needs
@@ -84,16 +84,16 @@ def make_index(
                 "name": name,
                 "vers": spec["vers"],
                 "deps": [{"name": d, "req": r} for d, r in spec["deps"].items()],  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownVariableType]
-                "cksum": cksum(name, str(spec["vers"])),
+                "sha256": cksum(name, str(spec["vers"])),
                 "size": 100,
                 "yanked": spec["yanked"],
                 "published": "2026-01-01T00:00:00Z",
             }
             tarball = spec.get("tarball")
             if isinstance(tarball, Path):
-                line["cksum"], line["size"] = _copy_artifact(root / "dl", tarball)
+                line["sha256"], line["size"] = _copy_artifact(root / "dl", tarball)
             elif artifacts:
-                line["cksum"], line["size"] = _artifact(root / "dl", name, str(spec["vers"]))
+                line["sha256"], line["size"] = _artifact(root / "dl", name, str(spec["vers"]))
             line.update({k: val for k, val in spec.items() if k not in ("vers", "deps", "yanked", "tarball")})
             lines.append(json.dumps(line))
         if raw_lines and name in raw_lines:

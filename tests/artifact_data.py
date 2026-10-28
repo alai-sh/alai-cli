@@ -109,20 +109,6 @@ def tar_symlink(name: str, target: str) -> Member:
     return info, None
 
 
-def tar_hardlink(name: str, target: str) -> Member:
-    info = tarfile.TarInfo(name)
-    info.type = tarfile.LNKTYPE
-    info.linkname = target
-    return info, None
-
-
-def tar_special(name: str, kind: bytes) -> Member:
-    """A device or FIFO: ``tarfile.CHRTYPE``, ``BLKTYPE`` or ``FIFOTYPE``."""
-    info = tarfile.TarInfo(name)
-    info.type = kind
-    return info, None
-
-
 def build_tarball(path: Path, members: list[Member]) -> tuple[str, int]:
     """Write exactly ``members``, in order, as a gzipped tarball to ``path`` and return its SHA-256 and size; a name
     given twice is stored twice, as ``tar -r`` appends one."""

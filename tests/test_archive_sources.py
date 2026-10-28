@@ -12,6 +12,7 @@ import shutil
 from pathlib import Path
 
 import pytest
+from alai_core.toml import loads
 from artifact_data import Link, build_artifact
 from helpers import install_record, installed_at, lines, write_sources
 from index_server import IndexServer, serve
@@ -19,7 +20,6 @@ from index_server import IndexServer, serve
 from alai._cli import main
 from alai._common import EXIT_ERROR
 from alai._lock import ArchiveSource, ArchiveUrlSource, read_lock, render_lock
-from alai._native import toml_loads
 
 
 def tarball(
@@ -59,7 +59,7 @@ class TestPath:
 
         assert main(["lock", "-q"]) == 0
 
-        data = toml_loads((project / "alai.lock").read_text())
+        data = loads((project / "alai.lock").read_text())
         assert data["sources"] == {"ns.src": {"path": "../dist/ns-src-1.0.0.tar.gz"}}
         entries = {c["name"]: c for c in data["collection"]}
         assert sorted(entries) == ["a.a", "b.b", "ns.src"]
@@ -67,7 +67,7 @@ class TestPath:
             "name": "ns.src",
             "version": "1.0.0",
             "source": {"path": "../dist/ns-src-1.0.0.tar.gz"},
-            "cksum": cksum,
+            "sha256": cksum,
             "size": size,
             "requires_ansible": ">=2.16",
             "collections": ["a.a>=2.0.0"],
@@ -176,9 +176,9 @@ class TestUrl:
         assert main(["sync"]) == 0
 
         assert lines(capsys.readouterr().err)[-2:] == [" + c.c==1.0.0", f" + ns.src==1.0.0 (from {url})"]
-        data = toml_loads((project / "alai.lock").read_text())
+        data = loads((project / "alai.lock").read_text())
         entry = next(c for c in data["collection"] if c["name"] == "ns.src")
-        assert entry["source"] == {"url": url} and entry["cksum"] == cksum and entry["size"] == size
+        assert entry["source"] == {"url": url} and entry["sha256"] == cksum and entry["size"] == size
         assert entry["collections"] == ["c.c"]
         assert install_record(project / "collections", "ns.src") == {"source": {"url": url}, "cksum": cksum}
         assert downloads(server) == 1

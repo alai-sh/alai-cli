@@ -570,13 +570,15 @@ types it). It's laid out as `cryptography` lays out its own: Python in
 (decided with the user, 2026-10-22). maturin's default puts the Rust in a
 root `src/` and the Python in `python/`, which would have moved every tool
 path for alai's src layout; the Rust inside `src/alai/` would ship in the
-wheel. It reads and extracts collection tarballs and places installed
-files, with the GIL released. It's required: alai has no pure-Python
+wheel. It resolves versions, makes HTTP requests and places installed
+files, with the GIL released. Extracting collection tarballs is
+alai-core's, `alai_core.artifact`, since 2026-10-28 (`src/rust/src/extract.rs`
+and `paths.rs` before), moved as it was. It's required: alai has no pure-Python
 fallback (see [Shipping](#shipping)).
 
 - **One call, two passes, all in Rust** (decided with the user,
-  2026-10-23): `extract_collection(tarball, dest, limit, expected)`
-  extracts a collection and returns the namespace, name and version its
+  2026-10-23): `alai_core.artifact.extract(tarball, dest, *, limit,
+  expected)` extracts a collection and returns the namespace, name and version its
   `MANIFEST.json` gives. A gzip stream can't be seeked, a tar has no index
   (members one after another, each a header and its data), and `tar -r`
   appends a replacement after the original, whose last copy is the one
@@ -598,9 +600,30 @@ fallback (see [Shipping](#shipping)).
      points to, which can come later) and hardlinks' copies are taken from
      disk.
 
-  Every error is raised where it's found, as an `ExtractError(kind, entry,
-  detail)` that `_artifacts` turns into the message, so the wording lives
-  in one place; filesystem errors are `OSError`s. Python makes one call.
+  Every error is raised where it's found, as an `ExtractError` whose
+  `kind`, `entry` and `detail` say what and whose message core words, so
+  the wording lives in one place; filesystem errors are `OSError`s.
+  `_artifacts` adds where the artifact came from, the hint to raise
+  `ALAI_MAX_UNPACKED_SIZE` for `too_large`, and "isn't a built collection"
+  for a tarball without a `MANIFEST.json`. Python makes one call.
+- **On Windows** (core's, decided with the user, 2026-10-28), which alai
+  doesn't run on but alai-doc may: modes aren't set; a name Windows can't
+  hold as named (a device such as `NUL.txt` or `COM¹`, a trailing `.` or
+  space, or `<>:"|?*`) is refused as `path`, rather than renamed or
+  skipped, as a renamed plugin isn't the plugin and core has no way to
+  warn; a symlink target with `\` or `:` is refused as `link`; and a
+  symlink is made as a directory or file link as `FILES.json` lists it,
+  inline as on Unix, or, where Windows won't make links (no Developer
+  Mode), copied from what it points to once everything is written. A
+  `\\?\` path could create the refused names, but other programs reading
+  the tree would then see a device or a different name.
+- **Where case doesn't matter** (macOS and Windows by default), names are
+  still compared exactly, as ansible-galaxy compares them, and every file is
+  made with `O_EXCL`, so of two names differing only in case the second is
+  refused (`FileExistsError`) rather than replacing the first, where
+  ansible-galaxy's `'wb'` would. So a `manifest.json` that `FILES.json`
+  lists can't shadow the `MANIFEST.json` that was checked; core's tests
+  pin it where the filesystem doesn't tell case apart.
 - **It replaced a split across the languages** (2026-10-22 to 23), whose
   logic was hard to follow: Python read the first `MANIFEST.json` and
   `FILES.json`, checked them and handed Rust a list and a "watch" set;
@@ -672,8 +695,8 @@ fallback (see [Shipping](#shipping)).
   in step found three places they'd drifted, and with TOML editing to come
   the two couldn't have edited a file alike; the reasons are in
   [Shipping](#shipping).
-- **Crates**: `pyo3` (the `abi3-py310` stable ABI, and `gil_used = false`
-  for free-threaded builds), `tar`, `flate2` with the `zlib-rs` backend
+- **Crates** (core's since 2026-10-28, but `sha2`, which alai's HTTP
+  still uses): `tar`, `flate2` with the `zlib-rs` backend
   (pure Rust, so no C toolchain) and `MultiGzDecoder`, as Python's gzip
   reads every member of a multi-member stream, and `sha2`, which uses the
   CPU's SHA-256 instructions, and `serde_json` for `MANIFEST.json` and
@@ -756,7 +779,7 @@ what's left is installing, by clone ([Cloning](#cloning)).
   (`cpython-314t` and `abi3t`), with `tests/test_native.py` checking, in a
   new interpreter, that importing it leaves the GIL off; none of alai's
   dependencies turns it on either (checked on 3.14t and 3.15t: PyYAML
-  6.0.3's C loader, argcomplete, distlib, resolvelib, truststore, urllib3 (since replaced by the extension's HTTP),
+  6.0.3's C loader, before YAML moved to alai-core, argcomplete, distlib, resolvelib, truststore, urllib3 (since replaced by the extension's HTTP),
   coverage, pytest and pytest-xdist). The `abi3.abi3t` wheel covers 3.16
   and later as `abi3` does, with no new wheel per release, by PEP 803's
   promise rather than a record yet, which the tox runs on each new release
@@ -928,16 +951,17 @@ what's left is installing, by clone ([Cloning](#cloning)).
 
 Decided with the user, 2026-10-23: every TOML file alai reads, writes or
 edits goes through `toml_edit` 0.25 (TOML 1.1), cargo's and uv's, in
-`src/rust/src/toml.rs`:
+`alai_core.toml` (alai-core's, since 2026-10-28, and `src/rust/src/toml.rs`
+before):
 
-- **Reading**: `toml_read` (and `TomlDocument.read`, for editing) reads
+- **Reading**: `read` (and `Document.from_path`, for editing) reads
   the file with the GIL released and gives what `tomllib.load` gives,
   datetimes as `datetime` objects, for `alai.toml`, the config files and
   `alai.lock`. Every caller goes through `_config.read_toml` or
   `read_toml_document`, so a file that can't be read, isn't UTF-8 (`not
   UTF-8 (at line 2, column 7)`, placed as a syntax error is) or isn't
-  valid TOML gets the same error wherever it's read. `toml_loads` and
-  `TomlDocument(text)` take text, for the tests.
+  valid TOML gets the same error wherever it's read. `loads` and
+  `Document(text)` take text, for the tests.
   Every Python now reads the same TOML, so `tomli` is gone as a dependency
   for 3.10, and TOML 1.1's multi-line inline tables can be used in
   `alai.toml`: before, a `[project.sources]` entry spread over lines was
@@ -948,7 +972,7 @@ edits goes through `toml_edit` 0.25 (TOML 1.1), cargo's and uv's, in
   `toml_edit`'s wording. On the 25 KB lock of `sivel.acd` it was 0.36 ms
   against `tomllib`'s 1.78 ms, giving the same data; importing `_native`
   costs 1.8 ms, and is only done once a file is read.
-- **Writing `alai.lock`**: `toml_dumps` builds the document from a mapping
+- **Writing `alai.lock`**: `dumps` builds the document from a mapping
   `render_lock` lays out, with fixed rules for tables, inline tables,
   dotted keys and wrapped arrays, in place of the emitter in `_lock.py`
   (decided with the user, 2026-10-23, so there's one TOML writer). It
@@ -960,11 +984,19 @@ edits goes through `toml_edit` 0.25 (TOML 1.1), cargo's and uv's, in
 - **GIL**: parsing releases it; turning the document into Python objects,
   and the edits, hold it, as they're mostly building or reading them.
 
-### Open: YAML in the extension
+### YAML in the extension
 
-Open (raised 2026-10-21): whether the extension should parse YAML too, for
-`galaxy.yml` and `meta/runtime.yml`. PyYAML is used for now, with its C
-loader where it's built with libyaml, and only imported in a collection
-project. An editor that keeps `galaxy.yml`'s formatting, for `alai add` in
-a collection project, would be the reason to
+Decided with the user, 2026-10-28: `galaxy.yml` and `meta/runtime.yml` are
+read with `alai_core.yaml.loads` (`_galaxy.yaml_mapping`), and PyYAML is no
+longer a dependency. Core parses with libyaml-safer, a Rust port of the
+libyaml parser ansible-core uses through PyYAML. It read 108,966 of the
+108,968 docs YAML documents in the latest collections exactly as PyYAML
+does. The YAML 1.2 parsers each refused 842 to 2,061 that Ansible reads.
+Its values differ from PyYAML's on purpose: booleans follow YAML 1.1
+(`yes`, `no`), and a number is converted only when its `str()` is the
+text, so an unquoted `version: 1.10` stays `"1.10"` (refused as a version)
+rather than PyYAML's float `1.1`. A duplicate key warns, naming the file,
+where PyYAML keeps the last silently. An editor that keeps `galaxy.yml`'s
+formatting, for `alai add` in a collection project, can build on core's
+parser marks later
 ([collection-development.md](collection-development.md#not-done-yet)).

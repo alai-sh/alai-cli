@@ -44,8 +44,9 @@ from ._output import change, error, shown_path, summary
 from ._progress import Live, Task
 
 if _t.TYPE_CHECKING:
+    from alai_core.semver import Version
+
     from ._project import Upgrade
-    from ._semver import Version
 
 DEFAULT_GROUPS = ("dev",)
 """Groups installed unless asked otherwise, as uv installs its ``dev`` dependency group."""

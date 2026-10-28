@@ -11,6 +11,8 @@ import shutil
 from pathlib import Path
 
 import pytest
+from alai_core.pep440 import Version as AnsibleVersion
+from alai_core.semver import Version
 from index_data import make_index, v
 from index_server import IndexServer, serve
 
@@ -19,17 +21,13 @@ from alai._config import Index
 from alai._fetch import Fetcher, FetchError
 from alai._index import (
     IndexClient,
-    IndexConfig,
     IndexDataError,
-    Listed,
     artifact_url,
     index_file_url,
     parse_collections,
     parse_config,
     parse_index_file,
 )
-from alai._pep440 import Version as AnsibleVersion
-from alai._semver import Version
 
 EXAMPLE = Path(__file__).parent / "data" / "index"
 ROOT = "https://index.example/"
@@ -43,7 +41,7 @@ def line(**fields: object) -> dict[str, object]:
         "name": "ns.coll",
         "vers": "1.0.0",
         "deps": [],
-        "cksum": CKSUM,
+        "sha256": CKSUM,
         "size": 10,
         "yanked": False,
         "published": "2026-10-05T17:30:02Z",
@@ -70,14 +68,14 @@ class TestConfig:
     def test_example(self) -> None:
         parsed, moved_to = parse_config((EXAMPLE / "config.json").read_bytes(), ROOT, f"{ROOT}config.json")
 
-        assert parsed == IndexConfig(
-            root=ROOT,
-            format=1,
-            index="index/{namespace}/{name}.jsonl",
-            collections_url=f"{ROOT}collections.json",
-            dl="https://dl.alai.sh/sha256/{sha256-prefix}/{sha256-checksum}.tar.gz",
-            plugins_url=f"{ROOT}plugins.jsonl",
+        assert (parsed.root, parsed.format, parsed.index, parsed.collections_url, parsed.plugins_url) == (
+            ROOT,
+            1,
+            "index/{namespace}/{name}.jsonl",
+            f"{ROOT}collections.json",
+            f"{ROOT}plugins.jsonl",
         )
+        assert parsed.dl == "https://dl.alai.sh/sha256/{sha256-prefix}/{sha256-checksum}.tar.gz"
         assert moved_to is None
 
     def test_no_plugin_index(self) -> None:
@@ -134,7 +132,7 @@ class TestConfig:
     @pytest.mark.parametrize(
         ("data", "match"),
         [
-            (b"[]", "expected a JSON object"),
+            (b"[]", "not a JSON object"),
             (b"{", "not valid JSON"),
             (config(formats=[]), "'formats' must be an object"),
             (config(formats={"2": {}, "x": {}}), "needs a newer alai: it offers index format 2, this alai reads 1"),
@@ -195,19 +193,15 @@ class TestCollections:
     def test_example(self) -> None:
         parsed = parse_collections((EXAMPLE / "collections.json").read_bytes(), "u")
 
-        assert {name: entry.updated for name, entry in parsed.items()} == {
+        assert {name: entry.updated for name in parsed if (entry := parsed.get(name))} == {
             "alai_example.demo": "2026-09-20T09:00:00Z",
             "community.general": "2026-10-05T17:30:02Z",
             "community.library_inventory_filtering_v1": "2025-10-25T11:31:55Z",
         }
         demo = EXAMPLE / "index" / "alai_example" / "demo.jsonl"
-        assert parsed["alai_example.demo"].sha256 == hashlib.sha256(demo.read_bytes()).hexdigest()
-
-    @pytest.mark.parametrize("value", ["ABC", "a" * 63, "A" * 64, 1, None])
-    def test_malformed_sha256_ignored(self, value: object) -> None:
-        data = json.dumps({"v": 1, "namespaces": {"ns": {"coll": {"updated": "t", "sha256": value}}}}).encode()
-
-        assert parse_collections(data, "u") == {"ns.coll": Listed("t")}
+        listed = parsed.get("alai_example.demo")
+        assert listed is not None
+        assert listed.sha256 == hashlib.sha256(demo.read_bytes()).hexdigest()
 
     @pytest.mark.parametrize(
         ("data", "match"),
@@ -221,12 +215,6 @@ class TestCollections:
     def test_invalid(self, data: bytes, match: str) -> None:
         with pytest.raises(IndexDataError, match=match):
             _ = parse_collections(data, "u")
-
-    def test_missing_fields(self) -> None:
-        assert parse_collections(b'{"v": 1, "namespaces": {"ns": {"coll": {}}, "x": {"y": 1}}}', "u") == {
-            "ns.coll": Listed(""),
-            "x.y": Listed(""),
-        }
 
 
 class TestIndexFile:
@@ -247,157 +235,19 @@ class TestIndexFile:
         assert newest.problem is None
         assert (parsed.newer, parsed.invalid) == (0, ())
 
-    def test_real_data(self) -> None:
-        data = (EXAMPLE / "index" / "community" / "general.jsonl").read_bytes()
-
-        parsed = parse_index_file(data, "community.general", "u")
-
-        assert [v.version.text for v in parsed.versions] == ["13.4.0", "12.6.6", "13.5.0"]
-        assert all(v.problem is None for v in parsed.versions)
-
-    def test_optional_fields(self) -> None:
-        parsed = parse_index_file(
-            index_file(line(deprecated="use other.coll", requires_ansible=None, sig=[])),
-            "ns.coll",
-            "u",
-        )
-
-        version = parsed.versions[0]
-        assert version.deprecated == "use other.coll"
-        assert version.requires_ansible is None
-
-    def test_blank_lines_and_unknown_fields(self) -> None:
-        parsed = parse_index_file(index_file("", line(future_field={"x": 1}), "   ", ""), "ns.coll", "u")
-
-        assert len(parsed.versions) == 1
-        assert parsed.invalid == ()
-
-    def test_newer_lines_skipped_and_counted(self) -> None:
-        parsed = parse_index_file(
-            index_file(line(), line(v=2, vers="2.0.0", anything="new"), line(v=3)), "ns.coll", "u"
-        )
+    def test_invalid_line_named_by_url_and_number(self) -> None:
+        parsed = parse_index_file(index_file(line(), line(sha256="ABC")), "ns.coll", "u")
 
         assert [v.version.text for v in parsed.versions] == ["1.0.0"]
-        assert parsed.newer == 2
-
-    @pytest.mark.parametrize(
-        ("bad", "match"),
-        [
-            ("{", "u:2: not valid JSON"),
-            ("[1]", "u:2: not a JSON object"),
-            (line(v=0), "'v' must be 1"),
-            (line(v=True), "'v' must be 1"),
-            (line(name="ns.other"), "'name' must be 'ns.coll', the file's collection"),
-            (line(vers="1.0"), "invalid version '1.0'"),
-            (line(vers=None), "'vers' is required and must be a string"),
-            (line(cksum="ABC"), "'cksum' must be a lowercase hex sha256"),
-            (line(size=-1), "'size' must not be negative"),
-            (line(size=True), "'size' is required and must be an integer"),
-            (line(yanked="no"), "'yanked' is required and must be a boolean"),
-            (line(deps={}), "'deps' is required and must be an array"),
-            (line(deps=[{"name": "a.b"}]), "each of 'deps' must have a 'name' and a 'req' string"),
-            (line(deprecated=1), "'deprecated' must be true or a message"),
-            (line(requires_ansible=2), "'requires_ansible' must be a string"),
-            (line(vers="0.1.0"), None),  # a valid line, to show the others are judged alone
-        ],
-    )
-    def test_invalid_line_skipped(self, bad: dict[str, object] | str, match: str | None) -> None:
-        parsed = parse_index_file(index_file(line(), bad), "ns.coll", "u")
-
-        assert parsed.versions[0].version.text == "1.0.0"
-        if match is None:
-            assert parsed.invalid == ()
-        else:
-            assert len(parsed.versions) == 1
-            assert len(parsed.invalid) == 1
-            assert match in parsed.invalid[0]
-            assert parsed.invalid[0].startswith("u:2: ")
-
-    def test_version_checked_first(self) -> None:
-        # The version was checked before the fields after it, so its message wins when both are wrong.
-        parsed = parse_index_file(index_file(line(vers="1.0", cksum="ABC", size=-1)), "ns.coll", "u")
-
-        [invalid] = parsed.invalid
-        assert invalid.startswith("u:1: invalid version '1.0'")
-
-    @pytest.mark.parametrize(
-        ("text", "accepted"),
-        [
-            ('{"v": 1.0', True),  # equal to 1, as Python compared it
-            ('{"v": 2.0', False),  # not an integer, so not a newer line: unreadable
-            ('{"v": -1', False),
-        ],
-    )
-    def test_v_by_value(self, text: str, accepted: bool) -> None:
-        bad = json.dumps(line(v=None)).replace("{", f"{text}, ", 1)
-
-        parsed = parse_index_file(index_file(bad), "ns.coll", "u")
-
-        assert (len(parsed.versions), parsed.newer) == ((1, 0) if accepted else (0, 0))
-        assert parsed.invalid == (() if accepted else ("u:1: 'v' must be 1",))
-
-    def test_whitespace_and_byte_order_mark(self) -> None:
-        # bytes.strip's whitespace, \x0b and \x0c included, makes a line blank, and json.loads skips a BOM.
-        data = b"\x0b\x0c \t\r\n\xef\xbb\xbf" + json.dumps(line()).encode() + b"\r\n"
-
-        parsed = parse_index_file(data, "ns.coll", "u")
-
-        assert [v.version.text for v in parsed.versions] == ["1.0.0"]
-        assert parsed.invalid == ()
-
-    def test_null_optional_fields(self) -> None:
-        # null is no requires_ansible, but neither a deprecated flag nor a message.
-        parsed = parse_index_file(
-            index_file(
-                json.dumps(line()).replace("{", '{"requires_ansible": null, ', 1),
-                line(vers="2.0.0") | {"deprecated": None},
-            ),
-            "ns.coll",
-            "u",
-        )
-
-        assert [v.version.text for v in parsed.versions] == ["1.0.0"]
-        assert parsed.versions[0].requires_ansible is None
-        assert parsed.invalid == ("u:2: 2.0.0: 'deprecated' must be true or a message",)
-
-    def test_duplicate_version(self) -> None:
-        parsed = parse_index_file(index_file(line(), line(cksum="b" * 64)), "ns.coll", "u")
-
-        assert [v.cksum for v in parsed.versions] == [CKSUM]
-        assert parsed.invalid == ("u:2: version 1.0.0 is listed more than once",)
-
-    @pytest.mark.parametrize(
-        ("fields", "problem"),
-        [
-            ({"deps": [{"name": "a.b", "req": "^3.0.0"}]}, "dependency a.b: invalid version requirement '^3.0.0'"),
-            ({"deps": [{"name": "Not.Valid", "req": "*"}]}, "dependency Not.Valid: invalid collection name"),
-            ({"requires_ansible": "2.17"}, "requires_ansible '2.17': invalid specifier '2.17'"),
-        ],
-    )
-    def test_unusable_version_kept(self, fields: dict[str, object], problem: str) -> None:
-        parsed = parse_index_file(index_file(line(**fields)), "ns.coll", "u")
-
-        assert parsed.invalid == ()
-        version = parsed.versions[0]
-        assert version.problem is not None
-        assert version.problem.startswith(problem)
-
-    def test_unusable_keeps_what_was_read(self) -> None:
-        deps = [{"name": "a.b", "req": "^1"}, {"name": "c.d", "req": ">=1"}]
-
-        version = parse_index_file(index_file(line(deps=deps)), "ns.coll", "u").versions[0]
-
-        assert [name for name, _ in version.deps] == ["c.d"]
-        assert version.problem is not None
-        assert version.problem.startswith("dependency a.b:")
+        assert parsed.invalid == ("u:2: 1.0.0: 'sha256' must be a lowercase hex sha256",)
 
     def test_artifact_url(self) -> None:
         version = parse_index_file(index_file(line(vers="1.0.0+build.1")), "ns.coll", "u").versions[0]
         dl = "https://dl.example/{namespace}/{name}/{version}/{sha256-prefix}/{sha256-checksum}.tar.gz"
-        parsed = IndexConfig(root=ROOT, format=1, index="i/{namespace}/{name}", collections_url=ROOT, dl=dl)
+        parsed, _ = parse_config(config(dl=dl), ROOT, "u")
 
         assert (
-            artifact_url(parsed, version.name, version.version, version.cksum)
+            artifact_url(parsed, version.name, version.version, version.sha256)
             == f"https://dl.example/ns/coll/1.0.0%2Bbuild.1/aa/{CKSUM}.tar.gz"
         )
 
@@ -778,6 +628,16 @@ class TestCachedIndexFiles:
             assert index.versions("community.general") is not None
         assert server.requests == []
 
+    @pytest.mark.parametrize(
+        "path", ["p.jsonl?x=/../../../../escaped", "p.jsonl#/../../../../escaped", "a/../../x", "a//b"]
+    )
+    def test_cache_stays_in_its_directory(self, server: IndexServer, tmp_path: Path, path: str) -> None:
+        with run(server.url, tmp_path) as index:
+            cache = index._cache_path(server.url, f"{server.url}{path}")
+            config_cache = index._cache_path(server.url, f"{server.url}config.json")
+        assert cache is not None and config_cache is not None
+        assert Path(cache).parent == Path(config_cache).parent / "_other"
+
     @pytest.mark.parametrize("cached", [b"{not json", config(**{"moved-to": "https://elsewhere.example/"})])
     def test_no_guess_from_unusable_cached_config(
         self, server: IndexServer, tmp_path: Path, cached: bytes, monkeypatch: pytest.MonkeyPatch
@@ -813,12 +673,14 @@ class TestIndexFileUrl:
         ],
     )
     def test_filled_then_resolved(self, template: str, sha256: str | None, expected: str) -> None:
-        parsed = IndexConfig(root=ROOT, format=1, index=template, collections_url=f"{ROOT}c.json", dl="d")
+        parsed, _ = parse_config(config(formats={"1": {"index": template, "collections": "c.json"}}), ROOT, "u")
 
         assert index_file_url(parsed, "ns.coll", sha256) == expected
 
     def test_hashed_needs_sha256(self) -> None:
-        parsed = IndexConfig(root=ROOT, format=1, index="i/{sha256-checksum}", collections_url=f"{ROOT}c.json", dl="d")
+        parsed, _ = parse_config(
+            config(formats={"1": {"index": "i/{sha256-checksum}", "collections": "c.json"}}), ROOT, "u"
+        )
 
         with pytest.raises(
             IndexDataError, match=r"ns\.coll has no sha256, which .*config\.json's index template needs"

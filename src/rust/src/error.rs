@@ -1,8 +1,8 @@
 // Copyright: (c) 2026, Jordan Borean (@jborean93) <jborean93@gmail.com>
 // MIT License (see LICENSE or https://opensource.org/licenses/MIT)
 
-//! The errors the native code raises: `ExtractError` for an artifact that can't be extracted safely, `NoSolution` for
-//! requirements that can't all be met, and `OSError` for the filesystem's own.
+//! The errors the native code raises: `NoSolution` for requirements that can't all be met, and `OSError` for the
+//! filesystem's own.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -13,28 +13,14 @@ use pyo3::prelude::*;
 
 create_exception!(
     alai._native,
-    ExtractError,
-    PyException,
-    "A tarball can't be read, or an entry can't be extracted safely."
-);
-create_exception!(
-    alai._native,
     NoSolution,
     PyException,
     "The requirements can't all be met; the message explains why."
 );
 
 pub(crate) enum Error {
-    /// `ExtractError(kind, entry, detail)`.
-    Extract(&'static str, String, String),
     /// An `OSError` from the filesystem, for `path`.
     Os(io::Error, PathBuf),
-}
-
-impl Error {
-    pub(crate) fn extract(kind: &'static str, entry: &str) -> Self {
-        Error::Extract(kind, entry.to_owned(), String::new())
-    }
 }
 
 pub(crate) trait OsContext<T> {
@@ -50,7 +36,6 @@ impl<T> OsContext<T> for io::Result<T> {
 impl From<Error> for PyErr {
     fn from(err: Error) -> PyErr {
         match err {
-            Error::Extract(kind, entry, detail) => ExtractError::new_err((kind, entry, detail)),
             Error::Os(err, path) => {
                 let text = err.to_string();
                 // io::Error's message ends in " (os error N)", which OSError's strerror doesn't have.

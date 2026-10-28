@@ -25,8 +25,9 @@ import shutil
 import stat
 import typing as _t
 
+from alai_core.semver import Version
+
 from ._common import Error, as_list, as_table, inside, json_object, sha256_file
-from ._semver import Version
 
 _FORMAT = 1
 """``MANIFEST_FORMAT``, in both files."""

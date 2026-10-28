@@ -57,7 +57,7 @@ groups.test.collections = ["ansible.posix"]
 name = "ansible.netcommon"
 version = "8.7.1"
 source = { index = "https://ansible-index.corp.example/" }
-cksum = "3b1f…"
+sha256 = "3b1f…"
 size = 1204812
 requires_ansible = ">=2.16.0"
 dependencies = ["ansible.utils"]
@@ -66,7 +66,7 @@ dependencies = ["ansible.utils"]
 name = "community.general"
 version = "10.7.2"
 source = { index = "https://index.alai.sh/" }
-cksum = "5459…"
+sha256 = "5459…"
 size = 2913455
 requires_ansible = ">=2.16.0"
 dependencies = ["community.library_inventory_filtering_v1"]
@@ -75,7 +75,7 @@ dependencies = ["community.library_inventory_filtering_v1"]
 name = "corp.tools"
 version = "1.4.0"
 source = { index = "https://ansible-index.corp.example/" }
-cksum = "e1fb…"
+sha256 = "e1fb…"
 size = 84213
 requires_ansible = ">=2.15,<2.18"        # ignored for corp.tools, as alai.toml asks
 dependencies = ["ansible.netcommon"]
@@ -94,7 +94,7 @@ dependencies = ["ansible.netcommon"]
 | `collection` | One entry per locked collection, sorted by name |
 | `collection.name`, `.version` | What's installed |
 | `collection.source` | Where it comes from, as a table naming the kind: `{ index = "<index root URL>" }`, or a directory or tarball (see [Other sources](#other-sources)) |
-| `collection.cksum`, `.size` | The artifact's sha256 and size, from the index or the tarball; not for a directory |
+| `collection.sha256`, `.size` | The artifact's sha256 and size, from the index or the tarball; not for a directory |
 | `collection.collections` | A directory's `galaxy.yml` dependencies when it was locked, so a change to them makes the lock stale, or a tarball's `MANIFEST.json` dependencies, so locking again needn't download it; not for an index's |
 | `collection.requires_ansible` | The version's own `requires_ansible`, as the index gives it; absent when it has none |
 | `collection.dependencies` | The names of the locked collections it depends on, sorted |
@@ -161,9 +161,9 @@ name = "ansible.netcommon"
   them on the root entry, as uv puts a package's on its `[package.metadata]`;
   that's for when several roots exist (a workspace), each with its own.
 - **`galaxy.yml`'s dependencies are rewritten in `alai.toml`'s syntax**:
-  parsed as ansible-galaxy parses them (`VersionReq.parse_index`), so a bare
+  parsed as ansible-galaxy parses them (`VersionReq.from_galaxy`), so a bare
   `1.0.0` is `==1.0.0` and `"*"` is dropped.
-- **The root entry has no `cksum` or `size`**, as it changes with every
+- **The root entry has no `sha256` or `size`**, as it changes with every
   edit, and its `dependencies` are its requirements' names. A change to its
   name, version or `requires_ansible` makes the lock stale, as a change to
   the requirements does.
@@ -207,7 +207,7 @@ name = "ansible.netcommon"
   diff. A comment at the top says it's generated.
 - **Written with `toml_edit`, in a layout alai fixes** (2026-10-23, decided
   with the user; before, a small emitter in `_lock.py`). `render_lock` lays
-  the lock out as a mapping and `_native.toml_dumps` writes it by fixed
+  the lock out as a mapping and `alai_core.toml.dumps` writes it by fixed
   rules: `[table]`s and `[[collection]]`s after a blank line, `source` as
   an inline table with its keys in a fixed order, `groups.<name>.collections`
   as dotted keys, and an array over 80 characters one item per line. Every
@@ -318,9 +318,9 @@ name = "ansible.netcommon"
   names for one index agree. `lock --check` also fails when an entry's index
   URL is no longer configured.
 - **No download URLs.** `sync` builds them from the index's `dl` template
-  and `cksum`, as Cargo does, so moving the artifact host doesn't invalidate
+  and `sha256`, as Cargo does, so moving the artifact host doesn't invalidate
   locks. The index spec's client rules ask lock files to record the index,
-  name, version and `cksum`; `size` lets `sync` report download sizes before
+  name, version and `sha256`; `size` lets `sync` report download sizes before
   it starts.
 - **Dependencies are names.** A name has exactly one entry in a lock (one
   version per collection per environment), so the name says which. uv does
@@ -358,12 +358,12 @@ since uv 0.13.0 draws the same lines:
 
 | `[project.sources]` | `source` in the lock | Pinned by | Status |
 |---|---|---|---|
-| `{ index = "<name>" }` | `{ index = "<url>" }` | `cksum`, `size` | Done |
+| `{ index = "<name>" }` | `{ index = "<url>" }` | `sha256`, `size` | Done |
 | `{ path = "<dir>" }` | `{ directory = "<dir>" }` | Nothing: `collections` re-read | Done |
 | `{ path = "<dir>", editable = true }` | `{ editable = "<dir>" }` | Nothing: `collections` re-read | Done |
 | `{ git = "<url>", rev = "<rev>", subdirectory = "<dir>" }` | `{ git = "<url>", rev = "<rev>", subdirectory = "<dir>", commit = "<sha>" }` | `commit`, plus `collections` | Done ([below](#git-repositories)) |
-| `{ url = "<tarball url>" }` | `{ url = "<tarball url>" }` | `cksum`, `size`, plus `collections` | Done |
-| `{ path = "<file>.tar.gz" }` | `{ path = "<file>.tar.gz" }` | `cksum`, `size`, plus `collections` | Done |
+| `{ url = "<tarball url>" }` | `{ url = "<tarball url>" }` | `sha256`, `size`, plus `collections` | Done |
+| `{ path = "<file>.tar.gz" }` | `{ path = "<file>.tar.gz" }` | `sha256`, `size`, plus `collections` | Done |
 
 Tried with uv 0.13.0 on 2026-10-22: `uv add ../lib` wrote `lib = { path =
 "../lib" }` to `[tool.uv.sources]` and locked `source = { directory =
@@ -407,9 +407,9 @@ dependencies = []
 ```
 
 - **What pins the content depends on the source.** An index or tarball has
-  `cksum` and `size`; git has the commit (with the requested `rev`, so
+  `sha256` and `size`; git has the commit (with the requested `rev`, so
   `--upgrade` can move a branch); a directory has nothing, since it's meant
-  to change. `cksum` and `size` are written only when there is one.
+  to change. `sha256` and `size` are written only when there is one.
 - **A directory's metadata is a snapshot**, re-read every time. Its
   `version` and `requires_ansible` are on the entry, and its `galaxy.yml`
   `dependencies` are its `collections`, rewritten in `alai.toml`'s syntax as
@@ -473,7 +473,7 @@ disk, and `{ url = ... }` downloads one:
 name = "corp.net"
 version = "2.1.0"                          # MANIFEST.json
 source = { path = "dist/corp-net-2.1.0.tar.gz" }
-cksum = "9c1e…"
+sha256 = "9c1e…"
 size = 48213
 requires_ansible = ">=2.16"                # meta/runtime.yml, in the tarball
 collections = ["ansible.utils>=2"]         # MANIFEST.json's dependencies
@@ -485,7 +485,7 @@ Tried with uv 0.13.0 on 2026-10-22, with an sdist on disk and served by
 
 - **The lock records the archive's hash**: `source = { path =
   "../dist/lib-0.1.0.tar.gz" }` or `{ url = "http://…" }`, with `sdist = {
-  hash = "sha256:…" }`. Here that's `cksum` and `size`, as an index's
+  hash = "sha256:…" }`. Here that's `sha256` and `size`, as an index's
   artifact has, and the `collections` snapshot a directory has, so a URL
   entry carries everything the resolver needs without the tarball.
 - **A URL is downloaded once.** With the file behind the URL rebuilt, `uv
@@ -493,7 +493,7 @@ Tried with uv 0.13.0 on 2026-10-22, with an sdist on disk and served by
   an empty cache, each failed on the hash ("Hash mismatch for `lib @ …`").
   alai does the same: `read_archives` (`_project`) takes a URL locked from
   the same URL from the lock entry, without downloading it, and `sync`
-  checks the download against `cksum` and `size` as for an index's. `-U`
+  checks the download against `sha256` and `size` as for an index's. `-U`
   or `-P` downloads it again. uv also takes its own cache's copy for the
   URL; alai's cache is keyed by checksum, which the URL alone doesn't
   give, so a URL that isn't locked is downloaded every time it's locked.
