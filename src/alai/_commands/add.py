@@ -16,7 +16,6 @@ from .._args import (
     reinstall_from_args,
     settings_from_args,
     upgrade_from_args,
-    usage_error,
 )
 from .._common import EXIT_STALE
 
@@ -34,7 +33,7 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         + "copied, so edits there are seen. Every other line of alai.toml is left as it is.",
         formatter_class=HelpFormatter,
     )
-    _ = add.add_argument(
+    add.add_argument(
         "requirements",
         metavar="REQUIREMENT",
         nargs="*",
@@ -42,7 +41,7 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         + "a built collection's tarball, by path or URL, or a git repository, such as "
         + "git+https://github.com/org/repo@v1.0.0",
     )
-    _ = add.add_argument(
+    add.add_argument(
         "--editable",
         metavar="DIR",
         action="append",
@@ -60,7 +59,7 @@ def run(args: argparse.Namespace) -> int:
     from .._edit import add
 
     if not args.requirements and not args.editable:
-        usage_error(args, "the following arguments are required: REQUIREMENT or --editable")
+        args.parser.error("the following arguments are required: REQUIREMENT or --editable")
     settings = settings_from_args(args)
     group = "dev" if args.dev else args.group
     check_locked(args)

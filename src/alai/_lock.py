@@ -12,11 +12,10 @@ from __future__ import annotations
 import collections.abc as _c
 import os
 import re
-import secrets
 
 from alai_core.semver import Version
 
-from ._common import SHA256_RE, Error, Record, as_list, as_str, as_table, read_toml, string_list
+from ._common import SHA256_RE, Error, Record, as_list, as_str, as_table, read_toml, string_list, write_atomic
 from ._config import RawManifest
 from ._manifest import (
     GitSource,
@@ -168,10 +167,6 @@ class GitCommitSource(Record):
 LockedSource = IndexSource | DirectorySource | EditableSource | ArchiveSource | ArchiveUrlSource | GitCommitSource
 
 
-def local_source(path: str, *, editable: bool) -> DirectorySource | EditableSource:
-    return EditableSource(path) if editable else DirectorySource(path)
-
-
 class LockedCollection(Record):
     __slots__ = (
         "cksum",
@@ -295,19 +290,18 @@ class Lock(Record):
         wanted = [r.name for r in manifest.collections] if project else []
         for group in groups:
             wanted.extend(r.name for r in manifest.groups[group])
-        by_name = {c.name: c for c in self.collections}
         found: set[str] = set()
         while wanted:
             name = wanted.pop()
             # The project's own collection is linked in, not installed from the lock's index entries.
             if name in found or (self.root is not None and name == self.root.name):
                 continue
-            collection = by_name.get(name)
+            collection = self._by_name.get(name)
             if collection is None:
                 raise LockError(f"the lock has no entry for {name}, which it needs: run alai lock")
             found.add(name)
             wanted.extend(collection.dependencies)
-        return [by_name[n] for n in sorted(found)]
+        return [self._by_name[n] for n in sorted(found)]
 
     def is_current(self, manifest: Manifest) -> bool:
         """Whether this lock was resolved from a manifest that asks for the same as ``manifest``.
@@ -358,23 +352,11 @@ def local_changed(collection: LockedCollection, manifest: Manifest) -> str | Non
         if now.cksum != collection.cksum:
             return f"{collection.name}'s {collection.source} has changed since it was locked"
         return None
-    if (collection.version, collection.requires_ansible) != (now.version, now.requires_ansible) or _parsed(
-        collection.requirements or ()
-    ) != _parsed(now.dependencies):
+    changed: list[str] = []
+    _compare(changed, "", _by_name(collection.requirements or ()), _by_name(now.dependencies))
+    if (collection.version, collection.requires_ansible) != (now.version, now.requires_ansible) or changed:
         return f"{collection.name}'s {now.metadata} or meta/runtime.yml has changed since it was locked"
     return None
-
-
-def _parsed(requirements: _c.Iterable[str]) -> frozenset[tuple[object, ...]]:
-    out: set[tuple[object, ...]] = set()
-    for text in requirements:
-        try:
-            r = Requirement.parse(text)
-        except ValueError:
-            out.add((text,))
-            continue
-        out.add((r.name, r.req.clauses))
-    return frozenset(out)
 
 
 def _by_name(items: _c.Iterable[str]) -> dict[str, tuple[object, str]]:
@@ -524,7 +506,7 @@ def locked_source(source: Source, collection: SourceCollection) -> LockedSource:
     if isinstance(source, PathSource):
         if collection.is_archive():
             return ArchiveSource(source.path)
-        return local_source(source.path, editable=source.editable)
+        return EditableSource(source.path) if source.editable else DirectorySource(source.path)
     if isinstance(source, IndexPin):
         raise ValueError(f"{collection.name} comes from index '{source.index}', not {collection.path}")
     if isinstance(source, GitSource):
@@ -656,14 +638,9 @@ def write_lock(path: str, lock: Lock) -> bool:
                 return False
     except OSError:
         pass
-    temp = f"{path}.{secrets.token_hex(4)}.tmp"
     try:
-        with open(temp, "x", encoding="utf-8", newline="\n") as f:
-            _ = f.write(text)
-        os.replace(temp, path)
+        write_atomic(path, text.encode())
     except OSError as e:
-        if os.path.exists(temp):
-            os.remove(temp)
         raise LockError(f"can't write {path}: {e.strerror or e}") from e
     return True
 
@@ -736,7 +713,7 @@ def _parse_collection(entry: object, where: str) -> LockedCollection | LockedRoo
 
     name = _string_field(table, "name", where)
     try:
-        _ = collection_name(name)
+        collection_name(name)
         version = Version(_string_field(table, "version", where))
     except ValueError as e:
         raise LockError(f"{where}: {e}") from e
@@ -755,62 +732,45 @@ def _parse_collection(entry: object, where: str) -> LockedCollection | LockedRoo
 
     if set(source_table) == {"editable"} and source_table["editable"] == ".":
         return LockedRoot(name, version, requires_ansible=requires_ansible, dependencies=names)
+    source: LockedSource
     if "git" in source_table:
-        return LockedCollection(
-            name,
-            version,
-            source=_git_source(source_table, where),
-            requires_ansible=requires_ansible,
-            requirements=_requirements(table, where),
-            dependencies=names,
-        )
-    kind = next(iter(source_table)) if len(source_table) == 1 else None
-    value = source_table.get(kind) if kind is not None else None
-    if not isinstance(value, str) or not value or kind not in ("index", "directory", "editable", "path", "url"):
-        kinds = ", ".join(sorted(source_table)) or "none"
-        raise LockError(f"{where}: unknown source ({kinds}); it may need a newer alai")
+        source = _git_source(source_table, where)
+    else:
+        kinds = {
+            "index": IndexSource,
+            "directory": DirectorySource,
+            "editable": EditableSource,
+            "path": ArchiveSource,
+            "url": ArchiveUrlSource,
+        }
+        kind = next(iter(source_table)) if len(source_table) == 1 else None
+        value = source_table.get(kind) if kind is not None else None
+        if not isinstance(value, str) or not value or kind not in kinds:
+            given = ", ".join(sorted(source_table)) or "none"
+            raise LockError(f"{where}: unknown source ({given}); it may need a newer alai")
+        source = kinds[kind](value)
 
-    if kind in ("directory", "editable"):
-        return LockedCollection(
-            name,
-            version,
-            source=local_source(value, editable=kind == "editable"),
-            requires_ansible=requires_ansible,
-            requirements=_requirements(table, where),
-            dependencies=names,
-        )
-
-    cksum = _string_field(table, "sha256", where)
-    if not SHA256_RE.fullmatch(cksum):
-        raise LockError(f"{where}: 'sha256' must be a lowercase hex sha256")
-    size = table.get("size")
-    if not isinstance(size, int) or isinstance(size, bool) or size < 0:
-        raise LockError(f"{where}: 'size' is required and must be a non-negative integer")
-
-    if kind == "index":
-        return LockedCollection(
-            name,
-            version,
-            source=IndexSource(value),
-            cksum=cksum,
-            size=size,
-            requires_ansible=requires_ansible,
-            dependencies=names,
-        )
+    cksum = size = None
+    if isinstance(source, (IndexSource, ArchiveSource, ArchiveUrlSource)):
+        cksum = _string_field(table, "sha256", where)
+        if not SHA256_RE.fullmatch(cksum):
+            raise LockError(f"{where}: 'sha256' must be a lowercase hex sha256")
+        size = table.get("size")
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+            raise LockError(f"{where}: 'size' is required and must be a non-negative integer")
+    requirements = None
+    if not isinstance(source, IndexSource):
+        requirements = tuple(_strings(table.get("collections", []), f"{where}: 'collections'"))
     return LockedCollection(
         name,
         version,
-        source=ArchiveSource(value) if kind == "path" else ArchiveUrlSource(value),
+        source=source,
         cksum=cksum,
         size=size,
         requires_ansible=requires_ansible,
-        requirements=_requirements(table, where),
+        requirements=requirements,
         dependencies=names,
     )
-
-
-def _requirements(table: _c.Mapping[str, object], where: str) -> tuple[str, ...]:
-    return tuple(_strings(table.get("collections", []), f"{where}: 'collections'"))
 
 
 def _git_source(table: _c.Mapping[str, object], where: str) -> GitCommitSource:

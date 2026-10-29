@@ -19,14 +19,13 @@ import hashlib
 import json
 import os
 import re
-import tempfile
 import typing as _t
 
 from alai_core.plugins import PluginEntry, Plugins
 from alai_core.semver import Version
 
 from . import _ansible_package
-from ._common import Record, as_str, as_table
+from ._common import Record, as_str, as_table, write_atomic
 from ._output import debug, trace
 
 BUILTIN = "ansible.builtin"
@@ -177,14 +176,6 @@ class PluginIndex:
         # Filtered before they're made Plugins, as a short query's tokens can be in most lines.
         return _plugins([e for e in self._file.search(query.tokens()) if query.matches(e)], self.index)
 
-    def get(self, type_: str, fqcn: str) -> Plugin | None:
-        """The plugin of type ``type_`` named ``fqcn``, or None."""
-        name = fqcn.rsplit(".", 1)[-1]
-        for plugin in self.search(Query(fqcn, exact=True, types=(type_,))):
-            if plugin.name == name:
-                return plugin
-        return None
-
     def named(self, names: _c.Collection[str]) -> list[Plugin]:
         """Every plugin whose line has a ``name`` field that may be one of ``names``, found in one pass over the
         file."""
@@ -238,7 +229,7 @@ class Catalog:
                 if plugin.key in wanted and self._got.get(plugin.key) is None:
                     self._got[plugin.key] = plugin
         for key in wanted:
-            _ = self._got.setdefault(key, None)
+            self._got.setdefault(key, None)
 
     def preload_routes(self, plugins: _c.Iterable[Plugin]) -> None:
         """Look up every plugin the redirects from ``plugins`` lead to, a hop at a time, so ``follow`` needs no more
@@ -254,7 +245,8 @@ class Catalog:
     def get(self, type_: str, fqcn: str) -> Plugin | None:
         key = (type_, fqcn)
         if key not in self._got:
-            self._got[key] = next((p for i in self.indexes if (p := i.get(type_, fqcn)) is not None), None)
+            query = Query(fqcn, exact=True, types=(type_,))
+            self._got[key] = next((p for i in self.indexes for p in i.search(query)), None)
         return self._got[key]
 
     def suggest(self, query: Query) -> list[str]:
@@ -316,10 +308,7 @@ def cached_copies(cache_dir: str, url: str, data: bytes) -> dict[str, Copy]:
     }
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        fd, temp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp-")
-        with os.fdopen(fd, "w") as f:
-            json.dump(summary, f)
-        os.replace(temp, path)
+        write_atomic(path, json.dumps(summary).encode())
     except OSError as e:
         debug(f"can't cache the summary at {path}: {e.strerror or e}")
     return copies

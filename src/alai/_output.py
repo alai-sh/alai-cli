@@ -83,6 +83,44 @@ def ansi(text: str, *codes: str) -> str:
     return f"\x1b[{';'.join(codes)}m{text}\x1b[0m"
 
 
+Piece = tuple[str, tuple[str, ...], "str | None"]
+"""A run of text for ``Renderer.pieces``: the text, its styles, and a URL to link it to on a terminal, or None."""
+
+
+class Renderer:
+    """Text to stdout, coloured when it's a terminal (or ``--color`` says so), cut to the terminal's width: what
+    ``alai find`` and ``alai collection list`` draw their rows with."""
+
+    def __init__(self) -> None:
+        self.terminal = sys.stdout.isatty()
+        self.width = terminal_width()
+        self.color = color_enabled(stdout=True)
+
+    def s(self, text: str, *codes: str) -> str:
+        return ansi(text, *codes) if self.color else text
+
+    def pieces(self, pieces: _c.Sequence[Piece], room: int | None) -> str:
+        """``pieces`` styled, cut to ``room`` visible characters with an ellipsis if given and they're longer."""
+        budget = room - 1 if room is not None and sum(len(text) for text, _, _ in pieces) > room else None
+        links = self.terminal and self.color
+        out: list[str] = []
+        used = 0
+        for text, codes, url in pieces:
+            if budget is not None:
+                if used >= budget:
+                    break
+                text = text[: budget - used]
+            used += len(text)
+            text = self.s(text, *codes)
+            if url and links:
+                # OSC 8: a link the terminal opens on click; terminals without it show the text alone.
+                text = f"\x1b]8;;{url}\x1b\\{text}\x1b]8;;\x1b\\"
+            out.append(text)
+        if budget is not None:
+            out.append("…")
+        return "".join(out)
+
+
 def _write(text: str) -> None:
     if live is not None:
         live(text)

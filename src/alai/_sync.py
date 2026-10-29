@@ -98,7 +98,7 @@ def sync_project(
                 error(f"{shown_path(path)} is out of date, and --locked was given; run alai lock")
                 return None
         else:
-            _ = write_lock(path, lock)
+            write_lock(path, lock)
     else:
         lock = existing
         if not brief:
@@ -157,8 +157,12 @@ def install_locked(
 
     started = time.monotonic()
     # Where each namespace link pointed, read before it's removed, to say so below.
-    namespace_targets = {path: _link_target(path) for path in todo.unlink}
+    namespace_targets: dict[str, str] = {}
     for path in todo.unlink:
+        try:
+            namespace_targets[path] = os.readlink(path)
+        except OSError:  # gone since the plan was made
+            namespace_targets[path] = "?"
         unlink_namespace(path)
     for collection in todo.remove:
         remove(cdir, collection)
@@ -226,7 +230,7 @@ def _install_all(
 
     # Made before the threads start, so no two replace the same namespace link.
     for namespace in sorted({name.split(".")[0] for name in names}):
-        _ = namespace_dir(cdir, namespace)
+        namespace_dir(cdir, namespace)
     with concurrent.futures.ThreadPoolExecutor(worker_threads(), thread_name_prefix="alai-install") as pool:
         futures = {pool.submit(install, cdir, name, paths[name], linker, records.get(name)): name for name in names}
         for future in concurrent.futures.as_completed(futures):
@@ -320,7 +324,7 @@ def git_record(source: GitCommitSource) -> dict[str, object]:
 
 def _file_sha256(path: str) -> str | None:
     """A small file's sha256, or None when it can't be read, such as a ``meta/runtime.yml`` the collection doesn't
-    have."""
+    have. Its own function, as ruff's PERF203 refuses a try in a loop."""
     try:
         return sha256_file(path)
     except OSError:
@@ -339,13 +343,6 @@ def _copy_directory(cdir: str, collection: LockedCollection, path: str, record: 
         path,
         record,
     )
-
-
-def _link_target(path: str) -> str:
-    try:
-        return os.readlink(path)
-    except OSError:  # gone since the plan was made
-        return "?"
 
 
 class _Sources:

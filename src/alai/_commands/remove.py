@@ -30,7 +30,7 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         + "is.",
         formatter_class=HelpFormatter,
     )
-    _ = remove.add_argument(
+    remove.add_argument(
         "names",
         metavar="NAME",
         nargs="+",

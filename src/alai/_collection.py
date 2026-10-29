@@ -73,7 +73,7 @@ def install(
     """
     started = time.monotonic()
     cdir = target(settings)
-    _ = using(cdir)
+    using(cdir)
     wanted: list[Requirement] = []
     sources: dict[str, Source] = {}
     local: dict[str, SourceCollection] = {}

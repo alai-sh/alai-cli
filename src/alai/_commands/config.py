@@ -28,7 +28,7 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         + "KEY, print only that setting's value, for scripts.",
         formatter_class=HelpFormatter,
     )
-    _ = show.add_argument(
+    show.add_argument(
         "key", nargs="?", help="a setting named as in alai.toml, such as link_mode or project.collections_dir"
     )
     add_global_args(show, suppress=True)

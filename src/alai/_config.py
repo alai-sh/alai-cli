@@ -158,6 +158,7 @@ class Settings(Record):
         "config_files",
         "indexes",
         "link_mode",
+        "manifest",
         "no_config",
         "offline",
         "overridden",
@@ -178,12 +179,16 @@ class Settings(Record):
         offline: bool = False,
         searched: tuple[ConfigFile, ...] = (),
         no_config: bool = False,
+        manifest: RawManifest | None = None,
         sources: dict[str, str] | None = None,
         overridden: dict[str, tuple[tuple[object, str], ...]] | None = None,
     ) -> None:
         self.project = project
         self.config_files = config_files
         """The config files read, highest precedence first."""
+        self.manifest = manifest
+        """The project's ``alai.toml`` manifest keys, checked as it was read for its settings; None when
+        ``--config-file`` or ``--no-config`` skipped it, or there's no project."""
         self.searched = searched
         """Every config file alai looked for, highest precedence first, including those that don't exist."""
         self.no_config = no_config
@@ -234,9 +239,11 @@ class _Source(Record):
 class _Layer(Record):
     """The settings one level sets, by each setting's ``target``."""
 
-    __slots__ = ("lists", "overridden", "sources", "values")
+    __slots__ = ("lists", "manifest", "overridden", "sources", "values")
 
     def __init__(self) -> None:
+        self.manifest: RawManifest | None = None
+        """The project's manifest keys, for the project's own ``alai.toml``."""
         self.values: dict[str, object] = {}
         """Single values: the highest level that sets one wins."""
         self.sources: dict[str, str] = {}
@@ -417,6 +424,7 @@ def load_settings(
         config_files=tuple(f.path for f in searched if f.read),
         searched=tuple(searched),
         no_config=no_config and not config_file,
+        manifest=next((layer.manifest for layer in layers if layer.manifest is not None), None),
         sources=sources,
         overridden={target: tuple(values) for target, values in merged.overridden.items()},
         collections_dir=collections_dir,
@@ -548,7 +556,7 @@ def _file_layer(table: _c.Mapping[str, object], path: str, level: Level, home: s
             raise ConfigError(f"{path}: [project] is only allowed in the project's alai.toml{hint}")
     else:
         # Also checks [project] is a table.
-        _ = raw_manifest(table, path)
+        layer.manifest = raw_manifest(table, path)
         project = as_table(values.pop("project", None)) or {}
         values.update((f"project.{key}", value) for key, value in project.items() if key not in MANIFEST_PROJECT_KEYS)
 
@@ -566,7 +574,9 @@ def _file_layer(table: _c.Mapping[str, object], path: str, level: Level, home: s
             for item in setting.parse_file(value, source):
                 layer.add(setting, item, source)
         else:
-            layer.add(setting, setting.parse(_str_value(key, value, source), source), source)
+            if not isinstance(value, str) or not value:
+                raise ConfigError(f"{source.description}: '{key}' must be a non-empty string")
+            layer.add(setting, setting.parse(value, source), source)
 
     return layer
 
@@ -671,7 +681,8 @@ def _index_tables(value: object, source: _Source) -> _c.Iterator[Index]:
             )
         seen.add(name)
 
-        yield Index(_index_name(name, where), _index_url(url, where), default, source.description)
+        check_name_of("index", name, where)
+        yield Index(name, _index_url(url, where), default, source.description)
 
 
 def _cli_layer(overrides: Overrides, cwd: str, home: str | None) -> _Layer:
@@ -727,12 +738,8 @@ def _default_index_arg(value: str, source: _Source) -> Index:
 
 def _arg_index(name: str, url: str, value: str, source: _Source, *, default: bool) -> Index:
     where = f"{source.description} '{value}'"
-    return Index(_index_name(name, where), _index_url(url, where), default, source.description)
-
-
-def _index_name(name: str, where: str) -> str:
     check_name_of("index", name, where)
-    return name
+    return Index(name, _index_url(url, where), default, source.description)
 
 
 def _index_url(url: str, where: str) -> str:
@@ -780,12 +787,6 @@ def _resolve_indexes(indexes: _c.Sequence[Index]) -> tuple[Index, ...]:
     if default:
         ordered.append(default)
     return tuple(ordered)
-
-
-def _str_value(key: str, value: object, source: _Source) -> str:
-    if not isinstance(value, str) or not value:
-        raise ConfigError(f"{source.description}: '{key}' must be a non-empty string")
-    return value
 
 
 def _bool_arg(value: str, source: _Source) -> bool:

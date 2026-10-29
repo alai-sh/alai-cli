@@ -83,7 +83,10 @@ def load_project(settings: Settings, why: str) -> tuple[RawManifest, Manifest]:
     project = settings.project
     if project.config_file is None:
         raise no_project(project, why)
-    return with_root(settings, raw_manifest(read_toml(project.config_file), project.config_file))
+    raw = settings.manifest
+    if raw is None:
+        raw = raw_manifest(read_toml(project.config_file), project.config_file)
+    return with_root(settings, raw)
 
 
 def with_root(

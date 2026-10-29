@@ -17,11 +17,10 @@ import hashlib
 import json
 import os
 import secrets
-import tempfile
 import threading
 
 from . import _native
-from ._common import Error, file_url_to_path
+from ._common import Error, file_url_to_path, write_atomic
 from ._config import Settings
 from ._output import trace, warn
 
@@ -180,7 +179,7 @@ class Fetcher:
                         if not magic.startswith(start):
                             raise FetchError(f"{url}: not a {kind}")
                     digest.update(chunk)
-                    _ = out.write(chunk)
+                    out.write(chunk)
         except OSError as e:
             raise FetchError(f"can't write {path}: {e.strerror or e}") from e
         if len(start) < len(magic):
@@ -325,17 +324,9 @@ def _read_cache(path: str, url: str | None = None) -> tuple[str | None, bytes] |
 
 def _write_cache(path: str, url: str, etag: str | None, body: bytes) -> None:
     # Written beside the target and renamed over it, so another alai reading it never sees half a file.
-    directory = os.path.dirname(path)
     try:
-        os.makedirs(directory, exist_ok=True)
-        fd, temp = tempfile.mkstemp(dir=directory, prefix=".tmp-")
-        try:
-            with os.fdopen(fd, "wb") as f:
-                _ = f.write(json.dumps({"v": _CACHE_VERSION, "url": url, "etag": etag}).encode() + b"\n" + body)
-            os.replace(temp, path)
-        except BaseException:
-            _remove(temp)
-            raise
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        write_atomic(path, json.dumps({"v": _CACHE_VERSION, "url": url, "etag": etag}).encode() + b"\n" + body)
     except OSError as e:
         raise FetchError(f"can't write to the cache at {path}: {e.strerror or e}") from e
 

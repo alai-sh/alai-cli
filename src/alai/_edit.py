@@ -10,12 +10,11 @@ import bisect
 import collections.abc as _c
 import contextlib
 import os
-import secrets
 import time
 
 from alai_core.toml import Document, TomlEditError
 
-from ._common import ConfigError, check_name_of, home_path, read_toml_document
+from ._common import ConfigError, check_name_of, home_path, read_toml_document, write_atomic
 from ._config import Settings, no_project, raw_manifest
 from ._lock import Lock, lock_path, read_lock, write_lock
 from ._manifest import (
@@ -232,7 +231,7 @@ def _lock_and_sync(
         return False
     _write(config, str(doc))
     if not locked:
-        _ = write_lock(path, lock)
+        write_lock(path, lock)
     if sync:
         groups = sorted({g for g in DEFAULT_GROUPS if g in manifest.groups} | ({group} if group else set()))
         install_locked(
@@ -292,17 +291,10 @@ def _read(settings: Settings, group: str | None) -> tuple[str, Document]:
 
 
 def _write(config: str, text: str) -> None:
-    """Replace ``alai.toml`` with ``text``, written beside it and renamed over it, keeping its permissions."""
-    temp = f"{config}.{secrets.token_hex(4)}.tmp"
+    """Replace ``alai.toml`` with ``text``, keeping its permissions."""
     try:
-        mode = os.stat(config).st_mode & 0o7777
-        with open(temp, "x", encoding="utf-8", newline="") as f:
-            _ = f.write(text)
-        os.chmod(temp, mode)
-        os.replace(temp, config)
+        write_atomic(config, text.encode(), mode=os.stat(config).st_mode & 0o7777)
     except OSError as e:
-        if os.path.exists(temp):
-            os.remove(temp)
         raise ConfigError(f"can't write {config}: {e.strerror or e}") from e
 
 

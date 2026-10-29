@@ -103,11 +103,11 @@ reportPrivateUsage = false
 reportUnannotatedClassAttribute = false
 reportUnknownArgumentType = false
 reportUnknownMemberType = false
+reportUnusedCallResult = false
 
 executionEnvironments = [
-    # pytest fixtures are parameters a test may not use, a test often calls for the side effect, and
-    # monkeypatch.setattr takes an untyped lambda.
-    { root = "tests", reportUntypedFunctionDecorator = false, reportUnusedCallResult = false, reportUnusedParameter = false, reportUnknownLambdaType = false },
+    # pytest fixtures are parameters a test may not use, and monkeypatch.setattr takes an untyped lambda.
+    { root = "tests", reportUntypedFunctionDecorator = false, reportUnusedParameter = false, reportUnknownLambdaType = false },
 ]
 
 [tool.ruff]

@@ -44,7 +44,7 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         + "lead, and how to install it.",
         formatter_class=HelpFormatter,
     )
-    _ = find.add_argument("query", metavar="QUERY", help="part of a name, a glob, or a FQCN")
+    find.add_argument("query", metavar="QUERY", help="part of a name, a glob, or a FQCN")
     types = find.add_argument(
         "-t",
         "--type",
@@ -57,27 +57,25 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
     )
     # Offered by Tab completion but not enforced: the index can add types without a format change.
     types.suggestions = PLUGIN_TYPES  # pyright: ignore[reportAttributeAccessIssue]
-    _ = find.add_argument(
-        "-x", "--exact", action="store_true", help="match whole names only, not names that contain QUERY"
-    )
-    _ = find.add_argument(
+    find.add_argument("-x", "--exact", action="store_true", help="match whole names only, not names that contain QUERY")
+    find.add_argument(
         "--installed",
         action="store_true",
         help="only plugins in installed collections and ansible.builtin",
     )
-    _ = find.add_argument(
+    find.add_argument(
         "--include-removed",
         action="store_true",
         help="list removed plugins that match part of a name too; ones named exactly always are",
     )
-    _ = find.add_argument(
+    find.add_argument(
         "--limit",
         metavar="N",
         type=_count,
         help="list at most N matches, installed ones first, 0 for all; 20 on a terminal, all when "
         + "the output is piped or --output-format is json",
     )
-    _ = find.add_argument(
+    find.add_argument(
         "--output-format",
         choices=("text", "json"),
         default="text",

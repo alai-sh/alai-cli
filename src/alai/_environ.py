@@ -108,11 +108,6 @@ def warn_unlisted(settings: Settings, wanted: _c.Iterable[str], hint: str) -> No
         warn(hint)
 
 
-def default_format(environ: _c.Mapping[str, str]) -> str:
-    """fish's syntax when ``SHELL`` is fish, as ``uv venv`` chooses its activation hint, else POSIX shell's."""
-    return "fish" if os.path.basename(environ.get("SHELL", "")) == "fish" else "sh"
-
-
 def render(variables: _c.Mapping[str, str], output_format: str) -> str:
     """``variables`` as ``output_format`` sets them, a line each: ``sh``, POSIX shell ``export`` lines; ``fish``, ``set
     -gx`` lines; ``pwsh``, PowerShell ``$env:`` assignments; or ``dotenv``, ``KEY=VALUE`` lines for editors' env

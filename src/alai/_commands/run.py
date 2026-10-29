@@ -34,25 +34,25 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         formatter_class=HelpFormatter,
     )
     check = add_check_args(parser)
-    _ = check.add_argument("--no-sync", action="store_true", help="run without locking or installing anything first")
+    check.add_argument("--no-sync", action="store_true", help="run without locking or installing anything first")
     exactness = parser.add_mutually_exclusive_group()
-    _ = exactness.add_argument(
+    exactness.add_argument(
         "--exact",
         action="store_true",
         help="remove installed collections alai.lock doesn't list, as alai sync does, rather than warn of them",
     )
-    _ = exactness.add_argument(
+    exactness.add_argument(
         "--inexact",
         action="store_true",
         help="keep installed collections alai.lock doesn't list without warning of them",
     )
-    _ = add_group_args(parser)
+    add_group_args(parser)
     add_upgrade_args(parser, groups=True)
     add_reinstall_args(parser)
     add_global_args(parser, suppress=True)
     add_settings_args(parser, "resolve", "install")
-    _ = parser.add_argument("command", metavar="COMMAND", help="the command to run, found on PATH")
-    _ = parser.add_argument("args", metavar="ARG", nargs=argparse.REMAINDER, help="the command's arguments")
+    parser.add_argument("command", metavar="COMMAND", help="the command to run, found on PATH")
+    parser.add_argument("args", metavar="ARG", nargs=argparse.REMAINDER, help="the command's arguments")
     parser.set_defaults(parser=parser, handler=run)
 
 
@@ -95,8 +95,8 @@ def run(args: argparse.Namespace) -> int:
         where = "there's no such executable file" if os.sep in command else "it isn't on PATH"
         raise Error(f"can't run {command}: {where}")
     # exec replaces alai, so anything still buffered would be lost.
-    _ = sys.stdout.flush()
-    _ = sys.stderr.flush()
+    sys.stdout.flush()
+    sys.stderr.flush()
     try:
         os.execve(path, [command, *args.args], environ)  # noqa: S606 # running the user's command is the point
     except OSError as e:

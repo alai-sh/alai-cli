@@ -65,10 +65,6 @@ Report = _c.Callable[[Artifact, "str | None"], None]
 """Progress for an artifact: what it's doing (``downloading``, ``extracting``), or None when it's done."""
 
 
-def _ignore(_artifact: Artifact, _state: str | None) -> None:
-    pass
-
-
 class ArtifactCache:
     """Extracted collections under ``cache_dir``, downloading with ``fetcher`` what isn't there yet.
 
@@ -137,21 +133,6 @@ class ArtifactCache:
         report(artifact, "waiting")
         return work, tarball
 
-    def _unpack_download(self, artifact: Artifact, work: str, tarball: str, target: str, report: Report) -> str:
-        """Extract ``artifact``'s downloaded ``tarball`` and rename it into place as ``target``, removing ``work``."""
-        try:
-            self._unpack(
-                tarball,
-                work,
-                target,
-                str(artifact),
-                (artifact.name, artifact.version),
-                started=lambda: report(artifact, "extracting"),
-            )
-        finally:
-            shutil.rmtree(work, ignore_errors=True)
-        return target
-
     def add(self, tarball: str, cksum: str) -> str:
         """The directory the collection tarball at ``tarball``, whose SHA-256 is ``cksum``, is extracted to,
         extracting it first if it isn't cached. Its collection needn't be known beforehand: it's the one its
@@ -218,7 +199,7 @@ class ArtifactCache:
         from ._fetch import MAX_CONNECTIONS
 
         wanted = sorted(artifacts, key=lambda a: a.name)
-        tell = report or _ignore
+        tell: Report = report or (lambda _artifact, _state: None)
 
         def fetch(artifact: Artifact) -> str | concurrent.futures.Future[str]:
             target = self.path(artifact.cksum)
@@ -235,8 +216,17 @@ class ArtifactCache:
 
         def unpack(artifact: Artifact, work: str, tarball: str, target: str) -> str:
             try:
-                return self._unpack_download(artifact, work, tarball, target, tell)
+                self._unpack(
+                    tarball,
+                    work,
+                    target,
+                    str(artifact),
+                    (artifact.name, artifact.version),
+                    started=lambda: tell(artifact, "extracting"),
+                )
+                return target
             finally:
+                shutil.rmtree(work, ignore_errors=True)
                 tell(artifact, None)
 
         # Downloads never wait on extraction: each hands its tarball to the extraction pool and takes the next. The

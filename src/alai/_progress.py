@@ -10,7 +10,6 @@ design is in ``design/output.md``.
 
 from __future__ import annotations
 
-import shutil
 import sys
 import threading
 
@@ -63,12 +62,12 @@ class Task:
     def pause(self, name: str) -> None:
         """Stop showing ``name``, which is waiting its turn rather than doing anything, without counting it done."""
         with self._lock:
-            _ = self._active.pop(name, None)
+            self._active.pop(name, None)
 
     def end(self, name: str) -> None:
         """``name`` is finished: it leaves the lines in flight and counts as done."""
         with self._lock:
-            _ = self._active.pop(name, None)
+            self._active.pop(name, None)
             self.done += 1
 
     def lines(self, frame: int, width: int, height: int, *, ascii_only: bool) -> list[str]:
@@ -162,6 +161,8 @@ class Live:
     def _draw(self) -> str:
         if not self._frame or self._suspended:
             return ""
+        import shutil  # ~2 ms, so only once something is drawn
+
         size = shutil.get_terminal_size()
         lines = self.task.lines(self._frame, size.columns, size.lines, ascii_only=self._ascii)
         self._drawn = len(lines)
@@ -177,8 +178,8 @@ class Live:
     @staticmethod
     def _write(data: str) -> None:
         if data:
-            _ = sys.stderr.write(data)
-            _ = sys.stderr.flush()
+            sys.stderr.write(data)
+            sys.stderr.flush()
 
 
 _current: Live | None = None
@@ -205,7 +206,7 @@ class Suspended:
 def _encodes(text: str) -> bool:
     try:
         # getattr, as something standing in for stderr, such as a full-screen app's capture of it, may have none.
-        _ = text.encode(getattr(sys.stderr, "encoding", None) or "ascii")
+        text.encode(getattr(sys.stderr, "encoding", None) or "ascii")
     except (UnicodeEncodeError, LookupError):
         return False
     return True

@@ -133,6 +133,25 @@ def inside(path: str, parent: str) -> bool:
     return os.path.commonpath((path, parent)) == parent
 
 
+def write_atomic(path: str, data: bytes, *, mode: int | None = None) -> None:
+    """Write ``data`` to ``path`` beside it and rename it over, so a reader never sees half a file; with ``mode``,
+    the permissions to give it, else the umask's. OSError if it can't be written, with nothing left behind."""
+    import contextlib
+    import secrets
+
+    temp = f"{path}.{secrets.token_hex(4)}.tmp"
+    try:
+        with open(temp, "xb") as f:
+            f.write(data)
+        if mode is not None:
+            os.chmod(temp, mode)
+        os.replace(temp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(temp)
+        raise
+
+
 def read_toml(path: str) -> dict[str, object]:
     """The TOML file at ``path``: a config file, ``alai.toml`` or ``alai.lock``."""
     # Imported here so a command run without any config files never loads the extension for it.

@@ -19,7 +19,7 @@ from ._config import Settings
 from ._install import Installed, installed, namespace_links
 from ._lock import IndexSource, Lock, LockedCollection, LockedRoot, lock_path, read_lock
 from ._manifest import parse_manifest
-from ._output import BLUE, BOLD, CYAN, DIM, GREEN, RED, YELLOW, status, styled, terminal_width
+from ._output import BLUE, BOLD, CYAN, DIM, GREEN, RED, YELLOW, Piece, Renderer, status, styled
 
 LOCKED = "locked"
 """Installed as ``alai.lock`` has it."""
@@ -82,7 +82,7 @@ def list_collections(settings: Settings, *, output_format: str = "text") -> None
     if output_format == "text":
         # Always, unlike collection install's: what's listed is only what's in this directory, so a listing of the
         # wrong one looks like an empty or partial one.
-        _ = using(cdir, always=True)
+        using(cdir, always=True)
         if lock is None:
             status(styled("No alai.lock to compare with", DIM))
     rows = collect(settings, cdir, lock)
@@ -108,7 +108,10 @@ def collect(settings: Settings, cdir: str, lock: Lock | None) -> list[Row]:
 
     present = installed(cdir)
     rows = [_installed_row(c) for c in present.values()]
-    rows.extend(_link_row(namespace, link) for namespace, link in namespace_links(cdir).items())
+    rows.extend(
+        Row(f"{namespace}.*", None, link, source={"directory": os.readlink(link)})
+        for namespace, link in namespace_links(cdir).items()
+    )
     if lock is None:
         return sorted(rows, key=lambda r: r.name)
 
@@ -164,10 +167,6 @@ def _installed_row(collection: Installed) -> Row:
     return Row(collection.name, collection.version, collection.path, source=_record_source(collection.record))
 
 
-def _link_row(namespace: str, path: str) -> Row:
-    return Row(f"{namespace}.*", None, path, source={"directory": os.readlink(path)})
-
-
 def _source_version(path: str) -> Version | None:
     """The version of the collection an editable link points at, from its ``galaxy.yml`` or ``MANIFEST.json``, or None
     when that can't be read, such as for a broken link."""
@@ -203,7 +202,7 @@ def _difference(
     if same_source:
         return f"alai.lock has {version}" if version else "its source has changed since it was installed"
     if want is not None and row.source is not None and _same_repository(want, row.source) and not link:
-        where = f"at {_short(str(want['commit']))}"
+        where = f"at {str(want['commit'])[:7]}"
     elif link:
         where = f"from {home_path(str(want['directory']))}, editable" if want is not None else ""
     elif want is not None:
@@ -231,14 +230,10 @@ def _source_text(source: dict[str, object]) -> str:
     with the commit shortened, as git shortens one."""
     if "git" in source:
         subdirectory = f"#subdirectory={source['subdirectory']}" if source.get("subdirectory") else ""
-        return f"git+{source['git']}@{_short(str(source.get('commit', '')))}{subdirectory}"
+        return f"git+{source['git']}@{str(source.get('commit', ''))[:7]}{subdirectory}"
     if "url" in source:
         return str(source["url"])
     return home_path(str(source.get("directory") or source.get("path") or ""))
-
-
-def _short(commit: str) -> str:
-    return commit[:7]
 
 
 def _print_json(rows: list[Row], cdir: str, path: str | None) -> None:
@@ -277,23 +272,13 @@ def _print_json(rows: list[Row], cdir: str, path: str | None) -> None:
     print()
 
 
-Piece = tuple[str, tuple[str, ...]]
-"""Some text and the styles it's shown in."""
-
-
-class _Renderer:
-    """The text output: a row per collection, as ``alai find`` draws its rows, coloured when stdout is a terminal (or
-    ``--color`` says so). On a terminal, a row too wide for it puts its source on a line of its own, and anything still
-    too wide is cut; piped, every row is one line, whole."""
+class _Renderer(Renderer):
+    """A row per collection, as ``alai find`` draws its rows. On a terminal, a row too wide for it puts its source on
+    a line of its own, and anything still too wide is cut; piped, every row is one line, whole."""
 
     def __init__(self, *, compared: bool) -> None:
+        super().__init__()
         self.compared = compared
-        self.terminal = sys.stdout.isatty()
-        self.width = terminal_width()
-        self.color = _output.color_enabled(stdout=True)
-
-    def s(self, text: str, *codes: str) -> str:
-        return _output.ansi(text, *codes) if self.color else text
 
     def listing(self, rows: list[Row]) -> None:
         name_width = max(len(r.name) for r in rows)
@@ -324,43 +309,23 @@ class _Renderer:
         head += " " * (version_width - len(version) + 2)
         indent += name_width + 2 + version_width + 2
 
-        note: list[Piece] = [(row.note, (colour,))] if row.note else []
+        note: list[Piece] = [(row.note, (colour,), None)] if row.note else []
         source: list[Piece] = []
         if row.source is not None:
             prefix = "link to " if row.name.endswith(".*") else ""
-            source.append((prefix + _source_text(row.source), (DIM,)))
+            source.append((prefix + _source_text(row.source), (DIM,), None))
             if row.editable:
-                source.append((" editable", (CYAN,)))
-        line = note + ([("; ", (DIM,))] if note and source else []) + source
+                source.append((" editable", (CYAN,), None))
+        line = note + ([("; ", (DIM,), None)] if note and source else []) + source
 
         room = self.width - indent - 1 if self.terminal else None
-        if room is None or room < 10 or _length(line) <= room:
-            print(f"{head}{self._pieces(line, None)}".rstrip())
+        if room is None or room < 10 or sum(len(text) for text, _, _ in line) <= room:
+            print(f"{head}{self.pieces(line, None)}".rstrip())
         elif note and source:
-            print(f"{head}{self._pieces(note, room)}".rstrip())
-            print(" " * indent + self._pieces(source, room))
+            print(f"{head}{self.pieces(note, room)}".rstrip())
+            print(" " * indent + self.pieces(source, room))
         else:
-            print(f"{head}{self._pieces(line, room)}".rstrip())
-
-    def _pieces(self, pieces: list[Piece], room: int | None) -> str:
-        """``pieces`` styled, cut to ``room`` characters with an ellipsis if given and they're longer."""
-        budget = room - 1 if room is not None and _length(pieces) > room else None
-        out: list[str] = []
-        used = 0
-        for text, codes in pieces:
-            if budget is not None:
-                if used >= budget:
-                    break
-                text = text[: budget - used]
-            used += len(text)
-            out.append(self.s(text, *codes))
-        if budget is not None:
-            out.append("…")
-        return "".join(out)
-
-
-def _length(pieces: list[Piece]) -> int:
-    return sum(len(text) for text, _ in pieces)
+            print(f"{head}{self.pieces(line, room)}".rstrip())
 
 
 def _version_text(row: Row) -> str:

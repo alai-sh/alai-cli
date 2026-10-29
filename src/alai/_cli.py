@@ -58,7 +58,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="alai", description="A fast package manager for Ansible collections.", formatter_class=HelpFormatter
     )
-    _ = parser.add_argument("-V", "--version", action="store_true", help="show the alai version and exit")
+    parser.add_argument("-V", "--version", action="store_true", help="show the alai version and exit")
     add_global_args(parser, suppress=False)
     parser.set_defaults(parser=parser)
     commands = parser.add_subparsers(title="commands", metavar="<command>", prog="alai")

@@ -23,7 +23,7 @@ import threading
 
 from alai_core.semver import Version
 
-from ._common import Error, Record, selects
+from ._common import Error, Record, selects, write_atomic
 from ._config import LinkMode
 from ._output import debug, trace, warn
 
@@ -175,8 +175,10 @@ def place(
     parent = os.path.join(namespaces_dir(collections_dir), namespace)
     target = os.path.join(parent, short)
     try:
-        _ = namespace_dir(collections_dir, namespace)
-        _remove_leftovers(parent, short)
+        namespace_dir(collections_dir, namespace)
+        # alai's temporary directories for this collection, left by a run that was killed.
+        for path in glob.glob(os.path.join(glob.escape(parent), f"{_TEMP}*-{glob.escape(short)}-*")):
+            _rmtree(path)
         temp = os.path.join(parent, f"{_TEMP}new-{short}-{secrets.token_hex(4)}")
         try:
             make(temp)
@@ -193,7 +195,7 @@ def place(
         _remove_galaxy_info(collections_dir, name)
         write_record(collections_dir, name, record)
     except OSError as e:
-        raise InstallError(f"can't install {name} to {target}: {_reason(e)}") from e
+        raise InstallError(f"can't install {name} to {target}: {e.strerror or e}") from e
     trace(f"{name}: installed to {target} from {source}")
 
 
@@ -224,10 +226,7 @@ def write_record(collections_dir: str, name: str, record: dict[str, object] | No
             os.remove(path)
         return
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    temp = f"{path}.{secrets.token_hex(4)}.tmp"
-    with open(temp, "x", encoding="utf-8") as f:
-        json.dump(record, f, sort_keys=True)
-    os.replace(temp, path)
+    write_atomic(path, json.dumps(record, sort_keys=True).encode())
 
 
 def _read_record(collections_dir: str, name: str) -> dict[str, object] | None:
@@ -259,7 +258,7 @@ def link_editable(collections_dir: str, name: str, source: str) -> bool:
     if linked(collections_dir, name, source):
         return False
     try:
-        _ = namespace_dir(collections_dir, namespace)
+        namespace_dir(collections_dir, namespace)
         temp = os.path.join(parent, f"{_TEMP}link-{short}-{secrets.token_hex(4)}")
         os.symlink(source, temp)
         if os.path.lexists(target) and not os.path.islink(target):
@@ -270,7 +269,7 @@ def link_editable(collections_dir: str, name: str, source: str) -> bool:
         _remove_galaxy_info(collections_dir, name)
         write_record(collections_dir, name, None)
     except OSError as e:
-        raise InstallError(f"can't link {name} at {target} to {source}: {_reason(e)}") from e
+        raise InstallError(f"can't link {name} at {target} to {source}: {e.strerror or e}") from e
     trace(f"{name}: linked {target} to {source}")
     return True
 
@@ -284,7 +283,7 @@ def unlink_namespace(path: str) -> None:
     except FileNotFoundError:
         pass
     except OSError as e:
-        raise InstallError(f"can't remove the namespace link {path}: {_reason(e)}") from e
+        raise InstallError(f"can't remove the namespace link {path}: {e.strerror or e}") from e
     trace(f"unlinked the namespace {path}")
 
 
@@ -299,7 +298,7 @@ def remove(collections_dir: str, collection: Installed) -> None:
         if not os.path.islink(parent) and not os.listdir(parent):
             os.rmdir(parent)
     except OSError as e:
-        raise InstallError(f"can't remove {collection.name} from {collection.path}: {_reason(e)}") from e
+        raise InstallError(f"can't remove {collection.name} from {collection.path}: {e.strerror or e}") from e
     trace(f"{collection.name}: removed {collection.path}")
 
 
@@ -319,21 +318,16 @@ class Linker:
         self._lock = threading.Lock()
 
     def tree(self, source: str, dest: str) -> None:
-        """Recreate the directory ``source`` as ``dest``: directories and symlinks as they are, files linked."""
-        while not self._tree(source, dest):
-            pass
-
-    def _tree(self, source: str, dest: str) -> bool:
-        """Link the tree in the current mode: True if it's done, False if that mode failed and another is to try, with
-        the partial ``dest`` removed."""
-        mode = self._auto[0]
-        try:
-            _link_tree(source, dest, mode.value)
-        except OSError as e:
-            self._fall_back(mode, e, e.filename or source)
-            _rmtree(dest)
-            return False
-        return True
+        """Recreate the directory ``source`` as ``dest``: directories and symlinks as they are, files linked in the
+        current mode, or the next to try when that one fails, with the partial ``dest`` removed."""
+        while True:
+            mode = self._auto[0]
+            try:
+                _link_tree(source, dest, mode.value)
+                return
+            except OSError as e:
+                self._fall_back(mode, e, e.filename or source)
+                _rmtree(dest)
 
     def _fall_back(self, mode: LinkMode, error: OSError, source: str) -> None:
         """Move on from ``mode``, which failed for ``source``, to the next way to link, or raise if there isn't one
@@ -345,10 +339,10 @@ class Linker:
             if len(self._auto) == 1 or error.errno in (errno.ENOENT, errno.ENOSPC, errno.EDQUOT):
                 if self.mode is LinkMode.AUTO:
                     raise error
-                raise OSError(error.errno, f"can't {mode.value} {source}: {_reason(error)}") from error
-            _ = self._auto.pop(0)
+                raise OSError(error.errno, f"can't {mode.value} {source}: {error.strerror or error}") from error
+            self._auto.pop(0)
             fallback = self._auto[0]
-        message = f"can't {mode.value} files from the cache ({_reason(error)}); using {fallback.value} instead"
+        message = f"can't {mode.value} files from the cache ({error.strerror or error}); using {fallback.value} instead"
         if fallback is LinkMode.COPY:
             warn(f'{message}, which is slower and uses more disk; set link_mode = "copy" to silence this')
         else:
@@ -366,7 +360,7 @@ def current_umask() -> int:
     """The process's umask. Reading it means setting it, which isn't thread-safe, so this is read before any thread
     starts."""
     mask = os.umask(0o022)
-    _ = os.umask(mask)
+    os.umask(mask)
     return mask
 
 
@@ -396,12 +390,6 @@ def _subdirs(path: str) -> list[str]:
     )
 
 
-def _remove_leftovers(parent: str, short: str) -> None:
-    """alai's temporary directories for this collection, left by a run that was killed."""
-    for path in glob.glob(os.path.join(glob.escape(parent), f"{_TEMP}*-{glob.escape(short)}-*")):
-        _rmtree(path)
-
-
 def _remove_galaxy_info(collections_dir: str, name: str) -> None:
     """ansible-galaxy's ``<ns>.<name>-<version>.info`` records of a collection alai has replaced or removed, which
     would otherwise describe a copy that's gone."""
@@ -419,7 +407,3 @@ def _rmtree(path: str, *, missing_ok: bool = True) -> None:
     except FileNotFoundError:
         if not missing_ok:
             raise
-
-
-def _reason(error: OSError) -> str:
-    return error.strerror or str(error)
