@@ -67,6 +67,8 @@ class IndexServer:
                     self._send(*scripted.pop(0))
                     return
                 file = server.root / path.lstrip("/")
+                if path.endswith("/"):
+                    file = file / "index.json"  # a Python simple index's project page
                 if not file.is_file():
                     self._send(404, {}, b"not found")
                     return

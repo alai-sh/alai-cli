@@ -42,6 +42,7 @@ sys.path.insert(0, "tests")
 from artifact_data import build_artifact
 from index_data import make_index, v
 from index_server import IndexServer
+from python_index import make_python_index
 
 SCENARIOS = pathlib.Path("scripts/cli_recordings.toml")
 OUTPUT = pathlib.Path("docs/casts")
@@ -99,6 +100,8 @@ def main(names: list[str]) -> int:
         collections = {name: [_version(s, root) for s in versions] for name, versions in scenarios["index"].items()}
         plugins = [{"v": 1, **line} for line in scenarios["plugins"]]
         _ = make_index(root / "index", collections, artifacts=True, plugins=plugins)
+        # ansible.builtin and eda.builtin come from ansible-core's and ansible-rulebook's sdists on a Python index.
+        make_python_index(root / "index" / "pypi", plugins)
         with IndexServer(root / "index") as server:
             # The index points at its artifacts as file:// URLs; served over HTTP, they take time as downloads do.
             config = root / "index" / "config.json"
@@ -171,6 +174,7 @@ def _environment(home: pathlib.Path, index: str | None, bin_dir: pathlib.Path) -
     }
     if index is not None:
         env["ALAI_DEFAULT_INDEX"] = index
+        env["ALAI_PYTHON_INDEX"] = f"{index}pypi/"
     return env
 
 

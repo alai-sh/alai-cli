@@ -381,3 +381,18 @@ name.
 you can't see, and can they be made to answer 404?
 
 See [index-client.md](index-client.md#decisions).
+
+## Pinning ansible-core for find
+
+**Today:** `alai find` reads `ansible.builtin` from the latest stable
+ansible-core release on the Python index, whatever ansible-core the user
+runs, and `eda.builtin` from the latest ansible-rulebook (2026-10-30).
+
+**The alternative:** a setting pinning the release, for a user on an older
+ansible-core who wants `find` to show only what they have. The roadmap's
+ansible-core detection for `alai run` would do that without a setting.
+
+**Ask:** do you run an ansible-core old enough that plugins added since
+mislead you, and would you set a version by hand to fix it?
+
+See [find.md](find.md#ansiblebuiltin-and-edabuiltin).

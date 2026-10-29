@@ -163,6 +163,15 @@ what's planned on top of it, and the questions still open.
   without a home directory has no default; `Settings.cache_dir` raises then,
   rather than `load_settings`, so commands that don't touch the cache still
   run, and `config show` prints the row as unknown.
+- **`python_index` has no flag** (2026-10-30): the Python simple index
+  `alai find` reads ansible-core and ansible-rulebook from
+  ([find.md](find.md#ansiblebuiltin-and-edabuiltin)), set in `alai.toml` or
+  by `ALAI_PYTHON_INDEX`, defaulting to `https://pypi.org/simple/`. The user
+  left a flag out until someone needs one: it's an environment's choice,
+  set once, not a run's. `SettingDefinition.flag` is None for it, which the
+  argparse code skips. Only `http://` and `https://` roots, as the simple
+  API is HTTP; a missing `/` is added, so a project's page is
+  `<root><name>/`.
 
 ## Open questions
 

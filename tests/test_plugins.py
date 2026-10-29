@@ -37,7 +37,7 @@ from alai._plugins import (
 
 def parse_line(line: bytes) -> Plugin | None:
     entry = PluginEntry.parse(line)
-    return None if entry is None else _plugins._plugins([entry], "")[0]
+    return None if entry is None else _plugins.PluginIndex("", b"")._plugins([entry])[0]
 
 
 EXAMPLE = Path(__file__).parent / "data" / "index" / "plugins.jsonl"

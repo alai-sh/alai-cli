@@ -96,7 +96,7 @@ class Fetcher:
         self._executor.shutdown(cancel_futures=True)
 
     def fetch(
-        self, url: str, cache_path: str | None, *, what: str | None = None
+        self, url: str, cache_path: str | None, *, what: str | None = None, accept: str | None = None
     ) -> concurrent.futures.Future[bytes | None]:
         """Start fetching ``url``, or return the fetch already started. Its result is the body, or None if the URL
         doesn't exist; a failure raises FetchError from ``result()``. ``what`` says what it's for in the trace, such
@@ -104,12 +104,16 @@ class Fetcher:
         with self._lock:
             future = self._fetches.get(url)
             if future is None:
-                future = self._fetches[url] = self._executor.submit(self._get, url, cache_path, what=what)
+                future = self._fetches[url] = self._executor.submit(
+                    self._get, url, cache_path, what=what, accept=accept
+                )
             return future
 
-    def get(self, url: str, cache_path: str | None, *, what: str | None = None) -> bytes | None:
+    def get(
+        self, url: str, cache_path: str | None, *, what: str | None = None, accept: str | None = None
+    ) -> bytes | None:
         """Fetch ``url`` and wait for it: the body, or None if it doesn't exist."""
-        return self.fetch(url, cache_path, what=what).result()
+        return self.fetch(url, cache_path, what=what, accept=accept).result()
 
     def cached(self, cache_path: str | None) -> bytes | None:
         """The body cached at ``cache_path``, without a request, or None if there's none."""
@@ -213,9 +217,16 @@ class Fetcher:
         return self._client
 
     def _get(
-        self, url: str, cache_path: str | None, request_url: str | None = None, *, what: str | None = None
+        self,
+        url: str,
+        cache_path: str | None,
+        request_url: str | None = None,
+        *,
+        what: str | None = None,
+        accept: str | None = None,
     ) -> bytes | None:
-        """Fetch ``url``, revalidating its cached copy. ``request_url`` is what to request, when it isn't ``url``."""
+        """Fetch ``url``, revalidating its cached copy. ``request_url`` is what to request, when it isn't ``url``, and
+        ``accept`` the ``Accept`` header to send, for a server that answers with a format only when asked."""
         if url.startswith("file:"):
             return _read_file(url, what)
 
@@ -227,7 +238,7 @@ class Fetcher:
             trace(f"GET {url}{label}: from the cache, offline")
             return cached[1]
 
-        headers: list[tuple[str, str]] = []
+        headers: list[tuple[str, str]] = [("Accept", accept)] if accept else []
         if cached and cached[0]:
             headers.append(("If-None-Match", cached[0]))
         requested = request_url or url

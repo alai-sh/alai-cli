@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import collections.abc as _c
 import json
 import re
 import sys
@@ -10,6 +11,8 @@ from pathlib import Path
 
 import pytest
 from index_data import make_index, plugin
+from index_server import IndexServer
+from python_index import make_python_index
 
 from alai import _find
 from alai._cli import main
@@ -42,18 +45,23 @@ PLUGINS = [
     plugin("fork.general.to_seconds", "filter", since="1.0.0", short_description="Duration to seconds"),
     plugin("fork.general.copy_thing", since="1.0.0"),
     plugin("fork.general.new_thing", since="1.0.0"),
+    plugin("eda.builtin.range", "event_source", short_description="Generate events with an increasing index"),
 ]
 
 
 @pytest.fixture
-def project(project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """conftest's project, with a plugin index in its index, and no alai.toml but its collections/ given as the
-    collections directory, with community.general 2.5.0 installed. The terminal is 80 columns wide."""
+def project(project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _c.Iterator[Path]:
+    """conftest's project, with a plugin index in its index, a Python index whose ansible-core and ansible-rulebook
+    hold ``PLUGINS``' builtin lines, and no alai.toml but its collections/ given as the collections directory, with
+    community.general 2.5.0 installed. The terminal is 80 columns wide."""
     monkeypatch.setenv("ALAI_DEFAULT_INDEX", make_index(tmp_path / "plugins", {"a.a": []}, plugins=PLUGINS))
+    make_python_index(tmp_path / "pypi", PLUGINS)
     monkeypatch.setenv("COLUMNS", "80")
     monkeypatch.setenv("ALAI_COLLECTIONS_DIR", "collections")
     install(project, "community.general", "2.5.0")
-    return project
+    with IndexServer(tmp_path / "pypi") as pypi:
+        monkeypatch.setenv("ALAI_PYTHON_INDEX", pypi.url)
+        yield project
 
 
 def install(project: Path, name: str, version: str) -> None:
@@ -235,8 +243,24 @@ class TestListing:
         assert find("copy_thing") == 0
 
         captured = capsys.readouterr()
-        assert captured.err == "No project found, so only ansible.builtin counts as installed\n"
+        assert captured.err == "No project found, so only ansible.builtin and eda.builtin count as installed\n"
         assert captured.out.splitlines()[0].startswith("── Not installed (2) ")
+
+    def test_no_project_installed_with(
+        self, project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The builtin collections are installed with their tools, which the section names.
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+        monkeypatch.delenv("ALAI_COLLECTIONS_DIR")
+
+        assert find("-q", "range") == 0
+        assert out(capsys)[0] == section("Installed with ansible-rulebook (1)")
+        assert find("-q", "copy") == 0
+        assert out(capsys)[0] == section("Installed with ansible-core (1)")
+        assert find("-q", "*") == 0
+        assert out(capsys)[0] == section("Installed with ansible-core and ansible-rulebook (3)")
 
     def test_legend_on_a_terminal(
         self, project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -375,7 +399,12 @@ class TestDetail:
     @pytest.mark.parametrize(
         ("name", "verdict"),
         [
-            ("ansible.builtin.copy", "✓ yes"),
+            ("ansible.builtin.copy", "✓ yes, if ansible-core is in your Ansible environment, which alai doesn't check"),
+            (
+                "eda.builtin.range",
+                "✓ yes, if ansible-rulebook is in your Ansible environment, which alai doesn't check",
+            ),
+            ("ansible.legacy.copy", "✓ yes, if ansible-core is in your Ansible environment, which alai doesn't check"),
             ("community.general.copy_thing", "✓ yes"),
             ("community.general.going", "⚠ yes, but it's deprecated, removal in 4.0.0"),
             ("community.general.new_thing", "↑ no: community.general 2.5.0 doesn't have it, it was added in 3.0.0"),
@@ -408,6 +437,7 @@ class TestDetail:
             plugin("community.general.disk_info", since="3.0.0", short_description="Disk info"),
         ]
         monkeypatch.setenv("ALAI_DEFAULT_INDEX", make_index(tmp_path / "old", {"a.a": []}, plugins=lines))
+        make_python_index(tmp_path / "pypi", lines)
 
         assert find("ansible.builtin.disk_info") == 0
         assert find("disk_info") == 0
@@ -433,6 +463,7 @@ class TestDetail:
             plugin("alias.alias.ipmath", "filter", routing={"redirect": "zz.zz.ipmath"}),
         ]
         monkeypatch.setenv("ALAI_DEFAULT_INDEX", make_index(tmp_path / "net", {"a.a": []}, plugins=lines))
+        make_python_index(tmp_path / "pypi", lines)
 
         assert find("ansible.builtin.ipmath") == 0
 
@@ -497,7 +528,7 @@ class TestJson:
                     "collection": "ansible.builtin",
                     "routing": {"redirect": "community.docker.docker_container"},
                     "fqcn": "ansible.builtin.docker_container",
-                    "index": "alai",
+                    "index": "ansible-core 2.20.0",
                     "matched": True,
                 },
                 {
