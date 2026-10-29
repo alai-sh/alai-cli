@@ -119,8 +119,9 @@ current directory. A leading `~` expands to the home directory in both.
 
 ## Flags and environment variables
 
-Every setting can also be given for one run with a command-line flag or an
-`ALAI_*` environment variable, which take precedence over every file. Each
+Every setting can also be given for one run with an `ALAI_*` environment
+variable, and all but [`python_index`](alai-toml.md#python_index) with a
+command-line flag; both take precedence over every file. Each
 setting's flag and environment variable are listed with it in the
 [`alai.toml` reference](alai-toml.md). Flags are only accepted by the
 commands that use them. Only the project's `alai.toml` can set

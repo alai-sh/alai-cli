@@ -30,6 +30,12 @@ from ._output import debug, trace
 
 BUILTIN = "ansible.builtin"
 """ansible-core's own plugins, which are always installed where Ansible is."""
+EDA_BUILTIN = "eda.builtin"
+"""ansible-rulebook's own event sources and filters, installed where it is, as ``ansible.builtin`` is with
+ansible-core."""
+BUILTINS = frozenset((BUILTIN, EDA_BUILTIN))
+TOOL_OF = {BUILTIN: "ansible-core", EDA_BUILTIN: "ansible-rulebook"}
+"""What ships each builtin collection, as the output names it."""
 LEGACY = "ansible.legacy"
 """Not a collection: ansible-core's lookup from before collections, ``library/`` and the ``*_plugins`` directories
 (configured, beside the playbook, or in a role), then its own plugins, then ``ansible.builtin``'s routing. alai can't
@@ -102,23 +108,6 @@ class Plugin(Record):
         return as_table(self.routing.get("deprecation"))
 
 
-def _plugins(entries: list[PluginEntry], index: str) -> list[Plugin]:
-    return [
-        Plugin(
-            e.type,
-            e.name,
-            e.collection,
-            since=e.since,
-            until=e.until,
-            short_description=e.short_description,
-            routing=e.routing.raw if e.routing is not None else None,
-            index=index,
-            line=e.line or b"",
-        )
-        for e in entries
-    ]
-
-
 class Query:
     """What ``alai find`` was asked for: part of a name, a glob, or a fully qualified name."""
 
@@ -162,28 +151,48 @@ class Query:
 
 
 class PluginIndex:
-    """One index's ``plugins.jsonl``, searched without parsing lines that can't match."""
+    """One index's ``plugins.jsonl``, searched without parsing lines that can't match. Lines of the collections
+    ``skip`` are left out, always: any index's ``ansible.builtin`` and ``eda.builtin`` lines, which ``_builtin`` reads
+    from the ansible-core and ansible-rulebook it downloads instead."""
 
-    def __init__(self, index: str, data: bytes) -> None:
+    def __init__(self, index: str, data: bytes, *, skip: _c.Container[str] = ()) -> None:
         self.index = index
+        self.skip = skip
         self._file = Plugins(data)
 
     def with_tokens(self, tokens: _c.Sequence[bytes] = ()) -> list[Plugin]:
         """Every plugin whose line contains all of ``tokens``; every plugin if there are none."""
-        return _plugins(self._file.search(tokens), self.index)
+        return self._plugins(self._file.search(tokens))
 
     def search(self, query: Query) -> list[Plugin]:
         # Filtered before they're made Plugins, as a short query's tokens can be in most lines.
-        return _plugins([e for e in self._file.search(query.tokens()) if query.matches(e)], self.index)
+        return self._plugins([e for e in self._file.search(query.tokens()) if query.matches(e)])
 
     def named(self, names: _c.Collection[str]) -> list[Plugin]:
         """Every plugin whose line has a ``name`` field that may be one of ``names``, found in one pass over the
         file."""
-        return _plugins(self._file.named(names), self.index) if names else []
+        return self._plugins(self._file.named(names)) if names else []
 
     def names(self) -> set[str]:
         """Every plugin's short name, for suggestions, read without parsing each line."""
         return self._file.names()
+
+    def _plugins(self, entries: list[PluginEntry]) -> list[Plugin]:
+        return [
+            Plugin(
+                e.type,
+                e.name,
+                e.collection,
+                since=e.since,
+                until=e.until,
+                short_description=e.short_description,
+                routing=e.routing.raw if e.routing is not None else None,
+                index=self.index,
+                line=e.line or b"",
+            )
+            for e in entries
+            if e.collection not in self.skip
+        ]
 
 
 class Copy(Record):
@@ -443,7 +452,7 @@ class Found(Record):
     ) -> None:
         self.plugin = plugin
         self.installed = installed
-        """Whether its collection is installed (``ansible.builtin`` always is)."""
+        """Whether its collection is installed (``ansible.builtin`` and ``eda.builtin`` always are)."""
         self.version = version
         """The installed collection's version, if it's installed and its version can be read."""
         self.route = route
@@ -468,10 +477,10 @@ class Found(Record):
 def assess(plugin: Plugin, catalog: Catalog, installed: _c.Mapping[str, Version | None], query: Query) -> Found:
     """Where ``plugin`` stands, given the installed collections and their versions."""
     collection = plugin.collection
-    is_installed = collection == BUILTIN or collection in installed
+    is_installed = collection in BUILTINS or collection in installed
     version = installed.get(collection)
     route = follow(plugin, catalog, installed)
-    missing = [c for c in route.collections() if c != BUILTIN and c not in installed] if route else []
+    missing = [c for c in route.collections() if c not in BUILTINS and c not in installed] if route else []
     outdated: list[tuple[str, str]] = []
     for _, hop in route.hops if route else ():
         have = installed.get(hop.collection) if hop is not None else None
@@ -521,7 +530,7 @@ def rank(found: Found, cached: _c.Container[str]) -> tuple[object, ...]:
         # ansible.builtin redirects every module that moved to a collection in 2.10, so without this its old names
         # would bury a real plugin; the plugin each leads to is listed in its own right.
         found.route is not None,
-        collection != BUILTIN,
+        collection not in BUILTINS,
         collection not in cached,
         tier,
         found.copy is not None,

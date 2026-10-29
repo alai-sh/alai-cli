@@ -109,6 +109,8 @@ def add_settings_args(parser: argparse.ArgumentParser, *groups: str) -> None:
 
 
 def _add_setting(group: argparse._ArgumentGroup, setting: SettingDefinition, *, default: object) -> None:
+    if setting.flag is None:
+        return
     if setting.boolean:
         # --offline and --no-offline; unset (None) unless one is given.
         group.add_argument(

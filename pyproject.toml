@@ -27,7 +27,7 @@ classifiers = [
 dependencies = [
     # A commit of alai-core's repository until it's on PyPI, given here rather than in [tool.uv.sources] so installs from
     # GitHub or the sdist find it too.
-    "alai-core @ git+https://github.com/alai-sh/alai-core@04540e61eada8599359295278f5a7e27117b0853",
+    "alai-core @ git+https://github.com/alai-sh/alai-core@8e06ef0b32403ddb58b3522c8d6c52ffb3cc280e",
     # Older releases fail on the argparse internals of current Python 3.12 and later releases.
     "argcomplete >= 3.5.2",
     # galaxy.yml's manifest directives, for installing a collection from its source directory, as ansible-galaxy

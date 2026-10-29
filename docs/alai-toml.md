@@ -74,6 +74,7 @@ deploy_target = "prod"
 | [`cache_dir`](#cache_dir) | string | Where downloads, extracted collections and index data are kept, as a [path](configuration.md#paths) |
 | [`link_mode`](#link_mode) | string | How files get from the cache into the collections directory |
 | [`offline`](#offline) | boolean | Use only what's cached, without connecting to any index |
+| [`python_index`](#python_index) | string | The Python package index `alai find` reads ansible-core and ansible-rulebook from |
 | [`[[index]]`](#index) | array of tables | The indexes collections are resolved from, before the default one |
 | [`[tool]`](#tool) | table | Ignored by alai, for other tools to add future configuration values |
 
@@ -151,6 +152,22 @@ connecting to any index. A command that needs something that isn't in the
 cache fails, saying what it couldn't find. This only applies to indexes over
 `http://` or `https://`. An index given as a `file://` URL is read from disk
 either way.
+
+### `python_index`
+
+- **Type:** string, an `http://` or `https://` URL
+- **Default:** `https://pypi.org/simple/`
+- **Environment variable:** `ALAI_PYTHON_INDEX`
+- **Flag:** none
+
+The Python package index `alai find` reads ansible-core's and
+ansible-rulebook's own plugins from, as `ansible.builtin` and `eda.builtin`:
+the root of a [simple
+index](https://packaging.python.org/en/latest/specifications/simple-repository-api/)
+that serves its JSON form, as PyPI and private indexes such as devpi,
+Artifactory and Nexus do. alai downloads each project's latest release from
+it and keeps what it reads in the cache. See [Finding
+plugins](finding-plugins.md#ansible-cores-own-plugins).
 
 ### `[[index]]`
 

@@ -408,6 +408,53 @@ into `ansible.builtin`, which the index lacked until it was synced.
 - **Bad lines are skipped silently**: unreadable JSON, missing fields, or a
   newer `v`. It's a search aid, not something to resolve from.
 
+### ansible.builtin and eda.builtin
+
+- **Read from the sdists, not the index** (2026-10-30). The index's
+  `ansible.builtin` lines were one ansible-core release's, and the spec is
+  dropping them. alai reads ansible-core's and ansible-rulebook's own
+  plugins itself (`_builtin`): alai-core's `extract_ansible_core` and
+  `extract_ansible_rulebook` over the parts of each sdist they read
+  (`artifact.extract_sdist`), written as plugin index lines in
+  `<cache_dir>/builtin-v1/<project>/<version>.jsonl` and searched as
+  another index's file, first. Every index's lines for either collection
+  are ignored, always (`PluginIndex(skip=...)`), not only until the public
+  index drops its `ansible.builtin` lines: a third-party index's would
+  describe some release of its choosing, where alai's come from the
+  release it downloaded (decided 2026-10-30). The lines are made as
+  galaxy-sync made them: `since` is
+  the documented `version_added` unless `historical`, there's no `until`,
+  and routing with no plugin is a line of its own. `action` routing is left
+  out: the spec leaves out action plugins that back a module, and
+  ansible-core's `action:` entries mirror its `modules:` ones.
+- **The latest stable release of each**, from the project's page on
+  `python_index` (PEP 691 JSON, as uv asks for it; an index that serves
+  only HTML is an error naming it): the highest version with an sdist that
+  isn't a pre-release or yanked, which is what PyPI installs. The page is
+  cached and revalidated as index files are, so a new release costs one
+  download (~5 MB; under 4 s with extraction, cold) on the next run.
+  galaxy-sync took only X.Y.0 releases and checked daily, which a
+  conditional GET makes unnecessary. The user chose this over a pin setting
+  (2026-10-30): the roadmap's ansible-core detection for `alai run` would
+  supersede one
+  ([user-questions.md](user-questions.md#pinning-ansible-core-for-find)).
+- **Warn and go on without them** when offline with nothing cached, or the
+  index can't be reached, with the newest cached release when there is one
+  (2026-10-30): a search of the collections is still useful, where a
+  missing collection index fails. A private index without ansible-rulebook
+  is the common case.
+- **`eda.builtin` counts as installed**, as `ansible.builtin` does: each
+  is part of the tool that runs its content, which alai doesn't look for.
+  Its route steps say "with ansible-rulebook", the details' Installed line
+  adds "if ansible-rulebook is in your Ansible environment, which alai
+  doesn't check", as installed means Ansible sees it, not that the tool is
+  in the Python environment (asked 2026-10-30), and outside a project the
+  installed section is titled with the tools of the builtins it lists:
+  "Installed with ansible-core and ansible-rulebook".
+- **Action plugins need nothing of alai's**: the spec lists an action-only
+  plugin as a `module`, and alai-core extracts it as one, so a user sees
+  the name they'd write in a task.
+
 ## Not done yet
 
 - **Full documentation** is to be a project of its own, alai-doc, kept in
@@ -453,14 +500,11 @@ into `ansible.builtin`, which the index lacked until it was synced.
     each once, several seconds where `find` now takes a fraction of one,
     so it shows progress; after that, a few milliseconds each.
   About 200-300 lines, and as much again in tests and docs.
-- **`ansible.builtin` is one ansible-core release's**, the one the index
-  was generated from (the spec says one release, and `plugins.jsonl`
-  doesn't say which), not the installed ansible-core's, and every line is
-  counted as installed. With an older ansible-core, a plugin added since is
-  marked `✓` though it's missing (its `since` is its `version_added`, but
-  there's no installed version to compare it with); with a newer one,
-  plugins added after the index's release aren't listed at all. Fixing it
-  needs the installed ansible-core's version, which alai doesn't look for
-  ([run.md](run.md#checking-ansible-core)), to mark the first `↑`; the second
-  needs the index to carry builtins per release, or the release it used,
-  which is for the spec.
+- **`ansible.builtin` is the latest ansible-core release's**, not the
+  installed ansible-core's, and every line is counted as installed. With an
+  older ansible-core, a plugin added since is marked `✓` though it's missing
+  (its `since` is its `version_added`, but there's no installed version to
+  compare it with). Fixing it needs the installed ansible-core's version,
+  which alai doesn't look for ([run.md](run.md#checking-ansible-core)), to
+  mark it `↑`; the lines are read per release, so that release's are then
+  one more cache entry.

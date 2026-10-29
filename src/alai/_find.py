@@ -40,6 +40,7 @@ from ._output import (
 from ._plugins import (
     BROKEN,
     BUILTIN,
+    BUILTINS,
     DEPRECATED,
     LEGACY,
     MISSING,
@@ -47,6 +48,7 @@ from ._plugins import (
     OK,
     REDIRECT,
     REMOVED,
+    TOOL_OF,
     Catalog,
     Copy,
     Found,
@@ -101,7 +103,7 @@ def find(
     catalog = load_catalog(settings)
     installed = installed_collections(settings)
     if installed is None and output_format == "text" and not query.fqcn:
-        status(_output.styled(f"No project found, so only {BUILTIN} counts as installed", DIM))
+        status(_output.styled(f"No project found, so only {_and(sorted(BUILTINS))} count as installed", DIM))
     if query.legacy and output_format == "text":
         status(
             _output.styled(
@@ -183,7 +185,10 @@ def _warning_text(routing: dict[str, object] | None) -> str | None:
 
 
 def load_catalog(settings: Settings) -> Catalog:
-    """The plugin index of every configured index that has one, fetched or revalidated."""
+    """The plugin index of every configured index that has one, fetched or revalidated, and ansible-core's and
+    ansible-rulebook's own plugins from the Python index (``_builtin``), which an index's lines for them don't
+    replace."""
+    from ._builtin import PROJECTS, load_builtin
     from ._fetch import open_fetcher
     from ._index import IndexClient
     from ._progress import Live, Task
@@ -192,7 +197,7 @@ def load_catalog(settings: Settings) -> Catalog:
     copies: dict[str, Copy] = {}
     with (
         open_fetcher(settings) as fetcher,
-        Live(Task("Fetching plugin indexes...", total=len(settings.indexes))) as task,
+        Live(Task("Fetching plugin indexes...", total=len(settings.indexes) + len(PROJECTS))) as task,
     ):
         for index in settings.indexes:
             task.show(index.name)
@@ -200,15 +205,16 @@ def load_catalog(settings: Settings) -> Catalog:
             data = client.plugins()
             url = client.config().plugins_url
             if data is not None and url is not None:
-                indexes.append(PluginIndex(index.name, data))
+                indexes.append(PluginIndex(index.name, data, skip=BUILTINS))
                 for name, copy in cached_copies(settings.cache_dir, url, data).items():
                     copies.setdefault(name, copy)
             else:
                 debug(f"index '{index.name}' ({index.url}) has no plugin index")
             task.advance()
-    if not indexes:
-        raise Error("none of the configured indexes has a plugin index to search ('plugins' in its config.json)")
-    return Catalog(indexes, copies)
+        if not indexes:
+            raise Error("none of the configured indexes has a plugin index to search ('plugins' in its config.json)")
+        builtin = load_builtin(settings, fetcher, task)
+    return Catalog([*builtin, *indexes], copies)
 
 
 def installed_collections(settings: Settings) -> dict[str, Installed] | None:
@@ -249,7 +255,7 @@ def _print_json(found: list[Found], hidden: int, installed: dict[str, Installed]
     def collection(name: str) -> dict[str, object]:
         have = installed.get(name)
         return {
-            "installed": name == BUILTIN or have is not None,
+            "installed": name in BUILTINS or have is not None,
             "version": str(have.version) if have is not None and have.version is not None else None,
             "path": os.path.abspath(have.path) if have is not None else None,
         }
@@ -277,8 +283,10 @@ class _Renderer(Renderer):
         shown = mine + others
         type_width = max(len(f.plugin.type) for f in shown)
         name_width = min(max(len(f.plugin.fqcn) for f in shown), _NAME_COLUMN)
+        # Outside a project only the builtin collections are installed: the section says with what.
+        tools = [tool for collection, tool in TOOL_OF.items() if any(f.plugin.collection == collection for f in mine)]
         sections = [
-            ("Installed" if project else "Installed with ansible-core", mine, totals[0]),
+            ("Installed" if project or not tools else f"Installed with {_and(tools)}", mine, totals[0]),
             ("Not installed", others, totals[1]),
         ]
         sections = [s for s in sections if s[2]]
@@ -313,17 +321,23 @@ class _Renderer(Renderer):
         print()
 
         marker, colour, verdict = self._verdict(item)
-        self._field("Installed", self.s(f"{marker} {verdict}", colour))
+        # A builtin is installed wherever its tool is, which alai doesn't look for: installed says Ansible can see
+        # it, not that the tool is in the Python environment.
+        final = item.route.final.rsplit(".", 1)[0] if item.route and item.usable else plugin.collection
+        note = ""
+        if item.usable and (tool := TOOL_OF.get(final)) is not None:
+            note = self.s(f", if {tool} is in your Ansible environment, which alai doesn't check", DIM)
+        self._field("Installed", self.s(f"{marker} {verdict}", colour) + note)
         for routing in (plugin.tombstone, plugin.deprecation):
             if text := _warning_text(routing):
                 self._field("", self.s(text, RED if routing is plugin.tombstone else YELLOW))
 
-        if plugin.collection == BUILTIN:
+        if (tool := TOOL_OF.get(plugin.collection)) is not None:
             # Its since is the plugin's version_added, left out when that's "historical".
             if not has_file(plugin):
-                versions = "none: it's only in ansible-core's routing"
+                versions = f"none: it's only in {tool}'s routing"
             else:
-                versions = f"in ansible-core, added in {plugin.since}" if plugin.since else "in ansible-core"
+                versions = f"in {tool}, added in {plugin.since}" if plugin.since else f"in {tool}"
         elif plugin.until is not None:
             versions = f"{plugin.since or '?'} to {plugin.until}, removed in {plugin.until}"
         elif plugin.since is not None:
@@ -418,7 +432,9 @@ class _Renderer(Renderer):
             install = " ".join(item.missing)
             command = f"alai add {install}" if project else f"alai collection install {install}"
             return f"use {item.route.final} instead: install it with {self.s(command, BOLD)}"
-        names = item.missing or ([collection] if collection != BUILTIN and collection not in self.installed else [])
+        names = item.missing or (
+            [collection] if collection not in BUILTINS and collection not in self.installed else []
+        )
         if not names:
             return None
         command = f"alai add {' '.join(names)}" if project else f"alai collection install {' '.join(names)}"
@@ -428,7 +444,7 @@ class _Renderer(Renderer):
         """A route step's own state: ``✓`` its collection is installed and has it (or redirects on from it), ``·``
         not installed, ``↑`` installed but too old, ``✗`` removed from the version installed."""
         collection = step.collection
-        if collection == BUILTIN:
+        if collection in BUILTINS:
             return "✓", GREEN
         if collection not in self.installed:
             return "·", DIM
@@ -459,8 +475,8 @@ class _Renderer(Renderer):
             bits.append(self.s("tombstoned", RED))
         collection = step.collection
         mark = self._step_marker(step)[0]
-        if collection == BUILTIN:
-            bits.append(self.s("with ansible-core", DIM))
+        if collection in BUILTINS:
+            bits.append(self.s(f"with {TOOL_OF[collection]}", DIM))
         elif collection not in self.installed:
             bits.append(self.s(f"{collection} isn't installed", YELLOW))
         else:
@@ -567,7 +583,7 @@ class _Renderer(Renderer):
 
 def _routing_only(plugin: Plugin) -> bool:
     """Whether the line is only its collection's routing, with no plugin file in any version: another name."""
-    if plugin.collection == BUILTIN:
+    if plugin.collection in BUILTINS:
         return not has_file(plugin)
     return plugin.since is None and plugin.until is None
 

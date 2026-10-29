@@ -31,6 +31,8 @@ from ._output import debug
 CONFIG_FILE_NAME = "alai.toml"
 DEFAULT_INDEX_NAME = "alai"
 DEFAULT_INDEX_URL = "https://index.alai.sh/"
+DEFAULT_PYTHON_INDEX = "https://pypi.org/simple/"
+"""Where ``alai find`` reads ansible-core and ansible-rulebook from: a Python simple index."""
 MANIFEST_PROJECT_KEYS = ("collections", "requires_ansible", "groups", "overrides", "sources")
 """Keys of ``[project]`` that are the manifest, read by ``_manifest``; the rest of ``[project]`` are settings."""
 
@@ -163,6 +165,7 @@ class Settings(Record):
         "offline",
         "overridden",
         "project",
+        "python_index",
         "searched",
         "sources",
     )
@@ -177,6 +180,7 @@ class Settings(Record):
         link_mode: LinkMode,
         indexes: tuple[Index, ...],
         offline: bool = False,
+        python_index: str = DEFAULT_PYTHON_INDEX,
         searched: tuple[ConfigFile, ...] = (),
         no_config: bool = False,
         manifest: RawManifest | None = None,
@@ -205,6 +209,8 @@ class Settings(Record):
         """The indexes in resolution order, the default index last."""
         self.offline = offline
         """Read only what's cached, never the network."""
+        self.python_index = python_index
+        """The Python simple index ``alai find`` reads ansible-core and ansible-rulebook from, ending in ``/``."""
 
     @property
     def cache_dir(self) -> str:
@@ -291,8 +297,8 @@ class SettingDefinition(Record):
         name: str,
         *,
         key: str | None,
-        flag: str,
         env: str,
+        flag: str | None = None,
         help: str,  # noqa: A002  # argparse's name for it
         parse: _c.Callable[[str, _Source], object],
         parse_file: _c.Callable[[object, _Source], _c.Iterable[object]] | None = None,
@@ -312,7 +318,8 @@ class SettingDefinition(Record):
                 the ``Settings`` attribute.
             key: The config file key, dotted if it's in a table (``project.collections_dir``), or None for a
                 setting only flags and environment variables can set.
-            flag: The command-line option, such as ``--link-mode``.
+            flag: The command-line option, such as ``--link-mode``, or None for a setting with no flag, which
+                config files and its environment variable set.
             env: The environment variable, such as ``ALAI_LINK_MODE``.
             help: The option's help text in ``--help``.
             parse: Turns one string value, from a flag, an environment variable or a config file, into the
@@ -411,6 +418,7 @@ def load_settings(
     cache_dir = merged.values.get("cache_dir")
     link_mode = merged.values.get("link_mode")
     offline = merged.values.get("offline")
+    python_index = merged.values.get("python_index")
     indexes = [i for i in merged.lists.get("indexes", ()) if isinstance(i, Index)]
     sources = {s.target: merged.sources.get(s.target, "default") for s in SETTINGS if not s.many}
     if not isinstance(cache_dir, str):
@@ -432,6 +440,7 @@ def load_settings(
         link_mode=link_mode if isinstance(link_mode, LinkMode) else LinkMode.AUTO,
         indexes=_resolve_indexes(indexes),
         offline=offline if isinstance(offline, bool) else False,
+        python_index=python_index if isinstance(python_index, str) else DEFAULT_PYTHON_INDEX,
     )
 
 
@@ -689,7 +698,7 @@ def _cli_layer(overrides: Overrides, cwd: str, home: str | None) -> _Layer:
     layer = _Layer()
     for setting in SETTINGS:
         value = overrides.settings.get(setting.name)
-        source = _Source(Level.CLI, setting.flag, cwd, home)
+        source = _Source(Level.CLI, setting.flag or setting.name, cwd, home)
         if isinstance(value, bool):
             # --offline and --no-offline give the value itself.
             layer.add(setting, value, source)
@@ -787,6 +796,13 @@ def _resolve_indexes(indexes: _c.Sequence[Index]) -> tuple[Index, ...]:
     if default:
         ordered.append(default)
     return tuple(ordered)
+
+
+def _python_index(value: str, source: _Source) -> str:
+    """A Python simple index's root URL, ``https://pypi.org/simple/``, with its ``/``."""
+    if not value.startswith(("http://", "https://")):
+        raise ConfigError(f"{source.description}: Python index URL '{value}' must start with http:// or https://")
+    return value if value.endswith("/") else f"{value}/"
 
 
 def _bool_arg(value: str, source: _Source) -> bool:
@@ -891,6 +907,15 @@ SETTINGS = (
         help="use only what's cached, without connecting to any index",
         parse=_bool_arg,
         boolean=True,
+        group="resolve",
+    ),
+    SettingDefinition(
+        "python_index",
+        key="python_index",
+        env="ALAI_PYTHON_INDEX",
+        metavar="URL",
+        help="the Python package index alai find reads ansible-core and ansible-rulebook from",
+        parse=_python_index,
         group="resolve",
     ),
     SettingDefinition(

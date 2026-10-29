@@ -77,14 +77,14 @@ Piped, alai lists every match rather than the first 20, and
 ## What's listed first
 
 Matches are in two sections: **Installed**, the collections in the
-project's collections directory together with `ansible.builtin`, which
-ansible-core always has, and **Not installed**, everything else on the
-index. Within each, matches are listed in this order:
+project's collections directory together with `ansible.builtin` and
+`eda.builtin`, which ansible-core and ansible-rulebook always have, and
+**Not installed**, everything else on the index. Within each, matches are listed in this order:
 
 1. Exact names before partial matches.
 2. Plugins that aren't redirects, then redirects, then ones that are
    removed or lead nowhere.
-3. `ansible.builtin`.
+3. `ansible.builtin` and `eda.builtin`.
 4. Collections present in alai's cache, for example one installed in a
    separate project.
 5. Collections in the [`ansible`](https://pypi.org/project/ansible/)
@@ -146,7 +146,10 @@ for, short or full, as that's how to find where it went. Use
 
 Searching for a full name shows the details of that plugin, such as:
 
-- **Installed**: Whether the plugin is installed for the project.
+- **Installed**: Whether the plugin is installed for the project. For
+  `ansible.builtin` and `eda.builtin` it means Ansible sees the plugin
+  wherever ansible-core or ansible-rulebook is; alai doesn't check that
+  either is in your Python environment, and the line says so.
 - **Versions**: The versions the plugin is present in.
 - **Route**: The plugin redirection if present.
 - **Hint**: Extra information for how to install/use the plugin.
@@ -178,7 +181,7 @@ following is the JSON output of
         "redirect": "community.docker.docker_container"
       },
       "fqcn": "ansible.builtin.docker_container",
-      "index": "alai",
+      "index": "ansible-core 2.21.5",
       "matched": true
     },
     {
@@ -212,7 +215,7 @@ following is the JSON output of
 |---|---|
 | `v` | The format's version, which changes if a field is removed or changes meaning |
 | `plugins` | The matches, in the order the text output would list them, then every plugin their redirects lead to that the index has, each listed once |
-| `collections` | Every collection the plugins are in or redirect to, by name, with whether it's [installed](#whats-listed-first) and, if so, its `version` and the `path` of its directory. `ansible.builtin` is always installed, with no version or path. `version` is `null` if it can't be read |
+| `collections` | Every collection the plugins are in or redirect to, by name, with whether it's [installed](#whats-listed-first) and, if so, its `version` and the `path` of its directory. `ansible.builtin` and `eda.builtin` are always installed, with no version or path. `version` is `null` if it can't be read |
 | `omitted` | How many matches `--limit` left out |
 
 Each plugin has:
@@ -221,16 +224,17 @@ Each plugin has:
 |---|---|
 | `type` | Its type, as `-t` takes it: `module`, `filter`, `role`… |
 | `name` | Its short name |
-| `collection` | The collection it's in, or `ansible.builtin` for ansible-core's own |
-| `since` | The lowest version of its collection that has it; for `ansible.builtin`, the ansible-core version it was added in. Only if known |
+| `collection` | The collection it's in, or `ansible.builtin` for ansible-core's own and `eda.builtin` for ansible-rulebook's |
+| `since` | The lowest version of its collection that has it; for `ansible.builtin` and `eda.builtin`, the ansible-core or ansible-rulebook version it was added in. Only if known |
 | `until` | The version of its collection it was removed in. Only if it was removed |
 | `short_description` | One line from its documentation, with any [Ansible markup](https://docs.ansible.com/projects/ansible/latest/dev_guide/ansible_markup.html) such as `C(...)` as written. Only if it has one |
 | `routing` | Its entry in its collection's `meta/runtime.yml` `plugin_routing` (`redirect`, `deprecation`, `tombstone`), as the collection wrote it. Only if it has one |
 | `fqcn` | Its full name |
-| `index` | The name of the index it was found in |
+| `index` | The name of the index it was found in, or for `ansible.builtin` and `eda.builtin`, the release it was read from, such as `ansible-core 2.21.5` |
 | `matched` | Whether it matched the search, rather than being listed because a match redirects to it |
 
-Everything but `fqcn`, `index` and `matched` comes from the index.
+Everything but `fqcn`, `index` and `matched` comes from the index, or for
+`ansible.builtin` and `eda.builtin`, from the release.
 
 Whether a plugin can be used, as the details' **Installed** line says, isn't
 in the JSON. alai uses the JSON facts, following each `routing.redirect` as
@@ -246,3 +250,17 @@ it, and its collection's routing for it, from `meta/runtime.yml`. With
 several [indexes](configuration.md#indexes), each one's list is searched, and
 where two have the same plugin, the first index's is used. An index without a
 list is skipped, and if none has one, `alai find` says so.
+
+## ansible-core's own plugins
+
+`ansible.builtin`, ansible-core's own plugins, and `eda.builtin`,
+ansible-rulebook's event sources and filters, aren't collections on an
+index. alai reads them from each project's latest release on PyPI, or on
+the [`python_index`](alai-toml.md#python_index) set in its place, and
+ignores any lines an index has for either name. The first
+`alai find` downloads each sdist (ansible-core's is about 5 MB), reads its
+plugins and routing without running anything in it, and keeps the result in
+the cache, so later runs only ask the index whether there's a new release.
+Both count as installed, as each is part of the tool that runs its content.
+Offline, or when the index can't be reached, alai uses the last release it
+read, or warns that they aren't searchable until a run online reads them.

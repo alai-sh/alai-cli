@@ -554,6 +554,7 @@ def test_sources_and_overridden(tmp_path: Path, home: Path, environ: dict[str, s
         "cache_dir": str(user),
         "link_mode": "--link-mode",
         "offline": "default",
+        "python_index": "default",
     }
     assert settings.overridden == {
         "link_mode": (
@@ -592,3 +593,37 @@ def test_cache_dir_default_needs_home(tmp_path: Path, monkeypatch: pytest.Monkey
         _ = settings.cache_dir
     environ["ALAI_CACHE_DIR"] = "/cache"
     assert load(tmp_path, environ).cache_dir == "/cache"
+
+
+class TestPythonIndex:
+    """python_index, the Python simple index alai find reads ansible-core from: a URL from a file or the environment,
+    with no flag."""
+
+    def test_default(self, tmp_path: Path, environ: dict[str, str]) -> None:
+        assert load(tmp_path, environ).python_index == "https://pypi.org/simple/"
+
+    def test_file_then_env(self, tmp_path: Path, environ: dict[str, str]) -> None:
+        write_file(tmp_path / "alai.toml", 'python_index = "https://pypi.example/simple"\n')
+
+        assert load(tmp_path, environ).python_index == "https://pypi.example/simple/"
+
+        environ["ALAI_PYTHON_INDEX"] = "http://mirror.example/root/"
+        settings = load(tmp_path, environ)
+        assert settings.python_index == "http://mirror.example/root/"
+        assert settings.sources["python_index"] == "ALAI_PYTHON_INDEX"
+
+    def test_not_a_url(self, tmp_path: Path, environ: dict[str, str]) -> None:
+        environ["ALAI_PYTHON_INDEX"] = "pypi.org/simple"
+
+        with pytest.raises(
+            ConfigError, match=r"ALAI_PYTHON_INDEX: Python index URL 'pypi\.org/simple' must start with"
+        ):
+            _ = load(tmp_path, environ)
+
+    def test_no_flag(self, capsys: pytest.CaptureFixture[str]) -> None:
+        from alai._cli import main
+
+        # find takes the resolve settings' flags, which this would be one of if it had one.
+        with pytest.raises(SystemExit):
+            _ = main(["find", "--python-index", "https://x/", "copy"])
+        assert "unrecognized arguments: --python-index" in capsys.readouterr().err
