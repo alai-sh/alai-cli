@@ -29,7 +29,7 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         + "fit.",
         formatter_class=HelpFormatter,
     )
-    _ = lock.add_argument(
+    lock.add_argument(
         "--check",
         action="store_true",
         help="resolve, but don't write alai.lock; exit 1 if it's missing or would change",
@@ -63,7 +63,7 @@ def run(args: argparse.Namespace) -> int:
             return EXIT_STALE
         status(f"{shown_path(path)} is up to date")
         return 0
-    _ = write_lock(path, lock)
+    write_lock(path, lock)
     return 0
 
 

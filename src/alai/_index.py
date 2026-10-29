@@ -188,7 +188,7 @@ class IndexClient:
                 continue  # Not in the index, or an error ``versions`` reports.
             cache_path = self._file_cache_path(config.root, name)
             if self._current(listed, cache_path) is None:
-                _ = self._fetcher.fetch(index_file_url(config, name, listed and listed.sha256), cache_path, what=name)
+                self._fetcher.fetch(index_file_url(config, name, listed and listed.sha256), cache_path, what=name)
 
     def versions(self, name: str) -> IndexFile | None:
         """The index file for collection ``name``, or None if the index doesn't have it."""
@@ -286,7 +286,7 @@ class IndexClient:
                 return
             guess = config.collections_url if which == "collections" else config.plugins_url
         if guess is not None:
-            _ = self._fetcher.fetch(guess, self._cache_path(root, guess))
+            self._fetcher.fetch(guess, self._cache_path(root, guess))
 
     def _load_config(self) -> IndexConfig:
         root = self.index.url

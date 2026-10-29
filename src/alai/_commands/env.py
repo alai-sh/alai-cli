@@ -19,7 +19,7 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         + "locked or installed; a warning says when the collections directory doesn't match alai.lock.",
         formatter_class=HelpFormatter,
     )
-    _ = env.add_argument(
+    env.add_argument(
         "--output-format",
         choices=("sh", "fish", "pwsh", "dotenv"),
         help="what to print: sh, export lines for POSIX shells; fish or pwsh, the same for fish and PowerShell; or "
@@ -35,7 +35,7 @@ def run(args: argparse.Namespace) -> int:
     import os
     import sys
 
-    from .._environ import ansible_environment, default_format, render, warn_unlisted
+    from .._environ import ansible_environment, render, warn_unlisted
     from .._lock import lock_path, read_lock, stale
     from .._output import count_collections, shown_path, warn
     from .._project import load_project
@@ -59,5 +59,7 @@ def run(args: argparse.Namespace) -> int:
         warn_unlisted(settings, [*(c.name for c in lock.collections), *own], "alai sync removes them")
 
     environ = ansible_environment(settings, manifest)
-    _ = sys.stdout.write(render(environ, args.output_format or default_format(os.environ)))
+    # fish's syntax when SHELL is fish, as uv venv chooses its activation hint, else POSIX shell's.
+    shell = "fish" if os.path.basename(os.environ.get("SHELL", "")) == "fish" else "sh"
+    sys.stdout.write(render(environ, args.output_format or shell))
     return 0

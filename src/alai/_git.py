@@ -108,26 +108,26 @@ def fetch(cache_dir: str, url: str, commit: str, *, offline: bool) -> str:
         raise GitError(f"can't write to the cache at {parent}: {e.strerror or e}") from e
     try:
         checkout = os.path.join(work, "checkout")
-        _ = _git(["init", "--quiet", checkout])
+        _git(["init", "--quiet", checkout])
         try:
-            _ = _git(["fetch", "--quiet", "--depth=1", "--", url, commit], cwd=checkout, network=True, url=url)
+            _git(["fetch", "--quiet", "--depth=1", "--", url, commit], cwd=checkout, network=True, url=url)
         except GitError as e:
             if _UNADVERTISED not in str(e):
                 raise
             trace(f"{url}: the server won't fetch {commit} by its hash; fetching every branch and tag")
-            _ = _git(
+            _git(
                 ["fetch", "--quiet", "--", url, "+refs/heads/*:refs/remotes/origin/*", "+refs/tags/*:refs/tags/*"],
                 cwd=checkout,
                 network=True,
                 url=url,
             )
         try:
-            _ = _git(["cat-file", "-e", f"{commit}^{{commit}}"], cwd=checkout)
+            _git(["cat-file", "-e", f"{commit}^{{commit}}"], cwd=checkout)
         except GitError as e:
             raise GitError(f"{url} has no commit {commit} on any branch or tag") from e
-        _ = _git(["checkout", "--quiet", "--detach", commit], cwd=checkout)
+        _git(["checkout", "--quiet", "--detach", commit], cwd=checkout)
         if os.path.exists(os.path.join(checkout, ".gitmodules")):
-            _ = _git(["submodule", "update", "--quiet", "--init", "--recursive"], cwd=checkout, network=True, url=url)
+            _git(["submodule", "update", "--quiet", "--init", "--recursive"], cwd=checkout, network=True, url=url)
         # Only the files are kept: nothing a collection's build reads is in .git.
         for root, dirs, files in os.walk(checkout):
             for name in [*dirs, *files]:
@@ -247,7 +247,7 @@ class _Sharing:
                 return None
             if self._dir is None:
                 self._dir = tempfile.mkdtemp(prefix="alai-ssh-", dir="/tmp")
-                _ = atexit.register(self.close)
+                atexit.register(self.close)
             return f"ssh -o ControlMaster=auto -o ControlPath={self._dir}/%C -o ControlPersist={_CONTROL_PERSIST}"
 
     @contextlib.contextmanager
@@ -260,7 +260,7 @@ class _Sharing:
             if event is None:
                 event = self._first[host] = threading.Event()
         if not mine:
-            _ = event.wait()
+            event.wait()
         try:
             yield
         finally:
@@ -273,7 +273,7 @@ class _Sharing:
             return
         for name in os.listdir(self._dir) if os.path.isdir(self._dir) else ():
             with contextlib.suppress(OSError, subprocess.SubprocessError):
-                _ = subprocess.run(  # noqa: S603 # ssh from PATH, as git runs it
+                subprocess.run(  # noqa: S603 # ssh from PATH, as git runs it
                     ["ssh", "-O", "exit", "-o", f"ControlPath={os.path.join(self._dir, name)}", "alai"],  # noqa: S607
                     stdin=subprocess.DEVNULL,
                     capture_output=True,

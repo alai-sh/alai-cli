@@ -16,7 +16,6 @@ from .._args import (
     reinstall_from_args,
     settings_from_args,
     upgrade_from_args,
-    usage_error,
 )
 
 
@@ -43,7 +42,7 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         + "--collections-dir, or the collections_dir setting, has to say where.",
         formatter_class=HelpFormatter,
     )
-    _ = install.add_argument(
+    install.add_argument(
         "requirements",
         metavar="REQUIREMENT",
         nargs="*",
@@ -51,7 +50,7 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         + "which is copied again every time; a built collection's tarball, such as ns-col-1.0.0.tar.gz or an "
         + "https:// URL to one; or a git repository, as git+URL[@REV][#subdirectory=DIR&version=VERSION]",
     )
-    _ = install.add_argument(
+    install.add_argument(
         "-e",
         "--editable",
         metavar="DIR",
@@ -62,7 +61,7 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
     )
     add_upgrade_args(install)
     add_reinstall_args(install)
-    _ = install.add_argument(
+    install.add_argument(
         "--keep-unversioned",
         action="store_true",
         help="leave a collection whose version can't be read, such as a source checkout with no MANIFEST.json, as "
@@ -81,7 +80,7 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         + "where.",
         formatter_class=HelpFormatter,
     )
-    _ = uninstall.add_argument(
+    uninstall.add_argument(
         "names",
         metavar="NAME",
         nargs="+",
@@ -100,7 +99,7 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         + "collections_dir setting, has to say where.",
         formatter_class=HelpFormatter,
     )
-    _ = list_.add_argument(
+    list_.add_argument(
         "--output-format",
         choices=("text", "json"),
         default="text",
@@ -115,11 +114,11 @@ def run_install(args: argparse.Namespace) -> int:
     from .._collection import install
 
     if not args.requirements and not args.editable:
-        usage_error(args, "the following arguments are required: REQUIREMENT or --editable")
+        args.parser.error("the following arguments are required: REQUIREMENT or --editable")
     reinstall = reinstall_from_args(args)
     if reinstall and args.keep_unversioned:
         # Keeping a collection as it is and reinstalling it ask for opposite things.
-        usage_error(args, "--keep-unversioned can't be used with --reinstall or --reinstall-collection")
+        args.parser.error("--keep-unversioned can't be used with --reinstall or --reinstall-collection")
     install(
         settings_from_args(args),
         args.requirements,

@@ -19,7 +19,7 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         description="Print the script that enables Tab completion for alai in SHELL.",
         formatter_class=HelpFormatter,
     )
-    _ = completion.add_argument("shell", choices=SHELLS, help="the shell to print the script for")
+    completion.add_argument("shell", choices=SHELLS, help="the shell to print the script for")
     completion.set_defaults(parser=completion, handler=generate)
 
 

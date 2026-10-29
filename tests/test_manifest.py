@@ -224,6 +224,7 @@ class TestManifestAndConfig:
         settings = load_settings(Overrides(no_config=True), cwd=tmp_path, environ=environ)
 
         assert settings.link_mode == LinkMode.AUTO
+        assert settings.manifest is None
         with pytest.raises(ConfigError, match="must be an array"):
             _ = load_manifest(settings.project)
 
@@ -234,7 +235,11 @@ class TestManifestAndConfig:
         settings = load_settings(Overrides(config_file="ci.toml"), cwd=tmp_path, environ=environ)
 
         assert settings.link_mode == LinkMode.COPY
-        result = load_manifest(settings.project)
+        # Not read as a config file, so load_project reads it then.
+        assert settings.manifest is None
+        from alai._project import load_project
+
+        _, result = load_project(settings, "")
         assert [r.name for r in result.collections] == ["a.b"]
 
     @pytest.mark.parametrize(

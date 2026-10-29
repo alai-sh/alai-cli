@@ -32,13 +32,13 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         + "changed since. The project's collections are installed with the 'dev' group, if there is one.",
         formatter_class=HelpFormatter,
     )
-    _ = add_check_args(sync)
-    _ = sync.add_argument(
+    add_check_args(sync)
+    sync.add_argument(
         "--inexact",
         action="store_true",
         help="keep installed collections alai.lock doesn't list, rather than removing them",
     )
-    _ = add_group_args(sync)
+    add_group_args(sync)
     add_upgrade_args(sync, groups=True)
     add_reinstall_args(sync)
     add_global_args(sync, suppress=True)

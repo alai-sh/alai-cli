@@ -32,9 +32,9 @@ from ._output import (
     RED,
     UNDERLINE,
     YELLOW,
+    Renderer,
     debug,
     status,
-    terminal_width,
     warn,
 )
 from ._plugins import (
@@ -202,7 +202,7 @@ def load_catalog(settings: Settings) -> Catalog:
             if data is not None and url is not None:
                 indexes.append(PluginIndex(index.name, data))
                 for name, copy in cached_copies(settings.cache_dir, url, data).items():
-                    _ = copies.setdefault(name, copy)
+                    copies.setdefault(name, copy)
             else:
                 debug(f"index '{index.name}' ({index.url}) has no plugin index")
             task.advance()
@@ -251,7 +251,7 @@ def _print_json(found: list[Found], hidden: int, installed: dict[str, Installed]
         return {
             "installed": name == BUILTIN or have is not None,
             "version": str(have.version) if have is not None and have.version is not None else None,
-            "path": _path(installed, name),
+            "path": os.path.abspath(have.path) if have is not None else None,
         }
 
     result = {
@@ -264,19 +264,12 @@ def _print_json(found: list[Found], hidden: int, installed: dict[str, Installed]
     print()
 
 
-class _Renderer:
-    """The text output, coloured when stdout is a terminal (or ``--color`` says so)."""
-
+class _Renderer(Renderer):
     def __init__(self, settings: Settings, query: Query, installed: dict[str, Installed] | None) -> None:
+        super().__init__()
         self.settings = settings
         self.query = query
         self.installed = installed or {}
-        self.terminal = sys.stdout.isatty()
-        self.width = terminal_width()
-        self.color = _output.color_enabled(stdout=True)
-
-    def s(self, text: str, *codes: str) -> str:
-        return _output.ansi(text, *codes) if self.color else text
 
     def listing(self, mine: list[Found], others: list[Found], totals: tuple[int, int], *, project: bool) -> None:
         """The two sections, each headed by how many it has; ``totals`` counts those ``--limit`` left out too, and a
@@ -322,9 +315,8 @@ class _Renderer:
         marker, colour, verdict = self._verdict(item)
         self._field("Installed", self.s(f"{marker} {verdict}", colour))
         for routing in (plugin.tombstone, plugin.deprecation):
-            text = routing.get("warning_text") if routing else None
-            if isinstance(text, str) and text.strip():
-                self._field("", self.s(text.strip(), RED if routing is plugin.tombstone else YELLOW))
+            if text := _warning_text(routing):
+                self._field("", self.s(text, RED if routing is plugin.tombstone else YELLOW))
 
         if plugin.collection == BUILTIN:
             # Its since is the plugin's version_added, left out when that's "historical".
@@ -496,9 +488,11 @@ class _Renderer:
         if room is not None and room < 10:
             tail = ""
         elif notes:
-            tail = self.s(_cut(notes, room), colour)
+            tail = self.pieces([(notes, (colour,), None)], room)
         elif item.copy:
-            tail = self.s(_cut(plain(plugin.short_description or "", role=plugin.type == "role"), room), DIM)
+            tail = self.pieces(
+                [(plain(plugin.short_description or "", role=plugin.type == "role"), (DIM,), None)], room
+            )
         else:
             tail = self.rich(markup(plugin.short_description or "", role=plugin.type == "role"), room)
         print(f"{head}  {tail}".rstrip())
@@ -506,25 +500,7 @@ class _Renderer:
     def rich(self, segments: list[Segment], room: int | None = None) -> str:
         """A description's pieces with their markup styled, and ``L()`` and ``U()`` as links on a terminal; cut to
         ``room`` visible characters, if given, with an ellipsis."""
-        cut = room is not None and sum(len(piece) for piece, _, _ in segments) > room
-        budget = room - 1 if room is not None and cut else None
-        links = self.terminal and self.color
-        out: list[str] = []
-        used = 0
-        for piece, kind, url in segments:
-            if budget is not None:
-                if used >= budget:
-                    break
-                piece = piece[: budget - used]
-            used += len(piece)
-            text = self.s(piece, *_STYLES.get(kind or "", ()))
-            if url and links:
-                # OSC 8: a link the terminal opens on click; terminals without it show the text alone.
-                text = f"\x1b]8;;{url}\x1b\\{text}\x1b]8;;\x1b\\"
-            out.append(text)
-        if cut:
-            out.append("…")
-        return "".join(out)
+        return self.pieces([(piece, _STYLES.get(kind or "", ()), url) for piece, kind, url in segments], room)
 
     def _name(self, item: Found) -> str:
         """The FQCN, the collection blue (dim for a probable copy) and the name bold, with the part that matched a
@@ -589,22 +565,11 @@ class _Renderer:
         print(f"  {self.s(label.ljust(10), DIM)} {value}")
 
 
-def _cut(text: str, room: int | None) -> str:
-    """``text`` cut to ``room`` characters with an ellipsis, or as it is with no room given."""
-    return text if room is None or len(text) <= room else text[: max(0, room - 1)] + "…"
-
-
 def _routing_only(plugin: Plugin) -> bool:
     """Whether the line is only its collection's routing, with no plugin file in any version: another name."""
     if plugin.collection == BUILTIN:
         return not has_file(plugin)
     return plugin.since is None and plugin.until is None
-
-
-def _path(installed: dict[str, Installed], collection: str) -> str | None:
-    """Where an installed collection is, as an absolute path, or None if it isn't installed (or is ansible.builtin)."""
-    found = installed.get(collection)
-    return os.path.abspath(found.path) if found is not None else None
 
 
 Segment = tuple[str, "str | None", "str | None"]

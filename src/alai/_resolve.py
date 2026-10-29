@@ -125,15 +125,10 @@ def resolve(
         if client.index.name in by_name:
             raise ValueError(f"index '{client.index.name}' is given more than once")
         by_name[client.index.name] = client
-    table = _Table(
-        manifest,
-        by_name,
-        _preferences(locked, upgrade),
-        ansible_version,
-        report,
-        _kept(installed or {}, upgrade),
-        origin,
-    )
+    # The locked and installed versions to prefer: all of them, unless upgrade says otherwise.
+    preferred = {c.name: c for c in locked.collections if not selects(upgrade, c.name)} if locked is not None else {}
+    kept = {name: version for name, version in (installed or {}).items() if not selects(upgrade, name)}
+    table = _Table(manifest, by_name, preferred, ansible_version, report, kept, origin)
     roots = table.roots()
     table.load(roots)
     try:
@@ -182,18 +177,6 @@ def resolve(
             )
     reasons = table.reasons(chosen, roots, locked, upgrade)
     return Resolution(tuple(collections), tuple(table.warnings(chosen)), reasons)
-
-
-def _kept(installed: _c.Mapping[str, semver.Version], upgrade: bool | _c.Collection[str]) -> dict[str, semver.Version]:
-    """The installed versions to prefer: all of them, unless ``upgrade`` says otherwise."""
-    return {name: version for name, version in installed.items() if not selects(upgrade, name)}
-
-
-def _preferences(locked: Lock | None, upgrade: bool | _c.Collection[str]) -> dict[str, LockedCollection]:
-    """The locked versions to prefer: all of them, unless ``upgrade`` says otherwise."""
-    if locked is None:
-        return {}
-    return {c.name: c for c in locked.collections if not selects(upgrade, c.name)}
 
 
 def _ranks(versions: _c.Iterable[semver.Version]) -> dict[str, tuple[int, bool]]:
@@ -270,7 +253,7 @@ class _Table:
         # Ask every index's listing at once, then start each root's index file, which is all an index with no listing
         # can say whether it has the root from.
         for client in self._indexes.values():
-            _ = client.collections()
+            client.collections()
         self._prefetch(r.name for r in named)
         roots: list[_Requirement] = []
         for requirement, (parent, group) in zip(named, listed, strict=True):

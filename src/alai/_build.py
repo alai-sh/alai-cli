@@ -186,7 +186,7 @@ def _install(
     for file_name, data in metadata:
         path = os.path.join(dest, file_name)
         with open(path, "xb") as f:
-            _ = f.write(data)
+            f.write(data)
         os.chmod(path, 0o644 & ~umask)
     _copy(source, dest, entries, umask=umask)
 
@@ -220,7 +220,7 @@ def _copy(source: str, dest: str, entries: _c.Iterable[tuple[str, str, str | Non
             if ftype == "dir":
                 raise BuildError(f"{src} is a symlink to a directory outside the collection, {target}")
         # A file, or what a link leading outside points at, with its mode as the build gives it.
-        _ = shutil.copyfile(src, dst)
+        shutil.copyfile(src, dst)
         if sha256 is not None and _sha256(dst) != sha256:
             raise BuildError(f"{src} doesn't match its checksum in the collection's files manifest")
         executable = os.stat(src).st_mode & stat.S_IXUSR
@@ -263,9 +263,9 @@ def _galaxy_info(galaxy_file: str) -> dict[str, object]:
         value = info.get(key)
         info[key] = [] if value is None else value if isinstance(value, list) else [value]
     for key in _DICTS:
-        _ = info.setdefault(key, {})
+        info.setdefault(key, {})
     for key in ("description", "license_file", "repository", "documentation", "homepage", "issues"):
-        _ = info.setdefault(key, None)
+        info.setdefault(key, None)
     if info["build_ignore"] and "manifest" in info:
         raise BuildError(f'{galaxy_file}: "build_ignore" and "manifest" are mutually exclusive')
     return info

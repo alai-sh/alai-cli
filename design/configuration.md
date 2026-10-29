@@ -132,7 +132,7 @@ what's planned on top of it, and the questions still open.
   and exiting 2 as argparse does, whether argparse's own groups catch them
   (`--locked --frozen`) or alai does after parsing (`--only-group` with
   `--group`, `-U` with `--frozen`, `--keep-unversioned` with
-  `--reinstall`; `_args.usage_error`), as uv's are all clap errors (uv
+  `--reinstall`; `args.parser.error`), as uv's are all clap errors (uv
   0.13.5, 2026-10-23: `uv sync --only-group test --group dev`, `uv sync
   --frozen -U` and `uv sync --locked --frozen` each print "the argument
   ... cannot be used with ..." and the usage). A name an option takes that

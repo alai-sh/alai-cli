@@ -539,7 +539,7 @@ def _names(names: list[str], path: str, key: str) -> tuple[str, ...]:
     i = 0
     try:
         for i, name in enumerate(names):  # noqa: B007  # i is read in the except clause
-            _ = collection_name(name)
+            collection_name(name)
     except ValueError as e:
         raise ConfigError(f"{path}: {key}[{i}]: {e}") from e
     return tuple(dict.fromkeys(names))
