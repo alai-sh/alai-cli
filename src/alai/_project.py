@@ -11,7 +11,7 @@ import os
 import re
 import typing as _t
 
-from ._common import ConfigError, Record, home_path, inside, read_toml, selects, sha256_file
+from ._common import ConfigError, Record, home_path, inside, no_group, read_toml, selects, sha256_file
 from ._config import RawManifest, Settings, no_project, raw_manifest
 from ._lock import (
     ArchiveSource,
@@ -69,10 +69,7 @@ class Upgrade(Record):
         known = manifest.groups if manifest is not None else {}
         for group in self.groups:
             if group not in known:
-                have = ", ".join(f"'{g}'" for g in sorted(known))
-                raise ConfigError(
-                    f"--upgrade-group: alai.toml has no group '{group}'" + (f" (it has {have})" if have else "")
-                )
+                raise no_group("--upgrade-group", group, known)
         if self.everything:
             return True
         return set(self.collections) | {r.name for group in self.groups for r in known[group]} or False
@@ -184,10 +181,7 @@ def read_path_source(settings: Settings, name: str | None, source: PathSource) -
             f"{home_path(where)} has no galaxy.yml or MANIFEST.json, so it isn't a collection{_for(name)}"
         )
     collection = read_collection_dir(where, source.version, source=_entry(name))
-    if name is not None and collection.name != name:
-        raise ConfigError(
-            f"[project.sources] takes {name} from {source}, but its {collection.metadata} is for {collection.name}"
-        )
+    _check_named(name, source, collection)
     tree = os.path.realpath(settings.collections_dir)
     real = os.path.realpath(where)
     for inner, outer, what in ((real, tree, "is inside"), (tree, real, "holds")):
@@ -246,7 +240,7 @@ def given_requirement(text: str) -> Requirement:
     try:
         return Requirement.parse(re.sub(r"\s+", "", text))
     except ValueError as e:
-        raise ConfigError(str(e)) from None
+        raise ConfigError(str(e)) from e
 
 
 def read_git_source(
@@ -295,19 +289,17 @@ def _git_collection(name: str | None, source: GitSource, commit: str, files: str
         source=_entry(name) if name is not None else str(source),
         shown=f"{at}/{source.subdirectory}" if source.subdirectory is not None else at,
     )
+    _check_named(name, source, collection)
+    collection.commit = commit
+    return collection
+
+
+def _check_named(name: str | None, source: PathSource | GitSource, collection: SourceCollection) -> None:
+    """Refuse ``collection``, read from ``source``, unless it's ``name`` or ``name`` is None."""
     if name is not None and collection.name != name:
         raise ConfigError(
             f"[project.sources] takes {name} from {source}, but its {collection.metadata} is for {collection.name}"
         )
-    return SourceCollection(
-        collection.name,
-        collection.version,
-        collection.path,
-        dependencies=collection.dependencies,
-        requires_ansible=collection.requires_ansible,
-        metadata=collection.metadata,
-        commit=commit,
-    )
 
 
 def read_git_sources(
@@ -361,7 +353,7 @@ def _read_archive(settings: Settings, name: str | None, shown: str, path: str) -
         cksum = sha256_file(path)
         size = os.path.getsize(path)
     except OSError as e:
-        raise ConfigError(f"can't read {home_path(path)}: {e.strerror or e}") from None
+        raise ConfigError(f"can't read {home_path(path)}: {e.strerror or e}") from e
     return _archive_collection(name, shown, ArtifactCache(settings.cache_dir).add(path, cksum), cksum, size)
 
 
@@ -373,16 +365,8 @@ def _archive_collection(name: str | None, shown: str, extracted: str, cksum: str
     collection = read_built_collection(os.path.join(extracted, "MANIFEST.json"))
     if name is not None and collection.name != name:
         raise ConfigError(f"[project.sources] takes {name} from {shown}, but it holds {collection.name}")
-    return SourceCollection(
-        collection.name,
-        collection.version,
-        extracted,
-        dependencies=collection.dependencies,
-        requires_ansible=collection.requires_ansible,
-        metadata=collection.metadata,
-        cksum=cksum,
-        size=size,
-    )
+    collection.cksum, collection.size = cksum, size
+    return collection
 
 
 def read_url_source(settings: Settings, name: str | None, source: UrlSource, fetcher: Fetcher) -> SourceCollection:

@@ -103,13 +103,6 @@ class Plugin(Record):
         return as_table(self.routing.get("deprecation"))
 
 
-def parse_line(line: bytes, index: str = "") -> Plugin | None:
-    """One line as a plugin, or None if it can't be read or needs a newer alai: a plugin index is a search aid, so a
-    bad line is skipped rather than an error."""
-    entry = PluginEntry.parse(line)
-    return None if entry is None else _plugins([entry], index)[0]
-
-
 def _plugins(entries: list[PluginEntry], index: str) -> list[Plugin]:
     return [
         Plugin(
@@ -119,7 +112,7 @@ def _plugins(entries: list[PluginEntry], index: str) -> list[Plugin]:
             since=e.since,
             until=e.until,
             short_description=e.short_description,
-            routing=e.routing,
+            routing=e.routing.raw if e.routing is not None else None,
             index=index,
             line=e.line or b"",
         )
@@ -154,7 +147,7 @@ class Query:
         safe = [p for p in parts if p and p.isascii() and '"' not in p and "\\" not in p and "/" not in p]
         return sorted({p.encode() for p in safe}, key=len, reverse=True)
 
-    def matches(self, plugin: Plugin) -> bool:
+    def matches(self, plugin: Plugin | PluginEntry) -> bool:
         if self.types and plugin.type not in self.types:
             return False
         if self.qualified:
@@ -174,7 +167,6 @@ class PluginIndex:
 
     def __init__(self, index: str, data: bytes) -> None:
         self.index = index
-        self.data = data
         self._file = Plugins(data)
 
     def with_tokens(self, tokens: _c.Sequence[bytes] = ()) -> list[Plugin]:
@@ -182,7 +174,8 @@ class PluginIndex:
         return _plugins(self._file.search(tokens), self.index)
 
     def search(self, query: Query) -> list[Plugin]:
-        return [plugin for plugin in self.with_tokens(query.tokens()) if query.matches(plugin)]
+        # Filtered before they're made Plugins, as a short query's tokens can be in most lines.
+        return _plugins([e for e in self._file.search(query.tokens()) if query.matches(e)], self.index)
 
     def get(self, type_: str, fqcn: str) -> Plugin | None:
         """The plugin of type ``type_`` named ``fqcn``, or None."""
@@ -200,9 +193,6 @@ class PluginIndex:
     def names(self) -> set[str]:
         """Every plugin's short name, for suggestions, read without parsing each line."""
         return self._file.names()
-
-    def plugins(self) -> list[Plugin]:
-        return self.with_tokens()
 
 
 class Copy(Record):
@@ -277,7 +267,7 @@ class Catalog:
         return difflib.get_close_matches(query.text.rsplit(".", 1)[-1], sorted(names), n=3, cutoff=0.75)
 
 
-def find_copies(plugins: _c.Iterable[Plugin]) -> dict[str, Copy]:
+def find_copies(plugins: _c.Iterable[Plugin | PluginEntry]) -> dict[str, Copy]:
     """The collections that look like copies of one in the ``ansible`` package: at least half their plugins share a
     type and name with that collection's. Collections in a namespace the package has a collection from aren't judged,
     as Galaxy namespaces have owners and a vendor's newer collection often reuses its older one's names."""
@@ -317,7 +307,7 @@ def cached_copies(cache_dir: str, url: str, data: bytes) -> dict[str, Copy]:
         pass
 
     debug(f"working out the probable copies in {url}")
-    copies = find_copies(PluginIndex("", data).plugins())
+    copies = find_copies(Plugins(data).search(()))
     summary = {
         "v": _SUMMARY_VERSION,
         "sha256": digest,
@@ -496,11 +486,11 @@ def assess(plugin: Plugin, catalog: Catalog, installed: _c.Mapping[str, Version 
     outdated: list[tuple[str, str]] = []
     for _, hop in route.hops if route else ():
         have = installed.get(hop.collection) if hop is not None else None
-        added = _version(hop.since) if hop is not None else None
+        added = semver_or_none(hop.since) if hop is not None else None
         if hop is not None and hop.since is not None and have is not None and added is not None and have < added:
             outdated.append((hop.collection, hop.since))
-    since = _version(plugin.since)
-    until = _version(plugin.until)
+    since = semver_or_none(plugin.since)
+    until = semver_or_none(plugin.until)
 
     if plugin.tombstone is not None or (route is not None and route.problem is not None):
         state = BROKEN if plugin.tombstone is None else REMOVED
@@ -560,11 +550,12 @@ def _still_has(plugin: Plugin, installed: _c.Mapping[str, Version | None] | None
         return False
     have = installed[plugin.collection]
     tombstone = plugin.tombstone or {}
-    removed = _version(plugin.until) or _version(as_str(tombstone.get("removal_version")))
+    removed = semver_or_none(plugin.until) or semver_or_none(as_str(tombstone.get("removal_version")))
     return have is not None and removed is not None and have < removed
 
 
-def _version(text: str | None) -> Version | None:
+def semver_or_none(text: str | None) -> Version | None:
+    """``text`` as a version, or None if it's None or not one; each text is parsed once."""
     if text is None:
         return None
     if text not in _VERSIONS:

@@ -4,13 +4,15 @@
 from __future__ import annotations
 
 import json
+import typing as _t
 from pathlib import Path
 
 import pytest
+from alai_core.plugins import PluginEntry
 from alai_core.semver import Version
 from index_data import plugin
 
-from alai import _ansible_package
+from alai import _ansible_package, _plugins
 from alai._plugins import (
     BROKEN,
     DEPRECATED,
@@ -29,9 +31,14 @@ from alai._plugins import (
     cached_copies,
     find_copies,
     follow,
-    parse_line,
     rank,
 )
+
+
+def parse_line(line: bytes) -> Plugin | None:
+    entry = PluginEntry.parse(line)
+    return None if entry is None else _plugins._plugins([entry], "")[0]
+
 
 EXAMPLE = Path(__file__).parent / "data" / "index" / "plugins.jsonl"
 
@@ -50,7 +57,7 @@ def names(found: list[Plugin]) -> list[str]:
 
 class TestParseLine:
     def test_example(self) -> None:
-        plugins = list(PluginIndex("alai", EXAMPLE.read_bytes()).plugins())
+        plugins = list(PluginIndex("alai", EXAMPLE.read_bytes()).with_tokens())
 
         assert len(plugins) == 7
         old = next(p for p in plugins if p.name == "old_thing")
@@ -556,5 +563,5 @@ def test_cached_collections(tmp_path: Path) -> None:
     assert cached_collections(str(tmp_path)) == {"ns.a", "ns.b"}
 
 
-def _kw(line: dict[str, object]) -> dict[str, str]:
+def _kw(line: dict[str, object]) -> dict[str, _t.Any]:
     return {"type": str(line["type"]), "name": str(line["name"]), "collection": str(line["collection"])}

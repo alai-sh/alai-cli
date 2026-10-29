@@ -185,7 +185,7 @@ class TestLive:
 
 def _env(setup: dict[str, object]) -> dict[str, str]:
     env = setup.get("env")
-    return {str(k): str(v) for k, v in env.items()} if isinstance(env, dict) else {}  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
+    return {str(k): str(v) for k, v in env.items()} if isinstance(env, dict) else {}  # pyright: ignore[reportUnknownVariableType]
 
 
 def test_no_progress_flag(monkeypatch: pytest.MonkeyPatch) -> None:

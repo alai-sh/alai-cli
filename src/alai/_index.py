@@ -57,14 +57,6 @@ class IndexConfig(Record):
         """The plugin index, ``plugins.jsonl``, or None if the index has none."""
 
     @property
-    def format(self) -> int:
-        return self.file.format
-
-    @property
-    def index(self) -> str:
-        return self.file.index
-
-    @property
     def dl(self) -> str:
         return self.file.dl
 
@@ -216,7 +208,7 @@ class IndexClient:
             if data is not None:
                 trace(f"{url} ({name}): the cached copy matches collections.json")
             elif config.hashed and config.collections_url is not None:  # parse_config refuses one without
-                url, data = self._fetch_hashed(config, config.collections_url, name, url, cache_path)
+                url, data = self._fetch_hashed(config, config.collections_url, listed, name, url, cache_path)
             else:
                 data = self._fetcher.get(url, cache_path, what=name)
                 if data is not None and listed and listed.sha256 and _sha256(data) != listed.sha256:
@@ -230,7 +222,13 @@ class IndexClient:
             return self._files.setdefault(name, result)
 
     def _fetch_hashed(
-        self, config: IndexConfig, listing_url: str, name: str, url: str, cache_path: str | None
+        self,
+        config: IndexConfig,
+        listing_url: str,
+        listed: _format.CollectionEntry | None,
+        name: str,
+        url: str,
+        cache_path: str | None,
     ) -> tuple[str | None, bytes | None]:
         """Fetch an index file found by its SHA-256, returning its URL and body, or None for both if the index no
         longer has the collection. Such a file never changes, so one that doesn't match its SHA-256 is an error, not a
@@ -246,8 +244,6 @@ class IndexClient:
             data = self._fetcher.get(url, cache_path, what=name)
             if data is None:
                 raise IndexDataError(f"{url} not found, though {listing_url} lists {name}")
-        else:
-            listed = (self.collections() or _NO_COLLECTIONS).get(name)
         # Offline, the cached copy is used as it is, as for an index whose files are found by name.
         if listed is not None and not self._fetcher.offline and _sha256(data) != listed.sha256:
             raise IndexDataError(f"{url} doesn't match its sha256 in {listing_url}")
@@ -304,8 +300,7 @@ class IndexClient:
             if moved_to is None:
                 return config
             target = moved_to if moved_to.endswith("/") else f"{moved_to}/"
-            if root.startswith("https://") and not target.startswith("https://"):
-                raise IndexDataError(f"{url}: refusing to follow moved-to from https to {target}")
+            _check_scheme(root, target, f"{url}: 'moved-to'")
             if target in seen:
                 raise IndexDataError(f"{url}: moved-to loops back to {target}")
             warn(f"index '{self.index.name}' has moved to {target}; update its url (from {self.index.source})")
@@ -341,15 +336,17 @@ def parse_config(data: bytes, root: str, url: str) -> tuple[IndexConfig, str | N
         offered = ", ".join(str(n) for n in e.found) or "none"
         raise IndexDataError(
             f"{root} needs a newer alai: it offers index format {offered}, this alai reads {e.supported}"
-        ) from None
+        ) from e
     except ValueError as e:
-        raise IndexDataError(f"{url}: {e}") from None
+        raise IndexDataError(f"{url}: {e}") from e
     number = parsed.format
     # The template's values are names and hex, which can't change where it leads, so any stand in for them.
     sample = parsed.index_path(name="ns.name", sha256="0" * 64)
     for key, path in (("index", sample), ("collections", parsed.collections), ("plugins", parsed.plugins)):
         if path is not None:
             _check_scheme(root, urllib.parse.urljoin(root, path), f"{url}: 'formats.{number}.{key}'")
+    dl = parsed.artifact_path(name="ns.name", version=Version("1.0.0"), sha256="0" * 64)
+    _check_scheme(root, urllib.parse.urljoin(root, dl), f"{url}: 'dl'")
     config = IndexConfig(
         root=root,
         file=parsed,
@@ -366,9 +363,9 @@ def parse_collections(data: bytes, url: str) -> Collections:
     except NewerFormatError as e:
         raise IndexDataError(
             f"{url} needs a newer alai: it's version {e.found[0]}, this alai reads {e.supported}"
-        ) from None
+        ) from e
     except ValueError as e:
-        raise IndexDataError(f"{url}: {e}") from None
+        raise IndexDataError(f"{url}: {e}") from e
 
 
 def parse_index_file(data: bytes, name: str, url: str) -> IndexFile:
@@ -389,9 +386,9 @@ def index_file_url(config: IndexConfig, name: str, sha256: str | None = None) ->
 
 
 def artifact_url(config: IndexConfig, name: str, version: Version, cksum: str) -> str:
-    """Where to download a collection version's artifact, from the ``dl`` template: ``name`` is ``ns.name`` and
-    ``cksum`` the artifact's SHA-256, as an index line or a lock gives them."""
-    return config.file.artifact_path(name=name, version=version, sha256=cksum)
+    """Where to download a collection version's artifact, from the ``dl`` template resolved against the index root:
+    ``name`` is ``ns.name`` and ``cksum`` the artifact's SHA-256, as an index line or a lock gives them."""
+    return urllib.parse.urljoin(config.root, config.file.artifact_path(name=name, version=version, sha256=cksum))
 
 
 def _check_scheme(root: str, target: str, what: str) -> None:

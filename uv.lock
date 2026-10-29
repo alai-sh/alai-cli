@@ -42,7 +42,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "alai-core", git = "https://github.com/alai-sh/alai-core?rev=e3aa06d7197f8d9289bed4be3f8ae268838cc050" },
+    { name = "alai-core", git = "https://github.com/alai-sh/alai-core?rev=04540e61eada8599359295278f5a7e27117b0853" },
     { name = "argcomplete", specifier = ">=3.5.2" },
     { name = "distlib", specifier = ">=0.4.4" },
 ]
@@ -71,7 +71,7 @@ test = [
 [[package]]
 name = "alai-core"
 version = "0.0.1"
-source = { git = "https://github.com/alai-sh/alai-core?rev=e3aa06d7197f8d9289bed4be3f8ae268838cc050#e3aa06d7197f8d9289bed4be3f8ae268838cc050" }
+source = { git = "https://github.com/alai-sh/alai-core?rev=04540e61eada8599359295278f5a7e27117b0853#04540e61eada8599359295278f5a7e27117b0853" }
 
 [[package]]
 name = "ansible-core"

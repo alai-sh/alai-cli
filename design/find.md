@@ -175,15 +175,16 @@ searches locally is the reason the index has one.
   not the one asked about.
 - **Ansible markup in descriptions is interpreted** (2026-10-21): 215
   short descriptions use it, mostly `C()` (`Returns a path with C(~)
-  translation.`). `_find.markup` splits a description into pieces as
-  https://docs.ansible.com/projects/ansible/latest/dev_guide/ansible_markup.html
-  defines them: the text of `C()`, `B()`, `I()`, `L()` and `R()`, the name
-  in `M()` and `P()`, the URL in `U()`, the value in `V()` and `E()`, and
-  the option or return value of `O()` and `RV()` without the plugin,
-  entrypoint or `ignore:` before it; `HORIZONTALLINE` is dropped.
-  Backslash escapes only in `O()`, `V()`, `E()`, `RV()` and `P()`, as the
-  classic ones can't hold `)`. A construct must start a word (the page
-  doesn't say); one that's never closed stays as written. With colour on,
+  translation.`). `_find.markup` shows what alai-core's markup parser
+  (`alai_core.markup.parse`, since 2026-10-29) splits it into: the text of
+  `C()`, `B()`, `I()`, `L()` and `R()`, the name in `M()` and `P()`, the
+  URL in `U()`, the value in `V()` and `E()`, and the option or return
+  value of `O()` and `RV()` without the plugin, entrypoint or `ignore:`
+  before it. `HORIZONTALLINE` is a space, as the parser drops the spaces
+  around it. Markup that doesn't parse, such as an unclosed one or
+  `O(entrypoint:name)` outside a role, is shown as written. Only http(s)
+  URLs become links. Before core had a parser, alai had its own regex
+  one, which the core one matches but for those cases. With colour on,
   code and values (`C()`, `V()`, `E()`) are cyan, options and return
   values (`O()`, `RV()`) and `B()` bold, as docs.ansible.com shows
   options, `I()` italic, and plugin names (`M()`, `P()`) blue, as

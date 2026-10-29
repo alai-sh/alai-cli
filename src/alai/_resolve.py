@@ -143,7 +143,7 @@ def resolve(
         # A version left out of an index file may be why there's none, so say so, as a warning would have.
         hints = "".join(f"\nhint: {note}" for note in table.file_notes(why=True))
         message = f"no solution found when resolving collections:\n{explanation}"
-        raise ResolutionError(message + (f"\n{hints}" if hints else "")) from None
+        raise ResolutionError(message + (f"\n{hints}" if hints else "")) from e
     chosen = table.chosen(picked)
 
     collections: list[LockedCollection] = []
@@ -468,12 +468,13 @@ class _Table:
         own metadata. A locked version passed over without any of these reasons gets none.
         """
         on = self.requirements_on(chosen, roots)
+        by_name = {c.name: c for c in locked.collections} if locked is not None else {}
         out: dict[str, str] = {}
         for name, candidate in sorted(chosen.items()):
             if self._manifest.root is not None and name == self._manifest.root.name:
                 continue
             reqs = on.get(name, [])
-            was = locked.get(name) if locked is not None else None
+            was = by_name.get(name)
             if was is None:
                 parents = ", ".join(sorted({r.parent for r in reqs}))
                 out[name] = f"{name} is needed by {parents}"

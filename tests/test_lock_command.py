@@ -6,9 +6,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from alai_core.toml import loads
 from conftest import COLLECTIONS
-from helpers import lines, write_project
+from helpers import lines, lock_table, write_project
 from index_data import make_index, v
 
 from alai._cli import main
@@ -303,7 +302,7 @@ class TestCheck:
 
 def versions(project: Path) -> dict[str, str]:
     """What alai.lock locks, by name."""
-    table = loads((project / "alai.lock").read_text())
+    table = lock_table(project)
     return {c["name"]: c["version"] for c in table["collection"]}
 
 
@@ -392,9 +391,10 @@ class TestErrors:
         assert lock() == EXIT_ERROR
 
         assert (
-            capsys.readouterr().err == "error: no solution found when resolving collections:\n"
-            "  Because only a.a==1.0.0 and a.a==2.0.0 are available and the project depends on a.a>=3.0.0, we can "
-            "conclude that the project's requirements are unsatisfiable.\n"
+            capsys.readouterr().err
+            == "error: no solution found when resolving collections:\n"
+            + "  Because only a.a==1.0.0 and a.a==2.0.0 are available and the project depends on a.a>=3.0.0, we can "
+            + "conclude that the project's requirements are unsatisfiable.\n"
         )
         assert not (project / "alai.lock").exists()
 

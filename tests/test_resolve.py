@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import collections.abc as _c
+import typing as _t
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,12 @@ from alai._index import IndexClient
 from alai._lock import IndexSource, Lock, LockedCollection
 from alai._manifest import Manifest, parse_manifest
 from alai._resolve import ResolutionError, resolve
+
+
+def index_url(collection: LockedCollection) -> str:
+    """The URL of the index ``collection`` was locked from."""
+    assert isinstance(collection.source, IndexSource)
+    return collection.source.url
 
 
 def manifest(toml: str) -> Manifest:
@@ -47,7 +54,7 @@ class Indexes:
         *,
         hashed: bool = True,
         listing: bool = True,
-        **kwargs: dict[str, str],
+        **kwargs: _t.Any,
     ) -> Indexes:
         url = make_index(self.tmp_path / name, collections, hashed=hashed, listing=listing, **kwargs)
         self.urls[name] = url
@@ -153,10 +160,10 @@ class TestFailures:
 
         assert str(e.value) == (
             "no solution found when resolving collections:\n"
-            "  Because b.b==1.0.0 depends on a.a<2.0.0 and the project depends on a.a>=2.0.0, we can conclude that "
-            "b.b==1.0.0 cannot be used.\n"
-            "  And because the project depends on b.b, we can conclude that the project's requirements are "
-            "unsatisfiable."
+            + "  Because b.b==1.0.0 depends on a.a<2.0.0 and the project depends on a.a>=2.0.0, we can conclude that "
+            + "b.b==1.0.0 cannot be used.\n"
+            + "  And because the project depends on b.b, we can conclude that the project's requirements are "
+            + "unsatisfiable."
         )
 
     def test_not_in_any_index(self, indexes: Indexes) -> None:
@@ -197,10 +204,10 @@ class TestFailures:
 
         assert str(e.value) == (
             "no solution found when resolving collections:\n"
-            "  Because a.a==1.0.0 is yanked and a.a==2.0.0 needs a newer ansible-core than the project's >=2.17, we "
-            "can conclude that a.a cannot be used.\n"
-            "  And because the project depends on a.a, we can conclude that the project's requirements are "
-            "unsatisfiable."
+            + "  Because a.a==1.0.0 is yanked and a.a==2.0.0 needs a newer ansible-core than the project's >=2.17, we "
+            + "can conclude that a.a cannot be used.\n"
+            + "  And because the project depends on a.a, we can conclude that the project's requirements are "
+            + "unsatisfiable."
         )
 
     def test_transitive_cause_named(self, indexes: Indexes) -> None:
@@ -220,10 +227,10 @@ class TestFailures:
 
         assert str(e.value) == (
             "no solution found when resolving collections:\n"
-            "  Because b.b==2.0.0 depends on c.c>=2.0.0 and a.a==1.0.0 depends on b.b>=2.0.0, we can conclude that "
-            "a.a==1.0.0 depends on c.c>=2.0.0.\n"
-            "  And because the project depends on a.a and the project depends on c.c<2.0.0, we can conclude that the "
-            "project's requirements are unsatisfiable."
+            + "  Because b.b==2.0.0 depends on c.c>=2.0.0 and a.a==1.0.0 depends on b.b>=2.0.0, we can conclude that "
+            + "a.a==1.0.0 depends on c.c>=2.0.0.\n"
+            + "  And because the project depends on a.a and the project depends on c.c<2.0.0, we can conclude that the "
+            + "project's requirements are unsatisfiable."
         )
 
     def test_group_named(self, indexes: Indexes) -> None:
@@ -235,8 +242,8 @@ class TestFailures:
 
         assert str(e.value).startswith(
             "no solution found when resolving collections:\n"
-            "  Because t.t==1.0.0 depends on a.a<2.0.0 and group 'test' depends on t.t, we can conclude that group 'test' "
-            "depends on a.a<2.0.0.\n"
+            + "  Because t.t==1.0.0 depends on a.a<2.0.0 and group 'test' depends on t.t, we can conclude that group 'test' "
+            + "depends on a.a<2.0.0.\n"
         )
         assert str(e.value).endswith(
             "the project has group 'test', we can conclude that the project's requirements are unsatisfiable."
@@ -251,8 +258,8 @@ class TestFailures:
 
         assert str(e.value) == (
             "no solution found when resolving collections:\n"
-            "  Because only a.a<=11.0.0 is available and the project depends on a.a>=20.0.0, we can conclude that "
-            "the project's requirements are unsatisfiable."
+            + "  Because only a.a<=11.0.0 is available and the project depends on a.a>=20.0.0, we can conclude that "
+            + "the project's requirements are unsatisfiable."
         )
 
     def test_available_cut_to_what_exists(self, indexes: Indexes) -> None:
@@ -264,8 +271,8 @@ class TestFailures:
 
         assert str(e.value) == (
             "no solution found when resolving collections:\n"
-            "  Because only the following versions of a.a are available: a.a<=4.0.0, a.a>=9.0.0 and the project depends "
-            "on a.a>=5.0.0,<9.0.0, we can conclude that the project's requirements are unsatisfiable."
+            + "  Because only the following versions of a.a are available: a.a<=4.0.0, a.a>=9.0.0 and the project depends "
+            + "on a.a>=5.0.0,<9.0.0, we can conclude that the project's requirements are unsatisfiable."
         )
 
     def test_pin_to_a_version_that_does_not_exist(self, indexes: Indexes) -> None:
@@ -276,8 +283,8 @@ class TestFailures:
 
         assert str(e.value) == (
             "no solution found when resolving collections:\n"
-            "  Because there is no version of a.a==1.3.0 and the project depends on a.a==1.3.0, we can conclude that "
-            "the project's requirements are unsatisfiable."
+            + "  Because there is no version of a.a==1.3.0 and the project depends on a.a==1.3.0, we can conclude that "
+            + "the project's requirements are unsatisfiable."
         )
 
     def test_not_equal_shown_as_written(self, indexes: Indexes) -> None:
@@ -288,7 +295,7 @@ class TestFailures:
 
         assert str(e.value).endswith(
             "  And because the project depends on a.a!=1.1.0, we can conclude that the project's requirements are "
-            "unsatisfiable."
+            + "unsatisfiable."
         )
 
     def test_versions_left_out_for_one_reason_are_one_sentence(self, indexes: Indexes) -> None:
@@ -308,10 +315,10 @@ class TestFailures:
 
         assert str(e.value) == (
             "no solution found when resolving collections:\n"
-            "  Because every version of b.b>=5.0.0 needs a newer ansible-core than the project's >=2.17 and a.a==1.0.0 "
-            "depends on b.b>=5.0.0, we can conclude that a.a==1.0.0 cannot be used.\n"
-            "  And because the project depends on a.a, we can conclude that the project's requirements are "
-            "unsatisfiable."
+            + "  Because every version of b.b>=5.0.0 needs a newer ansible-core than the project's >=2.17 and a.a==1.0.0 "
+            + "depends on b.b>=5.0.0, we can conclude that a.a==1.0.0 cannot be used.\n"
+            + "  And because the project depends on a.a, we can conclude that the project's requirements are "
+            + "unsatisfiable."
         )
 
     def test_incompatible_pair(self, indexes: Indexes) -> None:
@@ -330,8 +337,8 @@ class TestFailures:
 
         assert str(e.value).startswith(
             "no solution found when resolving collections:\n"
-            "  Because a.a==1.0.0 depends on c.c>=2.0.0 and b.b depends on c.c<2.0.0, we can conclude that a.a==1.0.0 "
-            "and b.b are incompatible.\n"
+            + "  Because a.a==1.0.0 depends on c.c>=2.0.0 and b.b depends on c.c<2.0.0, we can conclude that a.a==1.0.0 "
+            + "and b.b are incompatible.\n"
         )
 
 
@@ -598,7 +605,7 @@ class TestIndexes:
 
         result = resolve(manifest(toml), indexes.clients)
 
-        assert {c.name: (c.version.text, c.source.url) for c in result.collections} == {
+        assert {c.name: (c.version.text, index_url(c)) for c in result.collections} == {
             "a.a": ("1.0.0", indexes.urls["second"]),
             "x.x": ("1.0.0", indexes.urls["first"]),
         }
@@ -611,7 +618,7 @@ class TestIndexes:
 
         result = resolve(manifest(PROJECT), indexes.clients)
 
-        assert {c.name: c.source.url for c in result.collections}["b.b"] == indexes.urls["first"]
+        assert {c.name: index_url(c) for c in result.collections}["b.b"] == indexes.urls["first"]
         assert chosen(result)["b.b"] == "9.0.0"
 
     def test_source_pins_a_root(self, indexes: Indexes) -> None:
@@ -628,7 +635,7 @@ class TestIndexes:
 
         result = resolve(manifest(toml), indexes.clients)
 
-        assert {c.name: (c.version.text, c.source.url) for c in result.collections}["b.b"] == (
+        assert {c.name: (c.version.text, index_url(c)) for c in result.collections}["b.b"] == (
             "2.0.0",
             indexes.urls["second"],
         )
@@ -651,7 +658,7 @@ class TestIndexes:
 
         result = resolve(manifest(toml), indexes.clients)
 
-        assert {c.name: (c.version.text, c.source.url) for c in result.collections}["b.b"] == (
+        assert {c.name: (c.version.text, index_url(c)) for c in result.collections}["b.b"] == (
             "1.0.0",
             indexes.urls["first"],
         )
@@ -673,7 +680,7 @@ class TestIndexes:
 
         result = resolve(manifest('[project]\ncollections = ["corp.app"]\n'), indexes.clients)
 
-        assert {c.name: (c.version.text, c.source.url) for c in result.collections} == {
+        assert {c.name: (c.version.text, index_url(c)) for c in result.collections} == {
             "corp.app": ("1.0.0", indexes.urls["private"]),
             "a.a": ("1.0.0", indexes.urls["public"]),
         }
@@ -718,7 +725,7 @@ class TestIndexes:
 
         result = resolve(manifest('[project]\ncollections = ["corp.app"]\n'), indexes.clients)
 
-        assert {c.name: (c.version.text, c.source.url) for c in result.collections} == {
+        assert {c.name: (c.version.text, index_url(c)) for c in result.collections} == {
             "corp.app": ("1.0.0", indexes.urls["public"]),
             "a.a": ("1.0.0", indexes.urls["private"]),
         }

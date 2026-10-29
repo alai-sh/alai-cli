@@ -44,6 +44,17 @@ Next (2026-10-22):
    collection whose metadata lives in `alai.toml` is how they'll work in a
    collection project. The open questions are in
    [collection-development.md](collection-development.md#open-questions).
+2. **Third-party licence notices in the wheels**, before the first release
+   of alai or alai-core (raised 2026-10-29). The Rust is linked into each
+   wheel, and nearly every crate's licence (MIT, BSD, ISC, Apache-2.0,
+   Unicode) asks for its notice to go with binary copies, but a wheel holds
+   only alai's own `LICENSE`. Generate a notices file from each repository's
+   `Cargo.lock`, `cargo-about` being the usual tool (a dev tool to approve
+   then), ship it in the wheel's `licenses/`, and check in CI that it's
+   current. Every licence was checked on 2026-10-29 as compatible with MIT;
+   the MPL-2.0 crates (`pubgrub`, `version-ranges`, and `priority-queue`,
+   taken under MPL) also need their source to stay available, which
+   crates.io gives, and any patch to their files is MPL too.
 
 Done on 2026-10-21: `alai run` and `alai env` ([run.md](run.md)), and
 collection projects

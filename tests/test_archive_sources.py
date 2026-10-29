@@ -12,9 +12,8 @@ import shutil
 from pathlib import Path
 
 import pytest
-from alai_core.toml import loads
 from artifact_data import Link, build_artifact
-from helpers import install_record, installed_at, lines, write_sources
+from helpers import install_record, installed_at, lines, lock_table, write_sources
 from index_server import IndexServer, serve
 
 from alai._cli import main
@@ -35,9 +34,14 @@ def tarball(
     files: dict[str, bytes | Link] = {"README.md": readme}
     if requires_ansible is not None:
         files["meta/runtime.yml"] = f"requires_ansible: '{requires_ansible}'\n".encode()
-    info = {"namespace": namespace, "name": short, "version": version, "dependencies": dependencies or {}}
+    info: dict[str, object] = {
+        "namespace": namespace,
+        "name": short,
+        "version": version,
+        "dependencies": dependencies or {},
+    }
     path.parent.mkdir(parents=True, exist_ok=True)
-    return build_artifact(path, name, version, files, manifest={"collection_info": info})
+    return build_artifact(path, name, version, files, collection_info=info)
 
 
 @pytest.fixture
@@ -59,7 +63,7 @@ class TestPath:
 
         assert main(["lock", "-q"]) == 0
 
-        data = loads((project / "alai.lock").read_text())
+        data = lock_table(project)
         assert data["sources"] == {"ns.src": {"path": "../dist/ns-src-1.0.0.tar.gz"}}
         entries = {c["name"]: c for c in data["collection"]}
         assert sorted(entries) == ["a.a", "b.b", "ns.src"]
@@ -176,7 +180,7 @@ class TestUrl:
         assert main(["sync"]) == 0
 
         assert lines(capsys.readouterr().err)[-2:] == [" + c.c==1.0.0", f" + ns.src==1.0.0 (from {url})"]
-        data = loads((project / "alai.lock").read_text())
+        data = lock_table(project)
         entry = next(c for c in data["collection"] if c["name"] == "ns.src")
         assert entry["source"] == {"url": url} and entry["sha256"] == cksum and entry["size"] == size
         assert entry["collections"] == ["c.c"]

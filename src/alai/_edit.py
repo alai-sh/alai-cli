@@ -15,7 +15,7 @@ import time
 
 from alai_core.toml import Document, TomlEditError
 
-from ._common import NAME_RE, ConfigError, home_path, read_toml_document
+from ._common import ConfigError, check_name_of, home_path, read_toml_document
 from ._config import Settings, no_project, raw_manifest
 from ._lock import Lock, lock_path, read_lock, write_lock
 from ._manifest import (
@@ -157,7 +157,7 @@ def remove(
             try:
                 name = collection_name(given)
             except ValueError as e:
-                raise ConfigError(_by_source(settings, doc, given) or str(e)) from None
+                raise ConfigError(_by_source(settings, doc, given) or str(e)) from e
             found = [_name_of(v) for v in doc.values(path)]
             if name not in found:
                 raise ConfigError(_not_there(doc, name, group))
@@ -188,7 +188,7 @@ def _editing(settings: Settings, group: str | None, verb: str) -> _c.Generator[N
         where = "project.collections" if group is None else f"project.groups.{group}.collections"
         raise ConfigError(
             f"can't edit {settings.project.config_file} for you ({e}); {verb} the collections in {where} by hand"
-        ) from None
+        ) from e
 
 
 def _lock_and_sync(
@@ -303,17 +303,13 @@ def _write(config: str, text: str) -> None:
     except OSError as e:
         if os.path.exists(temp):
             os.remove(temp)
-        raise ConfigError(f"can't write {config}: {e.strerror or e}") from None
+        raise ConfigError(f"can't write {config}: {e.strerror or e}") from e
 
 
 def _array_path(group: str | None) -> tuple[str, ...]:
     if group is None:
         return ("project", "collections")
-    if not NAME_RE.fullmatch(group):
-        raise ConfigError(
-            f"--group: invalid group name '{group}', use lowercase letters, digits, '-' and '_', starting with a "
-            + "letter or digit"
-        )
+    check_name_of("group", group, "--group")
     return ("project", "groups", group, "collections")
 
 

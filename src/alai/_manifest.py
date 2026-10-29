@@ -10,18 +10,17 @@ uses the manifest, so the version parsing it imports only costs those commands.
 
 from __future__ import annotations
 
-import keyword
 import os
 import re
 import typing as _t
 
+from alai_core.collection import check_name
 from alai_core.pep440 import SpecifierSet
 from alai_core.semver import Version, VersionReq
 
-from ._common import NAME_RE, ConfigError, Record, file_url_to_path, read_toml
-from ._config import Project, RawManifest, raw_manifest
+from ._common import NAME_RE, ConfigError, Record, check_name_of, file_url_to_path
+from ._config import RawManifest
 
-_NAME_PART_RE = re.compile(r"[a-z_][a-z0-9_]*")
 # The name, up to the first character that can only start a version requirement.
 _REQUIREMENT_RE = re.compile(r"\s*(?P<name>[^\s<>=!,*^~]*)\s*(?P<req>.*)", re.DOTALL)
 
@@ -50,7 +49,7 @@ class Requirement(Record):
         try:
             version_req = VersionReq(req) if req else VersionReq("*")
         except ValueError as e:
-            raise ValueError(f"invalid requirement '{text}': {e}") from None
+            raise ValueError(f"invalid requirement '{text}': {e}") from e
         return cls(name, version_req, text)
 
     def __str__(self) -> str:
@@ -239,18 +238,11 @@ class Manifest(Record):
             frozenset((name, requirements(items)) for name, items in self.groups.items()),
             frozenset((name, req.clauses) for name, req in self.overrides.items()),
             frozenset(self.ignore_requires_ansible),
-            frozenset((name, type(source), *_source_key(source)) for name, source in self.sources.items()),
+            frozenset(
+                (name, type(source), *(getattr(source, n) for n in source.__slots__))
+                for name, source in self.sources.items()
+            ),
         )
-
-
-def _source_key(source: Source) -> tuple[object, ...]:
-    if isinstance(source, PathSource):
-        return (source.path, source.editable, source.version)
-    if isinstance(source, UrlSource):
-        return (source.url,)
-    if isinstance(source, GitSource):
-        return (source.url, source.rev, source.subdirectory, source.version)
-    return (source.index,)
 
 
 def is_git(text: str) -> bool:
@@ -284,7 +276,7 @@ def parse_git(text: str) -> GitSource:
         try:
             version = Version(keys["version"])
         except ValueError as e:
-            raise ConfigError(f"{text}: version: {e}") from None
+            raise ConfigError(f"{text}: version: {e}") from e
     _git_url(url, text, prefix="git+")
     parts = urllib.parse.urlsplit(url)
     rev = None
@@ -382,7 +374,7 @@ def file_url_path(url: str) -> str:
     try:
         return file_url_to_path(url)
     except ValueError as e:
-        raise ConfigError(f"{url}: {e}") from None
+        raise ConfigError(f"{url}: {e}") from e
 
 
 def is_path(text: str) -> bool:
@@ -403,30 +395,10 @@ def is_source(text: str) -> bool:
 def collection_name(text: str) -> str:
     """Check ``text`` is a valid ``namespace.name``, raising ValueError if not.
 
-    Each part is a lowercase Python identifier that isn't a keyword: ansible-core's ``is_valid_collection_name``, plus
-    the index spec's rule that indexes only hold lowercase names.
+    Each part is a lowercase Python identifier that isn't a keyword, as alai-core's ``check_name`` says.
     """
-    parts = text.split(".")
-    if len(parts) != 2:
-        raise ValueError(f"invalid collection name '{text}', expected namespace.name")
-    for part in parts:
-        if not _NAME_PART_RE.fullmatch(part) or keyword.iskeyword(part):
-            hint = ", collection names are lowercase" if part.lower() != part else ""
-            raise ValueError(
-                f"invalid collection name '{text}': '{part}' must be a Python identifier that isn't a keyword{hint}"
-            )
+    check_name(text)
     return text
-
-
-def load_manifest(project: Project) -> Manifest | None:
-    """Read the manifest from the project's ``alai.toml``, or None if it has none.
-
-    The manifest is what the project needs rather than how alai runs, so ``--no-config`` and ``--config-file``
-    don't change where it's read from.
-    """
-    if project.config_file is None:
-        return None
-    return parse_manifest(raw_manifest(read_toml(project.config_file), project.config_file))
 
 
 def parse_manifest(raw: RawManifest) -> Manifest:
@@ -440,15 +412,11 @@ def parse_manifest(raw: RawManifest) -> Manifest:
         try:
             requires_ansible = SpecifierSet(raw.requires_ansible)
         except ValueError as e:
-            raise ConfigError(f"{path}: project.requires_ansible: {e}, expected PEP 440 such as '>=2.17'") from None
+            raise ConfigError(f"{path}: project.requires_ansible: {e}, expected PEP 440 such as '>=2.17'") from e
 
     groups: dict[str, tuple[Requirement, ...]] = {}
     for name, items in raw.groups.items():
-        if not NAME_RE.fullmatch(name):
-            raise ConfigError(
-                f"{path}: invalid group name '{name}', use lowercase letters, digits, '-' and '_', "
-                + "starting with a letter or digit"
-            )
+        check_name_of("group", name, path)
         groups[name] = _requirements(items, path, f"project.groups.{name}.collections")
 
     overrides: dict[str, VersionReq] = {}
@@ -457,7 +425,7 @@ def parse_manifest(raw: RawManifest) -> Manifest:
         try:
             overrides[collection_name(key)] = VersionReq(value)
         except ValueError as e:
-            raise ConfigError(f"{path}: {where}: {e}") from None
+            raise ConfigError(f"{path}: {where}: {e}") from e
 
     sources: dict[str, Source] = {}
     for key, table in raw.sources.items():
@@ -465,7 +433,7 @@ def parse_manifest(raw: RawManifest) -> Manifest:
         try:
             name = collection_name(key)
         except ValueError as e:
-            raise ConfigError(f"{path}: {where}: {e}") from None
+            raise ConfigError(f"{path}: {where}: {e}") from e
         sources[name] = _source(table, f"{path}: {where}")
 
     return Manifest(
@@ -543,7 +511,7 @@ def _version(table: dict[str, object], where: str) -> Version | None:
     try:
         return Version(text)
     except ValueError as e:
-        raise ConfigError(f"{where}: 'version': {e}") from None
+        raise ConfigError(f"{where}: 'version': {e}") from e
 
 
 def _kinds(table: dict[str, object]) -> str:
@@ -557,7 +525,7 @@ def _requirements(items: list[str], path: str, key: str) -> tuple[Requirement, .
         try:
             requirement = Requirement.parse(item)
         except ValueError as e:
-            raise ConfigError(f"{path}: {key}[{i}]: {e}") from None
+            raise ConfigError(f"{path}: {key}[{i}]: {e}") from e
         if (first := seen.setdefault(requirement.name, i)) != i:
             raise ConfigError(
                 f"{path}: {key}[{i}]: '{requirement.name}' is already listed at {key}[{first}], "
@@ -573,5 +541,5 @@ def _names(names: list[str], path: str, key: str) -> tuple[str, ...]:
         for i, name in enumerate(names):  # noqa: B007  # i is read in the except clause
             _ = collection_name(name)
     except ValueError as e:
-        raise ConfigError(f"{path}: {key}[{i}]: {e}") from None
+        raise ConfigError(f"{path}: {key}[{i}]: {e}") from e
     return tuple(dict.fromkeys(names))

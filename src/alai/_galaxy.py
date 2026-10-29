@@ -4,18 +4,19 @@
 """A collection directory's own metadata, read as ansible-galaxy and ansible-core read it: ``galaxy.yml`` for a source,
 such as a collection project or a path source, or ``MANIFEST.json`` for a built or installed collection, with
 ``meta/runtime.yml`` for either. The design is in ``design/collection-development.md`` and ``design/install.md``.
-
-PyYAML is imported here only, so it only costs the commands that read one.
 """
 
 from __future__ import annotations
 
+import collections.abc as _c
 import os
+import typing as _t
 
-from alai_core.pep440 import SpecifierSet
-from alai_core.semver import Version, VersionReq
+from alai_core.collection import Manifest, Metadata, MetadataError, Runtime
+from alai_core.semver import Version
+from alai_core.yaml import YamlError, YamlWarning
 
-from ._common import ConfigError, as_table, json_object
+from ._common import ConfigError
 from ._manifest import SourceCollection, collection_name
 from ._output import warn
 
@@ -61,8 +62,21 @@ def read_source_collection(
     """Read the collection whose ``galaxy.yml`` is ``galaxy_file``, raising ConfigError for anything ansible-galaxy
     would refuse to build or install, its version replaced by ``version``, and its directory called ``shown`` in
     messages, as ``read_collection_dir`` says."""
-    info = yaml_mapping(galaxy_file, required=True, shown=_shown_file(galaxy_file, shown))
+    info = galaxy_metadata(galaxy_file, shown=shown)
     return _collection(galaxy_file, info, version, source=source, shown=shown)
+
+
+def galaxy_metadata(galaxy_file: str, *, shown: str | None = None) -> Metadata:
+    """The ``galaxy.yml`` at ``galaxy_file``, its YAML warnings shown, unchecked but for being a mapping; its
+    directory is called ``shown`` in messages, as ``read_collection_dir`` says."""
+    file = _shown_file(galaxy_file, shown)
+    data = _t.cast(bytes, _read(galaxy_file, required=True, shown=file))
+    try:
+        return Metadata.from_galaxy_yml(data, on_warning=_warner(file))
+    except YamlError as e:
+        raise ConfigError(f"{file} isn't valid YAML: {e}") from e
+    except MetadataError as e:
+        raise ConfigError(f"{file}: {e}") from e
 
 
 def read_built_collection(manifest_file: str, *, shown: str | None = None) -> SourceCollection:
@@ -72,15 +86,12 @@ def read_built_collection(manifest_file: str, *, shown: str | None = None) -> So
     file = _shown_file(manifest_file, shown)
     try:
         with open(manifest_file, "rb") as f:
-            data = json_object(f.read())
+            manifest = Manifest.parse(f.read(), name=file)
     except OSError as e:
-        raise ConfigError(f"can't read {file}: {e.strerror or e}") from None
+        raise ConfigError(f"can't read {file}: {e.strerror or e}") from e
     except ValueError as e:
-        raise ConfigError(f"{file}: {e}") from None
-    info = as_table(data.get("collection_info"))
-    if info is None:
-        raise ConfigError(f"{file}: expected a 'collection_info' object")
-    return _collection(manifest_file, info, shown=shown)
+        raise ConfigError(str(e)) from e
+    return _collection(manifest_file, manifest.collection_info, shown=shown)
 
 
 def _shown_file(metadata_file: str, shown: str | None) -> str:
@@ -90,28 +101,19 @@ def _shown_file(metadata_file: str, shown: str | None) -> str:
 
 def _collection(
     metadata_file: str,
-    info: dict[str, object],
+    info: Metadata,
     override: Version | None = None,
     *,
     source: str = "",
     shown: str | None = None,
 ) -> SourceCollection:
-    """The collection ``info``, the mapping read from ``metadata_file``, describes, with ``requires_ansible`` from the
+    """The collection ``metadata_file`` describes, as ``info`` read it, with ``requires_ansible`` from the
     ``meta/runtime.yml`` beside it, which neither file carries. ``override`` replaces its version, with a warning when
     the file has a valid one of its own, as it then probably isn't needed any more; ``source`` names where the
-    collection was given, a ``[project.sources]`` entry or the command line, if anywhere, so an invalid version can say
-    where to give one. Messages name the files in ``shown``, when given, in place of their directory."""
+    collection was given, a ``[project.sources]`` entry or the command line, if anywhere, so an invalid version can
+    say where to give one. Messages name the files in ``shown``, when given, in place of their directory."""
     path = os.path.dirname(metadata_file)
     file = _shown_file(metadata_file, shown)
-    namespace, short = info.get("namespace"), info.get("name")
-    if not isinstance(namespace, str) or not isinstance(short, str):
-        raise ConfigError(f"{file}: 'namespace' and 'name' are required strings")
-    try:
-        name = collection_name(f"{namespace}.{short}")
-    except ValueError as e:
-        raise ConfigError(f"{file}: {e}") from None
-
-    text = info.get("version")
     if source.startswith("[project.sources]"):
         hint = f"; if it's a placeholder, give the version in {source}, such as version = '1.0.0'"
     elif source.startswith("git+"):
@@ -126,55 +128,43 @@ def _collection(
         )
     else:
         hint = ""
+    errors: list[tuple[str | None, str]] = []
+    fqcn = version = requirements = None
     try:
-        if not isinstance(text, str):
-            raise ConfigError(f"{file}: 'version' is required and must be a string, such as '1.0.0'{hint}")
+        fqcn = info.get_fqcn()
+    except MetadataError as e:
+        errors.extend(e.errors)
+    if override is None:
         try:
-            version = Version(text)
-        except ValueError as e:
-            raise ConfigError(f"{file}: 'version': {e}{hint}") from None
-    except ConfigError:
-        if override is None:
-            raise
-        version = override
+            version = info.get_version()
+        except MetadataError as e:
+            errors.extend(e.errors)
     else:
-        if override is not None:
-            if version == override:
-                warn(f"{file} has version {version} too, so {source}'s 'version' isn't needed")
-            else:
-                warn(f"{file} has version {version}, but {source} gives {override}, which is used")
-            version = override
-
-    raw: object = info.get("dependencies") or {}
-    if not isinstance(raw, dict):
-        raise ConfigError(f"{file}: 'dependencies' must be a mapping of collection names to versions")
-    dependencies: list[str] = []
-    entries: dict[object, object] = raw  # pyright: ignore[reportUnknownVariableType]
-    for key, value in entries.items():
-        at = f"{file}: dependencies.{key}"
-        if not isinstance(key, str) or not isinstance(value, str):
-            raise ConfigError(f"{at}: expected a collection name and a version requirement string, such as '*'")
+        # The version given is used whatever the file says, so it only has to be right to warn about it.
+        version = override
         try:
-            dependency = collection_name(key)
-            # The syntax ansible-galaxy installs dependencies with, as it does an index's.
-            req = VersionReq.from_galaxy(value)
-        except ValueError as e:
-            raise ConfigError(f"{at}: {e}") from None
-        if dependency == name:
-            raise ConfigError(f"{at}: the collection can't depend on itself")
-        clauses = ",".join(f"{op}{v.text}" for op, v in req.clauses)
-        dependencies.append(f"{dependency}{clauses}")
+            own = info.get_version()
+        except MetadataError:
+            pass
+        else:
+            if own == override:
+                warn(f"{file} has version {own} too, so {source}'s 'version' isn't needed")
+            else:
+                warn(f"{file} has version {own}, but {source} gives {override}, which is used")
+    try:
+        requirements = info.get_dependencies()
+    except MetadataError as e:
+        errors.extend(e.errors)
+    if fqcn is None or version is None or requirements is None:
+        raise ConfigError("\n".join(_problem(file, f, m, hint) for f, m in errors))
+    name = collection_name(fqcn)
+    dependencies = [
+        f"{dependency}{','.join(f'{op}{v.text}' for op, v in req.clauses)}" for dependency, req in requirements.items()
+    ]
 
     runtime_file = os.path.join(path, "meta", "runtime.yml")
     runtime_shown = os.path.join(path if shown is None else shown, "meta", "runtime.yml")
-    requires_ansible = yaml_mapping(runtime_file, required=False, shown=runtime_shown).get("requires_ansible")
-    if requires_ansible is not None:
-        if not isinstance(requires_ansible, str):
-            raise ConfigError(f"{runtime_shown}: 'requires_ansible' must be a string")
-        try:
-            _ = SpecifierSet(requires_ansible)
-        except ValueError as e:
-            raise ConfigError(f"{runtime_shown}: requires_ansible: {e}, expected PEP 440 such as '>=2.17'") from None
+    requires_ansible = _runtime(runtime_file, runtime_shown)
 
     return SourceCollection(
         name,
@@ -186,29 +176,43 @@ def _collection(
     )
 
 
-def yaml_mapping(path: str, *, required: bool, shown: str | None = None) -> dict[str, object]:
-    """The YAML file at ``path`` as a mapping, empty if it's empty or, unless ``required``, doesn't exist; messages
-    call it ``shown`` when given."""
-    from alai_core.yaml import YamlError, loads
+def _problem(file: str, field: str | None, message: str, hint: str) -> str:
+    """One of core's metadata problems as alai says it: the file, then the field, unless the message names it."""
+    named = message if field is None or message.startswith("'") else f"{field}: {message}"
+    return f"{file}: {named}{hint if field == 'version' else ''}"
 
-    where = path if shown is None else shown
-    try:
-        with open(path, encoding="utf-8") as f:
-            text = f.read()
-    except FileNotFoundError:
-        if required:
-            raise ConfigError(f"{where} doesn't exist") from None
-        return {}
-    except OSError as e:
-        raise ConfigError(f"can't read {where}: {e.strerror or e}") from None
-    except UnicodeDecodeError as e:
-        raise ConfigError(f"{where} isn't UTF-8: {e}") from None
-    try:
-        data = loads(text, on_warning=lambda w: warn(f"{where}: {w}"))
-    except YamlError as e:
-        raise ConfigError(f"{where} isn't valid YAML: {e}") from None
+
+def _warner(file: str) -> _c.Callable[[YamlWarning], None]:
+    return lambda w: warn(f"{file}: {w}")
+
+
+def _runtime(path: str, shown: str) -> str | None:
+    """``requires_ansible`` from the ``meta/runtime.yml`` at ``path``, if it has one, checked as ansible-galaxy does."""
+    data = _read(path, required=False, shown=shown)
     if data is None:
-        return {}
-    if not isinstance(data, dict):
-        raise ConfigError(f"{where}: expected a mapping at the top level")
-    return data  # pyright: ignore[reportUnknownVariableType]
+        return None
+    try:
+        runtime = Runtime.parse(data, on_warning=_warner(shown))
+    except YamlError as e:
+        raise ConfigError(f"{shown} isn't valid YAML: {e}") from e
+    try:
+        requires_ansible = runtime.get_requires_ansible()
+    except MetadataError as e:
+        # ansible-core only warns about one it can't read, but alai can't choose versions by it.
+        hint = "; ansible-core only warns about it, but alai can't choose versions by it"
+        lines = (_problem(shown, f, m, "") + (hint if f == "requires_ansible" else "") for f, m in e.errors)
+        raise ConfigError("\n".join(lines)) from e
+    return None if requires_ansible is None else requires_ansible.text
+
+
+def _read(path: str, *, required: bool, shown: str) -> bytes | None:
+    """The file at ``path``, or None if, unless ``required``, it doesn't exist."""
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except FileNotFoundError as e:
+        if required:
+            raise ConfigError(f"{shown} doesn't exist") from e
+        return None
+    except OSError as e:
+        raise ConfigError(f"can't read {shown}: {e.strerror or e}") from e

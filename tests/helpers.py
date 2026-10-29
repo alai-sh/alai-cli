@@ -10,7 +10,10 @@ import collections.abc as _c
 import json
 import os
 import subprocess
+import typing as _t
 from pathlib import Path
+
+from alai_core.toml import loads
 
 
 def write_project(
@@ -46,6 +49,11 @@ def write_file(path: Path, content: str = "") -> Path:
 def installed_at(cdir: Path, name: str) -> Path:
     """Where ``name`` is installed under the collections directory ``cdir``."""
     return cdir / "ansible_collections" / Path(*name.split("."))
+
+
+def lock_table(project: Path) -> dict[str, _t.Any]:
+    """``project``'s ``alai.lock``, as a test reads into it without checking each value's type."""
+    return loads((project / "alai.lock").read_text())
 
 
 def install_record(cdir: Path, name: str) -> dict[str, object] | None:

@@ -290,9 +290,10 @@ class _Renderer:
         self.compared = compared
         self.terminal = sys.stdout.isatty()
         self.width = terminal_width()
+        self.color = _output.color_enabled(stdout=True)
 
     def s(self, text: str, *codes: str) -> str:
-        return _output.styled(text, *codes, stdout=True)
+        return _output.ansi(text, *codes) if self.color else text
 
     def listing(self, rows: list[Row]) -> None:
         name_width = max(len(r.name) for r in rows)

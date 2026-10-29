@@ -365,15 +365,20 @@ def local_changed(collection: LockedCollection, manifest: Manifest) -> str | Non
 
 
 def _parsed(requirements: _c.Iterable[str]) -> frozenset[tuple[object, ...]]:
-    out: set[tuple[object, ...]] = set()
-    for text in requirements:
+    return frozenset((name, clauses) for name, (clauses, _) in _by_name(requirements).items())
+
+
+def _by_name(items: _c.Iterable[str]) -> dict[str, tuple[object, str]]:
+    """Each requirement's clauses and text, by name; one that can't be parsed is its text, for both."""
+    found: dict[str, tuple[object, str]] = {}
+    for text in items:
         try:
             r = Requirement.parse(text)
         except ValueError:
-            out.add((text,))
+            found[text] = (text, text)
             continue
-        out.add((r.name, r.req.clauses))
-    return frozenset(out)
+        found[r.name] = (r.req.clauses, text)
+    return found
 
 
 def changes(before: Lock | None, after: Lock) -> list[tuple[str, str]]:
@@ -467,20 +472,8 @@ def local_changes(lock: Lock, manifest: Manifest) -> list[tuple[str, list[str]]]
         lines: list[str] = []
         if collection.version != now.version:
             lines.append(f"{now.metadata} version: changed {collection.version} to {now.version}")
-
-        def by_name(items: _c.Iterable[str]) -> dict[str, tuple[object, str]]:
-            found: dict[str, tuple[object, str]] = {}
-            for text in items:
-                try:
-                    r = Requirement.parse(text)
-                except ValueError:
-                    found[text] = (text, text)
-                    continue
-                found[r.name] = (r.req.clauses, text)
-            return found
-
         _compare(
-            lines, f"{now.metadata} dependencies", by_name(collection.requirements or ()), by_name(now.dependencies)
+            lines, f"{now.metadata} dependencies", _by_name(collection.requirements or ()), _by_name(now.dependencies)
         )
         _compare(
             lines,
@@ -543,7 +536,7 @@ def read_lock(path: str) -> Lock | None:
     try:
         return parse_lock(read_toml(path), path)
     except Error as e:
-        raise LockError(str(e)) from None
+        raise LockError(str(e)) from e
 
 
 def parse_lock(table: _c.Mapping[str, object], path: str) -> Lock:
@@ -662,7 +655,7 @@ def write_lock(path: str, lock: Lock) -> bool:
     except OSError as e:
         if os.path.exists(temp):
             os.remove(temp)
-        raise LockError(f"can't write {path}: {e.strerror or e}") from None
+        raise LockError(f"can't write {path}: {e.strerror or e}") from e
     return True
 
 
@@ -737,7 +730,7 @@ def _parse_collection(entry: object, where: str) -> LockedCollection | LockedRoo
         _ = collection_name(name)
         version = Version(_string_field(table, "version", where))
     except ValueError as e:
-        raise LockError(f"{where}: {e}") from None
+        raise LockError(f"{where}: {e}") from e
     where = f"{where} ({name})"
 
     source_table = as_table(table.get("source"))

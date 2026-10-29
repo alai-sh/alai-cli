@@ -18,6 +18,7 @@ from ._common import (
     ConfigError,
     Record,
     as_table,
+    check_name_of,
     env_bool,
     home_path,
     inside,
@@ -347,12 +348,12 @@ class SettingDefinition(Record):
 def load_settings(
     overrides: Overrides | None = None,
     *,
-    cwd: str | None = None,
+    cwd: str | os.PathLike[str] | None = None,
     environ: _c.Mapping[str, str] | None = None,
 ) -> Settings:
     """Resolve the settings for a command run from ``cwd``."""
     overrides = overrides or Overrides()
-    cwd = cwd or os.getcwd()
+    cwd = os.fspath(cwd) if cwd else os.getcwd()
     environ = os.environ if environ is None else environ
     home = _home(environ)
     # --project and --config-file, or their environment variables, are relative to the current directory.
@@ -452,7 +453,7 @@ def _check_tree(root: str, collections_dir: str, source: str) -> None:
             )
 
 
-def find_project(start: str) -> Project:
+def find_project(start: str | os.PathLike[str]) -> Project:
     """Find the project root, the nearest directory holding an ``alai.toml``, by walking up from ``start``.
 
     A ``galaxy.yml`` beside it makes it a collection project. Nothing else marks a root (see
@@ -526,7 +527,7 @@ def _file_layer(table: _c.Mapping[str, object], path: str, level: Level, home: s
     """The settings in a config file.
 
     Only the project's own ``alai.toml`` can have ``[project]`` and the manifest's tables, which describe that one
-    project. Its manifest keys are checked here and read by ``_manifest.load_manifest``. Every other file, including a
+    project. Its manifest keys are checked here and read by ``_project.load_project``. Every other file, including a
     ``--config-file``, holds settings only.
     """
     source = _Source(level, path, os.path.dirname(path), home)
@@ -730,11 +731,7 @@ def _arg_index(name: str, url: str, value: str, source: _Source, *, default: boo
 
 
 def _index_name(name: str, where: str) -> str:
-    if not NAME_RE.fullmatch(name):
-        raise ConfigError(
-            f"{where}: invalid index name '{name}', use lowercase letters, digits, '-' and '_', "
-            + "starting with a letter or digit"
-        )
+    check_name_of("index", name, where)
     return name
 
 
@@ -799,9 +796,9 @@ def _bool_arg(value: str, source: _Source) -> bool:
 def _link_mode(value: str, source: _Source) -> LinkMode:
     try:
         return LinkMode(value)
-    except ValueError:
+    except ValueError as e:
         choices = ", ".join(m.value for m in LinkMode)
-        raise ConfigError(f"{source.description}: invalid link mode '{value}', expected one of {choices}") from None
+        raise ConfigError(f"{source.description}: invalid link mode '{value}', expected one of {choices}") from e
 
 
 def _collections_dir(value: str, source: _Source) -> str:

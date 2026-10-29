@@ -16,13 +16,12 @@ from pathlib import Path
 
 import pytest
 from alai_core.semver import Version
-from alai_core.toml import loads
-from helpers import Repo, install_record, installed_at, lines, write_sources
+from helpers import Repo, install_record, installed_at, lines, lock_table, write_sources
 
 from alai import _git
 from alai._cli import main
 from alai._common import EXIT_ERROR, ConfigError
-from alai._git import _hint  # pyright: ignore[reportPrivateUsage]
+from alai._git import _hint
 from alai._lock import GitCommitSource, read_lock, render_lock
 from alai._manifest import GitSource, parse_git
 
@@ -38,7 +37,7 @@ def manifest_version(project: Path, name: str = "ns.src") -> str:
 
 
 def entry(project: Path, name: str = "ns.src") -> dict[str, object]:
-    data = loads((project / "alai.lock").read_text())
+    data = lock_table(project)
     return next(c for c in data["collection"] if c["name"] == name)
 
 
@@ -53,7 +52,7 @@ class TestLock:
 
         assert main(["lock", "-q"]) == 0
 
-        data = loads((project / "alai.lock").read_text())
+        data = lock_table(project)
         assert data["sources"] == {"ns.src": {"git": repo.url, "rev": "v1.0.0"}}
         # An annotated tag is locked as the commit it points at, not the tag object.
         assert entry(project) == {
@@ -359,7 +358,7 @@ class TestSourceVersion:
 
         err = capsys.readouterr().err
         assert (
-            f"{repo.url}@{commit[:7]}/chocolatey/galaxy.yml: 'version': invalid version '{{{{ REPLACE_VERSION }}}}'"
+            f"{repo.url}@{commit[:7]}/chocolatey/galaxy.yml: version: invalid version '{{{{ REPLACE_VERSION }}}}'"
             in err
         )
         assert (
@@ -440,7 +439,7 @@ class TestSourceVersion:
     def test_not_for_a_built_directory(self, project: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         built = tmp_path / "built"
         built.mkdir()
-        info = {"namespace": "ns", "name": "src", "version": "1.0.0", "dependencies": {}}
+        info: dict[str, object] = {"namespace": "ns", "name": "src", "version": "1.0.0", "dependencies": {}}
         _ = (built / "MANIFEST.json").write_text(json.dumps({"collection_info": info}))
         write_sources(project, '"ns.src" = { path = "../built", version = "2.0.0" }')
 
@@ -451,7 +450,7 @@ class TestSourceVersion:
     def test_not_for_a_built_collection_in_git(
         self, project: Path, repo: Repo, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        info = {"namespace": "ns", "name": "src", "version": "1.0.0", "dependencies": {}}
+        info: dict[str, object] = {"namespace": "ns", "name": "src", "version": "1.0.0", "dependencies": {}}
         _ = (repo.path / "MANIFEST.json").write_text(json.dumps({"collection_info": info}))
         commit = repo.commit()
         write_sources(project, f'"ns.src" = {{ git = "{repo.url}", version = "2.0.0" }}')
@@ -662,7 +661,7 @@ class TestSharing:
         monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
         monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
         monkeypatch.delenv("GIT_SSH", raising=False)
-        sharing = _git._Sharing()  # pyright: ignore[reportPrivateUsage]
+        sharing = _git._Sharing()
         monkeypatch.setattr(_git, "_SHARING", sharing)
         yield log
         sharing.close()
@@ -707,13 +706,13 @@ class TestSharing:
         assert calls and all("ControlMaster" not in c for c in calls)
 
     def test_only_ssh_urls(self) -> None:
-        is_ssh = _git._is_ssh  # pyright: ignore[reportPrivateUsage]
+        is_ssh = _git._is_ssh
         assert not is_ssh("https://github.com/o/r")
         assert not is_ssh("file:///srv/r")
         assert is_ssh("ssh://git@github.com/o/r")
 
     def test_first_connection_alone(self) -> None:
-        sharing = _git._Sharing()  # pyright: ignore[reportPrivateUsage]
+        sharing = _git._Sharing()
         order: list[str] = []
         started = threading.Event()
 

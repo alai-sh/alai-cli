@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 from alai_core.toml import loads
-from helpers import collection_source, install_record, installed_at, lines, write_sources
+from helpers import collection_source, install_record, installed_at, lines, lock_table, write_sources
 
 from alai._cli import main
 from alai._common import EXIT_ERROR
@@ -27,7 +27,7 @@ class TestLock:
 
         assert main(["lock", "-q"]) == 0
 
-        data = loads((project / "alai.lock").read_text())
+        data = lock_table(project)
         assert data["sources"] == {"ns.src": {"path": "../src"}}
         entries = {c["name"]: c for c in data["collection"]}
         assert sorted(entries) == ["a.a", "b.b", "ns.src"]
@@ -148,7 +148,7 @@ class TestLock:
         assert message in capsys.readouterr().err
 
     def test_round_trip(self) -> None:
-        table = {
+        table: dict[str, object] = {
             "version": 1,
             "revision": 1,
             "sources": {"ns.src": {"path": "../src", "editable": True}},
@@ -424,6 +424,16 @@ class TestBuild:
 
         assert "is missing readme, authors, which ansible-galaxy needs" in capsys.readouterr().err
 
+    def test_aliases_too_large(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # Each level is 10 of the one before, so tags holds 10^6 values once expanded.
+        levels = "".join(f"x{n}: &x{n} [{', '.join([f'*x{n - 1}'] * 10)}]\n" for n in range(1, 7))
+        _ = collection_source(project.parent / "src", extra=f"x0: &x0 a\n{levels}tags: *x6\n")
+        write_sources(project, '"ns.src" = { path = "../src" }')
+
+        assert main(["sync"]) == EXIT_ERROR
+
+        assert "its aliases expand to far more than any collection's metadata has" in capsys.readouterr().err
+
     @pytest.mark.parametrize(
         ("extra", "message"),
         [
@@ -538,6 +548,63 @@ class TestBuiltDirectory:
         cache_keys = _record_keys(project)
         assert cache_keys["MANIFEST.json"] is not None and cache_keys["galaxy.yml"] is None
 
+    def relisted(self, built: Path, files: dict[str, object] | None = None) -> None:
+        """Move ``built``'s list to OTHER.json, as ``files`` if given, and name it in MANIFEST.json, as a build
+        would if ansible-galaxy allowed another name."""
+        data = (built / "FILES.json").read_bytes() if files is None else json.dumps(files).encode()
+        (built / "FILES.json").unlink()
+        _ = (built / "OTHER.json").write_bytes(data)
+        manifest = json.loads((built / "MANIFEST.json").read_text())
+        manifest["file_manifest_file"]["name"] = "OTHER.json"
+        manifest["file_manifest_file"]["chksum_sha256"] = hashlib.sha256(data).hexdigest()
+        _ = (built / "MANIFEST.json").write_text(json.dumps(manifest))
+
+    def test_another_listing_name(self, project: Path) -> None:
+        # The file MANIFEST.json names is read, and a FILES.json it doesn't name is neither the list nor copied.
+        built = self.built(project)
+        self.relisted(built)
+        decoy = {"files": [{"name": "extra.txt", "ftype": "file", "chksum_type": "sha256", "chksum_sha256": "0" * 64}]}
+        _ = (built / "FILES.json").write_text(json.dumps(decoy))
+        _ = (built / "extra.txt").write_text("not built\n")
+        write_sources(project, '"ns.src" = { path = "../built" }')
+
+        assert main(["sync", "-q"]) == 0
+
+        target = installed_at(project / "collections", "ns.src")
+        assert (target / "OTHER.json").read_bytes() == (built / "OTHER.json").read_bytes()
+        assert not (target / "FILES.json").exists()
+        assert not (target / "extra.txt").exists()
+        assert (target / "plugins" / "modules" / "hello.py").exists()
+
+    def test_files_json_as_a_collection_file(self, project: Path) -> None:
+        # With another list, FILES.json is a file like any other, copied when it's listed and checked.
+        built = self.built(project)
+        files = json.loads((built / "FILES.json").read_text())
+        data = b'{"not": "a list"}'
+        sha256 = hashlib.sha256(data).hexdigest()
+        files["files"].append({"name": "FILES.json", "ftype": "file", "chksum_type": "sha256", "chksum_sha256": sha256})
+        self.relisted(built, files)
+        _ = (built / "FILES.json").write_bytes(data)
+        write_sources(project, '"ns.src" = { path = "../built" }')
+
+        assert main(["sync", "-q"]) == 0
+
+        assert (installed_at(project / "collections", "ns.src") / "FILES.json").read_bytes() == data
+
+    @pytest.mark.parametrize("listed", ["MANIFEST.json", "OTHER.json"])
+    def test_listing_the_manifest_or_itself(
+        self, project: Path, capsys: pytest.CaptureFixture[str], listed: str
+    ) -> None:
+        built = self.built(project)
+        files = json.loads((built / "FILES.json").read_text())
+        files["files"].append({"name": listed, "ftype": "file", "chksum_type": "sha256", "chksum_sha256": "0" * 64})
+        self.relisted(built, files)
+        write_sources(project, '"ns.src" = { path = "../built" }')
+
+        assert main(["sync"]) == EXIT_ERROR
+
+        assert f"lists {listed}, which a build never does" in capsys.readouterr().err
+
     def test_locked_from_manifest(self, project: Path) -> None:
         _ = self.built(project, {"a.a": ">=2.0.0"})
         write_sources(project, '"ns.src" = { path = "../built" }')
@@ -566,7 +633,7 @@ class TestBuiltDirectory:
     @pytest.mark.parametrize(
         ("damage", "message"),
         [
-            ("edit", "plugins/modules/hello.py doesn't match its checksum in FILES.json"),
+            ("edit", "plugins/modules/hello.py doesn't match its checksum in the collection's files manifest"),
             ("files", "FILES.json doesn't match the checksum"),
             ("no-files", "has a MANIFEST.json but no FILES.json"),
             ("missing", "isn't there, though the collection lists it"),
