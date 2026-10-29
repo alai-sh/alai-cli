@@ -17,6 +17,23 @@ if TYPE_CHECKING:
 
 NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
 """Index and group names: lowercase, so each is spelled one way in files and on the command line."""
+
+
+def no_group(flag: str, name: str, known: _c.Iterable[str]) -> ConfigError:
+    """The error for ``flag`` naming a group that alai.toml, with the groups ``known``, doesn't have."""
+    have = ", ".join(f"'{g}'" for g in sorted(known))
+    return ConfigError(f"{flag}: alai.toml has no group '{name}'" + (f" (it has {have})" if have else ""))
+
+
+def check_name_of(kind: str, name: str, where: str) -> None:
+    """Refuse ``name``, as an index or group name (``kind``), unless ``NAME_RE`` matches it."""
+    if not NAME_RE.fullmatch(name):
+        raise ConfigError(
+            f"{where}: invalid {kind} name '{name}', use lowercase letters, digits, '-' and '_', starting with a "
+            + "letter or digit"
+        )
+
+
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 """A SHA-256 as the index, the lock and the cache write one: lowercase hex."""
 
@@ -88,20 +105,6 @@ def string_list(value: object) -> list[str] | None:
     return items  # pyright: ignore[reportReturnType]
 
 
-def json_object(data: bytes) -> dict[str, object]:
-    """``data`` as a JSON object; ValueError, ``not valid JSON: ...`` or ``expected a JSON object``, if it isn't."""
-    import json
-
-    try:
-        obj = json.loads(data)
-    except ValueError as e:
-        raise ValueError(f"not valid JSON: {e}") from None
-    found = as_table(obj)
-    if found is None:
-        raise ValueError("expected a JSON object")
-    return found
-
-
 def sha256_file(path: str) -> str:
     """The SHA-256 of the file at ``path``, read in chunks; OSError if it can't be read."""
     import hashlib
@@ -138,7 +141,7 @@ def read_toml(path: str) -> dict[str, object]:
     try:
         return read(path)
     except (TomlError, OSError) as e:
-        raise _toml_error(path, e) from None
+        raise _toml_error(path, e) from e
 
 
 def read_toml_document(path: str) -> Document:
@@ -148,7 +151,7 @@ def read_toml_document(path: str) -> Document:
     try:
         return Document.from_path(path)
     except (TomlError, OSError) as e:
-        raise _toml_error(path, e) from None
+        raise _toml_error(path, e) from e
 
 
 def home_path(path: str) -> str:

@@ -193,7 +193,7 @@ def place(
         _remove_galaxy_info(collections_dir, name)
         write_record(collections_dir, name, record)
     except OSError as e:
-        raise InstallError(f"can't install {name} to {target}: {_reason(e)}") from None
+        raise InstallError(f"can't install {name} to {target}: {_reason(e)}") from e
     trace(f"{name}: installed to {target} from {source}")
 
 
@@ -259,9 +259,7 @@ def link_editable(collections_dir: str, name: str, source: str) -> bool:
     if linked(collections_dir, name, source):
         return False
     try:
-        if os.path.islink(parent):
-            unlink_namespace(parent)
-        os.makedirs(parent, exist_ok=True)
+        _ = namespace_dir(collections_dir, namespace)
         temp = os.path.join(parent, f"{_TEMP}link-{short}-{secrets.token_hex(4)}")
         os.symlink(source, temp)
         if os.path.lexists(target) and not os.path.islink(target):
@@ -272,7 +270,7 @@ def link_editable(collections_dir: str, name: str, source: str) -> bool:
         _remove_galaxy_info(collections_dir, name)
         write_record(collections_dir, name, None)
     except OSError as e:
-        raise InstallError(f"can't link {name} at {target} to {source}: {_reason(e)}") from None
+        raise InstallError(f"can't link {name} at {target} to {source}: {_reason(e)}") from e
     trace(f"{name}: linked {target} to {source}")
     return True
 
@@ -286,7 +284,7 @@ def unlink_namespace(path: str) -> None:
     except FileNotFoundError:
         pass
     except OSError as e:
-        raise InstallError(f"can't remove the namespace link {path}: {_reason(e)}") from None
+        raise InstallError(f"can't remove the namespace link {path}: {_reason(e)}") from e
     trace(f"unlinked the namespace {path}")
 
 
@@ -301,7 +299,7 @@ def remove(collections_dir: str, collection: Installed) -> None:
         if not os.path.islink(parent) and not os.listdir(parent):
             os.rmdir(parent)
     except OSError as e:
-        raise InstallError(f"can't remove {collection.name} from {collection.path}: {_reason(e)}") from None
+        raise InstallError(f"can't remove {collection.name} from {collection.path}: {_reason(e)}") from e
     trace(f"{collection.name}: removed {collection.path}")
 
 
@@ -347,7 +345,7 @@ class Linker:
             if len(self._auto) == 1 or error.errno in (errno.ENOENT, errno.ENOSPC, errno.EDQUOT):
                 if self.mode is LinkMode.AUTO:
                     raise error
-                raise OSError(error.errno, f"can't {mode.value} {source}: {_reason(error)}") from None
+                raise OSError(error.errno, f"can't {mode.value} {source}: {_reason(error)}") from error
             _ = self._auto.pop(0)
             fallback = self._auto[0]
         message = f"can't {mode.value} files from the cache ({_reason(error)}); using {fallback.value} instead"

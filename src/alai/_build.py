@@ -25,9 +25,10 @@ import shutil
 import stat
 import typing as _t
 
+from alai_core.collection import Manifest
 from alai_core.semver import Version
 
-from ._common import Error, as_list, as_table, inside, json_object, sha256_file
+from ._common import Error, as_list, as_table, inside, sha256_file
 
 _FORMAT = 1
 """``MANIFEST_FORMAT``, in both files."""
@@ -35,6 +36,25 @@ _REQUIRED = ("namespace", "name", "version", "readme", "authors")
 """``galaxy.yml``'s mandatory keys, from ansible-core's ``collections_galaxy_meta.yml``."""
 _LISTS = ("authors", "license", "tags", "build_ignore")
 _DICTS = ("dependencies",)
+_KEYS = (
+    *_REQUIRED,
+    "tags",
+    "description",
+    "license",
+    "license_file",
+    "dependencies",
+    "repository",
+    "documentation",
+    "homepage",
+    "issues",
+    "build_ignore",
+    "manifest",
+)
+"""The keys of ``galaxy.yml`` a build uses: those ``_build_manifest`` writes to ``MANIFEST.json``, and the two that
+choose its files."""
+_MAX_VALUES = 100_000
+"""How many values ``galaxy.yml``'s keys may hold, far more than a real one has, so a few aliases can't make
+``MANIFEST.json`` enormous."""
 _IGNORED_DIRS = frozenset(("CVS", ".bzr", ".hg", ".git", ".svn", "__pycache__", ".tox"))
 _DOCUMENTABLE = (
     "become",
@@ -97,41 +117,39 @@ def build(source: str, dest: str, name: str, version: Version, *, umask: int, so
     files = _files(source, info, galaxy_file)
     files.sort(key=lambda entry: str(entry["name"]))
 
-    os.mkdir(dest, 0o755 & ~umask)
     files_json = json.dumps({"files": files, "format": _FORMAT}, indent=True, sort_keys=True).encode()
     manifest = _manifest(info, hashlib.sha256(files_json).hexdigest())
-    for file_name, data in (("MANIFEST.json", json.dumps(manifest, indent=True).encode()), ("FILES.json", files_json)):
-        path = os.path.join(dest, file_name)
-        with open(path, "xb") as f:
-            _ = f.write(data)
-        os.chmod(path, 0o644 & ~umask)
-
-    _copy(source, dest, [(str(e["name"]), str(e["ftype"]), None) for e in files], umask=umask)
+    metadata = (("MANIFEST.json", json.dumps(manifest, indent=True).encode()), ("FILES.json", files_json))
+    _install(source, dest, metadata, [(str(e["name"]), str(e["ftype"]), None) for e in files], umask=umask)
 
 
 def copy_built(source: str, dest: str, name: str, version: Version, *, umask: int) -> None:
     """Install the built or installed collection in the directory ``source`` as the new directory ``dest``: its
-    ``MANIFEST.json`` and ``FILES.json`` as they are, and what ``FILES.json`` lists, each file checked against its
-    sha256 there, as an artifact is extracted. ``MANIFEST.json`` is the truth for what was built, so nothing is chosen
-    or written again, as ansible-galaxy does when it walks such a directory, which would let in files the build didn't
-    have."""
+    ``MANIFEST.json`` and the file it names, ``FILES.json`` as ansible-galaxy builds it, as they are, and what that
+    lists, each file checked against its sha256 there, as an artifact is extracted. ``MANIFEST.json`` is the truth
+    for what was built, so nothing is chosen or written again, as ansible-galaxy does when it walks such a directory,
+    which would let in files the build didn't have."""
     manifest_file = os.path.join(source, "MANIFEST.json")
-    files_file = os.path.join(source, "FILES.json")
     manifest_bytes = _read(manifest_file)
+    try:
+        manifest = Manifest.parse(manifest_bytes, name=manifest_file)
+    except ValueError as e:
+        raise BuildError(str(e)) from e
+    files_name = manifest.files_name
+    files_file = os.path.join(source, files_name)
     if not os.path.isfile(files_file):
-        raise BuildError(f"{source} has a MANIFEST.json but no FILES.json, so what it holds can't be checked")
+        raise BuildError(f"{source} has a MANIFEST.json but no {files_name}, so what it holds can't be checked")
     files_bytes = _read(files_file)
-    manifest, files = _json_object(manifest_bytes, manifest_file), _json_object(files_bytes, files_file)
 
-    info = as_table(manifest.get("collection_info")) or {}
+    info = manifest.collection_info
     found = f"{info.get('namespace')}.{info.get('name')}"
     if found != name or info.get("version") != version.text:
         raise BuildError(
             f"{manifest_file} is for {found} {info.get('version')} now, not {name} {version} as locked; run alai lock"
         )
-    expected = (as_table(manifest.get("file_manifest_file")) or {}).get("chksum_sha256")
-    if isinstance(expected, str) and hashlib.sha256(files_bytes).hexdigest() != expected:
+    if hashlib.sha256(files_bytes).hexdigest() != manifest.files_sha256:
         raise BuildError(f"{files_file} doesn't match the checksum {manifest_file} gives it")
+    files = _json_object(files_bytes, files_file)
 
     listed = as_list(files.get("files"))
     if listed is None:
@@ -148,10 +166,24 @@ def copy_built(source: str, dest: str, name: str, version: Version, *, umask: in
             raise BuildError(f"{files_file} has an unreadable entry: {item!r}")
         if entry != "." and (entry.startswith("/") or any(p in ("", ".", "..") for p in entry.split("/"))):
             raise BuildError(f"{files_file} lists a path outside the collection: {entry}")
+        if entry in ("MANIFEST.json", files_name):
+            raise BuildError(f"{files_file} lists {entry}, which a build never does")
         entries.append((entry, str(ftype), sha256 if isinstance(sha256, str) else None))
 
+    _install(source, dest, (("MANIFEST.json", manifest_bytes), (files_name, files_bytes)), entries, umask=umask)
+
+
+def _install(
+    source: str,
+    dest: str,
+    metadata: _c.Iterable[tuple[str, bytes]],
+    entries: _c.Iterable[tuple[str, str, str | None]],
+    *,
+    umask: int,
+) -> None:
+    """Make the directory ``dest`` with each ``(name, data)`` metadata file, then copy ``entries`` into it."""
     os.mkdir(dest, 0o755 & ~umask)
-    for file_name, data in (("MANIFEST.json", manifest_bytes), ("FILES.json", files_bytes)):
+    for file_name, data in metadata:
         path = os.path.join(dest, file_name)
         with open(path, "xb") as f:
             _ = f.write(data)
@@ -183,14 +215,14 @@ def _copy(source: str, dest: str, entries: _c.Iterable[tuple[str, str, str | Non
             if inside(target, real_source):
                 os.symlink(os.path.relpath(target, os.path.dirname(os.path.join(real_source, relative))), dst)
                 if sha256 is not None and _sha256(src) != sha256:
-                    raise BuildError(f"{src} doesn't match its checksum in FILES.json")
+                    raise BuildError(f"{src} doesn't match its checksum in the collection's files manifest")
                 continue
             if ftype == "dir":
                 raise BuildError(f"{src} is a symlink to a directory outside the collection, {target}")
         # A file, or what a link leading outside points at, with its mode as the build gives it.
         _ = shutil.copyfile(src, dst)
         if sha256 is not None and _sha256(dst) != sha256:
-            raise BuildError(f"{src} doesn't match its checksum in FILES.json")
+            raise BuildError(f"{src} doesn't match its checksum in the collection's files manifest")
         executable = os.stat(src).st_mode & stat.S_IXUSR
         os.chmod(dst, (0o755 if executable else 0o644) & ~umask)
 
@@ -200,26 +232,33 @@ def _read(path: str) -> bytes:
         with open(path, "rb") as f:
             return f.read()
     except OSError as e:
-        raise BuildError(f"can't read {path}: {e.strerror or e}") from None
+        raise BuildError(f"can't read {path}: {e.strerror or e}") from e
 
 
 def _json_object(data: bytes, path: str) -> dict[str, object]:
     try:
-        return json_object(data)
+        obj = json.loads(data)
     except ValueError as e:
-        raise BuildError(f"{path}: {e}") from None
+        raise BuildError(f"{path}: not valid JSON: {e}") from e
+    found = as_table(obj)
+    if found is None:
+        raise BuildError(f"{path}: expected a JSON object")
+    return found
 
 
 def _galaxy_info(galaxy_file: str) -> dict[str, object]:
     """``galaxy.yml`` with ansible-galaxy's defaults filled in: lists for its list keys (a single value wrapped in
     one), an empty mapping for ``dependencies``, None for any other string, and ``manifest`` only when it's set."""
-    from ._galaxy import yaml_mapping
+    from ._galaxy import galaxy_metadata
 
-    info = yaml_mapping(galaxy_file, required=True)
-    if missing := [key for key in _REQUIRED if key not in info]:
+    metadata = galaxy_metadata(galaxy_file)
+    if missing := [key for key in _REQUIRED if key not in metadata]:
         raise BuildError(
             f"{galaxy_file} is missing {', '.join(missing)}, which ansible-galaxy needs to install the collection"
         )
+    info = {key: metadata.get(key) for key in _KEYS if key in metadata}
+    if _too_large(info):
+        raise BuildError(f"{galaxy_file}: its aliases expand to far more than any collection's metadata has")
     for key in _LISTS:
         value = info.get(key)
         info[key] = [] if value is None else value if isinstance(value, list) else [value]
@@ -230,6 +269,21 @@ def _galaxy_info(galaxy_file: str) -> dict[str, object]:
     if info["build_ignore"] and "manifest" in info:
         raise BuildError(f'{galaxy_file}: "build_ignore" and "manifest" are mutually exclusive')
     return info
+
+
+def _too_large(value: object) -> bool:
+    """Whether ``value`` has more than ``_MAX_VALUES`` values, counting each place an alias puts one, as JSON does."""
+    count, pending = 0, [value]
+    while pending:
+        count += 1
+        if count > _MAX_VALUES:
+            return True
+        item = pending.pop()
+        if (table := as_table(item)) is not None:
+            pending.extend(table.values())
+        elif (items := as_list(item)) is not None:
+            pending.extend(items)
+    return False
 
 
 def _manifest(info: dict[str, object], files_sha256: str) -> dict[str, object]:
@@ -382,7 +436,7 @@ def _files_from_directives(source: str, info: dict[str, object], galaxy_file: st
         for directive in directives:
             manifest.process_directive(directive)
     except DistlibException as e:
-        raise BuildError(f"{galaxy_file}: invalid manifest directive '{directive}': {e}") from None
+        raise BuildError(f"{galaxy_file}: invalid manifest directive '{directive}': {e}") from e
     # The collection's own directory is among them, so FILES.json lists "." twice, as ansible-galaxy's does.
     entries: list[dict[str, object]] = []
     paths = _t.cast("list[str]", manifest.sorted(wantdirs=True))

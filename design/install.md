@@ -36,12 +36,27 @@ with its logic in `src/alai/_sync.py`. The user documentation is
   ansible.posix 2.2.2, community.general 10.7.3 and ansible.windows 2.8.0
   (296, 4,343 and 901 entries, 56 symlinks and 70 executables between
   them): the same paths, types, modes, link targets and contents.
-  - Only `MANIFEST.json`, `FILES.json` and what `FILES.json` lists are
-    extracted, each file checked against its `chksum_sha256` (a symlink's
+  - Only `MANIFEST.json`, the file list it names (`FILES.json`) and what
+    that lists are extracted, each file checked against its `chksum_sha256` (a symlink's
     is its target's, as ansible-galaxy checks it). Anything else in the
     tarball is left out.
   - `MANIFEST.json` must name the locked namespace, name and version, so a
     wrong artifact behind the right checksum (an index error) is caught.
+  - `MANIFEST.json` must be as ansible-galaxy builds it, read by core's
+    `Manifest.parse` (format 1, and a `file_manifest_file` of `ftype`
+    `file`, `chksum_type` `sha256` and a lowercase hex sha256), and the file
+    list is the file its `file_manifest_file.name` names, checked against
+    its `chksum_sha256` before any entry is read (decided with the user,
+    2026-10-29). That's always `FILES.json` today, but any file name at the
+    top of the collection is taken, in case ansible-galaxy allows others.
+    galaxy-importer already reads the named file, and ansible-galaxy's
+    `verify` does too, where its install takes `FILES.json` whatever the
+    manifest says. The first pass keeps `FILES.json`'s content, so only
+    another name costs a pass of its own, for that member alone, as it's only
+    known once `MANIFEST.json` is read, which may come after it. Every one of
+    the latest 4,576 collections' manifests passes, and extracting
+    community.general 13.4.0 (4,526 members) took the same time as before,
+    126 to 132 ms on both, median of 15.
   - The last member of a repeated name is the only one read and
     extracted, as ansible-galaxy's `getmember` finds it: some published
     collections replace a file, `MANIFEST.json` included, by appending it
@@ -549,7 +564,13 @@ What it does:
   `galaxy.yml` normalised as `_normalize_galaxy_yml_manifest` does (lists
   for list keys, `{}` for `dependencies`, None for the rest),
   `json.dumps(..., indent=True)`, and `FILES.json`'s sha256 in
-  `MANIFEST.json`. A missing mandatory key (`readme`, `authors`) is an
+  `MANIFEST.json`. `galaxy.yml` is read once, by
+  `_galaxy.galaxy_metadata`, for both the collection and its build, and
+  only the keys a build uses are taken from it. They may hold at most
+  100,000 values once their aliases are expanded, so a few aliases can't
+  make the manifest enormous. Building stays in alai rather than alai-core (decided with the
+  user, 2026-10-29): only alai builds, where alai-index and alai-doc only
+  read `MANIFEST.json`, which is core's (`Manifest.parse`). A missing mandatory key (`readme`, `authors`) is an
   error, as ansible-galaxy refuses to build without them; reading the
   project only needs the name and version.
 - **Modes**: files `0644`, or `0755` if executable by the owner (for a link
@@ -661,6 +682,8 @@ rather than one file taking precedence over the other
   `616e7c05e0`). Either choice is wrong half the time: a `MANIFEST.json`
   left in a source is usually from an old build, and a `galaxy.yml` in a
   built collection isn't what was built.
+- **The file list is the one `MANIFEST.json` names**, checked against its
+  sha256, as for an artifact (see [Decisions](#decisions)).
 - **`MANIFEST.json` is the truth for a built collection.** `copy_built`
   copies what its `FILES.json` lists, checking each file's sha256, and
   `FILES.json`'s own sha256 against the one `MANIFEST.json` records, and

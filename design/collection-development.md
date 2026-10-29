@@ -12,6 +12,50 @@ under [Not done yet](#not-done-yet). The findings were checked against
 ansible-core 2.21.5 (PyPI) and the ansible-core source at `616e7c05e0`, on
 2026-10-19, and again at devel `8cb65a623a` on 2026-10-21.
 
+**Reading the metadata is alai-core's** (`alai_core.collection`, since
+2026-10-28): `galaxy.yml`, `MANIFEST.json`'s `collection_info` and
+`meta/runtime.yml`, and the collection name check, which
+`_manifest.collection_name` calls. Core's readers only fail when the file
+can't be read at all (decided with the user, 2026-10-29). Each value is
+kept as written, and checked by a `get_*` method when a caller asks for it,
+by the rules ansible-galaxy installs with. So each use picks what it needs:
+installing, from a tarball or a directory, needs the name, version and
+dependencies, and `requires_ansible` too, as building would fail on it.
+galaxy-sync needs only the name and version, and `alai find` nothing. alai
+calls each getter and lists every problem at once, with its hints. With a
+version from `[project.sources]`, alai doesn't check the file's, which may
+be a placeholder, and only reads it to warn when it's valid.
+
+Tried against ansible-galaxy 2.21.5 on the same day, building and
+installing from a source tree and from the tarball. `collection build`
+only enforces its schema's mandatory keys (`namespace`, `name`,
+`version`, `readme`, `authors`) and warns about unknown ones. It builds a
+`1.0` version, quoted or not, a `null` one as `*`, and any
+`dependencies` as written, a list included. Installing refuses a version
+that isn't SemVer, a dependency name that isn't a valid collection name,
+and a requirement it can't read, such as `^1`. A requirement that isn't a
+string, or `dependencies` that isn't a mapping, crashes it. A
+self-dependency it can satisfy, such as `'*'`, installs. Core refuses
+every self-dependency, as it's never what the author meant. Installing
+from a source tree needs the mandatory keys too, which `_build.py`'s
+`_REQUIRED` checks, as it builds path sources. Core leaves out `readme`
+and `authors`: a command that builds or publishes checks what it needs
+itself. Core's rules passed 4,569 of the latest collections' 4,576
+`MANIFEST.json` files. The 7 refused are `finallycoffee.*`, with `^`
+requirements ansible-galaxy can't install. galaxy-sync isn't affected, as
+it reads dependencies from Galaxy's API as they are.
+
+`meta/runtime.yml` is read as ansible-core reads it, with PyYAML's
+`BaseLoader` (`_collection_meta.py`): every scalar is a string, so an
+unquoted `requires_ansible: 2.15` is the string `"2.15"`, refused as an
+invalid specifier set rather than as not a string. A top level that isn't
+a mapping, `null` and `~` included as they're strings, is read as empty,
+though ansible-core can't load the collection then, as alai only needs
+`requires_ansible` from it. ansible-core only warns about a
+`requires_ansible` it can't read; alai refuses it, as it can't choose
+versions by it, and the message says so. Core's reader matched `BaseLoader`
+on all 3,871 `meta/runtime.yml` files in the latest collections.
+
 Run end to end on 2026-10-21 with a collection checked out outside any
 `ansible_collections` path, depending on `ansible.utils` from the index
 through its module_utils, with `alai run ansible-test …` from the checkout:
@@ -447,6 +491,29 @@ to the editor's port. Not tried with an editor attached.
   drop-in, `galaxy.yml` is the source of truth and `alai.toml` must not
   repeat it. With a replacement, `alai.toml` is the source and `galaxy.yml`
   follows from it.
+
+- **What `alai build` checks beyond install's rules.** At least that every
+  dependency requirement and `requires_ansible` can be read, so what alai
+  builds installs. Routing in `meta/runtime.yml` and `eda_runtime.yml` that
+  ansible-core or ansible-rulebook would ignore should probably only warn,
+  as the formats change, EDA's most. Galaxy checks more on import, which a
+  `--strict`-style option could add for authors publishing there. From
+  galaxy-importer at `5f222ef` (2026-10-13), `schema.py` and
+  `file_parser.py`:
+  - `namespace`, `name`, `version`, `readme`, `authors` and `repository`
+    are required.
+  - The names match its name pattern and a maximum length, and the version
+    passes `semantic_version.validate`, also within a maximum length.
+  - `authors`, `tags` and `license` are lists of strings, and each license
+    is an SPDX identifier.
+  - Each dependency is a string `ns.name` other than the collection itself,
+    with a string requirement that `semantic_version.SimpleSpec` reads.
+    That takes `^1.0.0`, which ansible-galaxy can't install, which is how
+    the 7 `finallycoffee.*` collections got onto Galaxy.
+  - `meta/runtime.yml` has a `requires_ansible` that `packaging`'s
+    `SpecifierSet` reads, within a maximum length.
+  - The artifact's file name matches its namespace, name and version, and
+    `FILES.json`'s checksums match the files.
 
 ## Not done yet
 

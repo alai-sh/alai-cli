@@ -14,6 +14,7 @@ import os
 import re
 import sys
 
+from alai_core.markup import parse as parse_markup
 from alai_core.semver import Version
 
 from . import _output
@@ -58,6 +59,7 @@ from ._plugins import (
     cached_copies,
     has_file,
     rank,
+    semver_or_none,
 )
 
 DEFAULT_LIMIT = 20
@@ -271,9 +273,10 @@ class _Renderer:
         self.installed = installed or {}
         self.terminal = sys.stdout.isatty()
         self.width = terminal_width()
+        self.color = _output.color_enabled(stdout=True)
 
     def s(self, text: str, *codes: str) -> str:
-        return _output.styled(text, *codes, stdout=True)
+        return _output.ansi(text, *codes) if self.color else text
 
     def listing(self, mine: list[Found], others: list[Found], totals: tuple[int, int], *, project: bool) -> None:
         """The two sections, each headed by how many it has; ``totals`` counts those ``--limit`` left out too, and a
@@ -311,7 +314,7 @@ class _Renderer:
             + self.s("─╮", DIM)
         )
         if plugin.short_description:
-            print(f"  {self.rich(as_sentence(markup(plugin.short_description)))}")
+            print(f"  {self.rich(as_sentence(markup(plugin.short_description, role=plugin.type == 'role')))}")
         elif item.route and not item.route.problem and _routing_only(plugin):
             print(f"  Another name for {item.route.final}.")
         print()
@@ -359,7 +362,7 @@ class _Renderer:
             mark, colour = self._marker(other)
             text = f"{self.s(mark, colour)} {other.plugin.fqcn}"
             if other.plugin.short_description:
-                text += f"  {self.s(plain(other.plugin.short_description), DIM)}"
+                text += f"  {self.s(plain(other.plugin.short_description, role=other.plugin.type == 'role'), DIM)}"
             self._field("Same name" if i == 0 else "", text)
         if alternatives:
             self._field("", self.s("not redirects: only the name is the same, so check one does the job", DIM))
@@ -438,7 +441,7 @@ class _Renderer:
         if collection not in self.installed:
             return "·", DIM
         have = self.installed[collection].version
-        since, until = _semver(step.since), _semver(step.until)
+        since, until = semver_or_none(step.since), semver_or_none(step.until)
         if have is not None and since is not None and have < since:
             return "↑", YELLOW
         if step.tombstone is not None or (
@@ -455,7 +458,7 @@ class _Renderer:
             return self.s("not in the plugin index", YELLOW)
         bits: list[str] = []
         if describe and step.short_description:
-            bits.append(self.rich(markup(step.short_description)))
+            bits.append(self.rich(markup(step.short_description, role=step.type == "role")))
         if step.until is not None:
             bits.append(self.s(f"removed in {step.until}", DIM))
         if step.deprecation is not None:
@@ -474,9 +477,6 @@ class _Renderer:
             where = f"{version} in {home_path(os.path.abspath(found.path))}"
             bits.append(self.s(f"needs {step.since}, {where}", YELLOW) if mark == "↑" else self.s(where, DIM))
         return self.s(", ", DIM).join(bits)
-
-    def _has(self, collection: str) -> bool:
-        return collection == BUILTIN or collection in self.installed
 
     def _section(self, title: str, count: int) -> None:
         label = f" {title} ({count}) "
@@ -498,9 +498,9 @@ class _Renderer:
         elif notes:
             tail = self.s(_cut(notes, room), colour)
         elif item.copy:
-            tail = self.s(_cut(plain(plugin.short_description or ""), room), DIM)
+            tail = self.s(_cut(plain(plugin.short_description or "", role=plugin.type == "role"), room), DIM)
         else:
-            tail = self.rich(markup(plugin.short_description or ""), room)
+            tail = self.rich(markup(plugin.short_description or "", role=plugin.type == "role"), room)
         print(f"{head}  {tail}".rstrip())
 
     def rich(self, segments: list[Segment], room: int | None = None) -> str:
@@ -508,7 +508,7 @@ class _Renderer:
         ``room`` visible characters, if given, with an ellipsis."""
         cut = room is not None and sum(len(piece) for piece, _, _ in segments) > room
         budget = room - 1 if room is not None and cut else None
-        links = self.terminal and _output.color_enabled(stdout=True)
+        links = self.terminal and self.color
         out: list[str] = []
         used = 0
         for piece, kind, url in segments:
@@ -589,13 +589,6 @@ class _Renderer:
         print(f"  {self.s(label.ljust(10), DIM)} {value}")
 
 
-def _semver(text: str | None) -> Version | None:
-    try:
-        return Version(text) if text else None
-    except ValueError:
-        return None
-
-
 def _cut(text: str, room: int | None) -> str:
     """``text`` cut to ``room`` characters with an ellipsis, or as it is with no room given."""
     return text if room is None or len(text) <= room else text[: max(0, room - 1)] + "…"
@@ -614,90 +607,64 @@ def _path(installed: dict[str, Installed], collection: str) -> str | None:
     return os.path.abspath(found.path) if found is not None else None
 
 
-_MARKUP_RE = re.compile(r"\b(?:(I|B|M|U|L|R|C|O|V|E|RV|P)\(|HORIZONTALLINE\b)")
-_ESCAPED = frozenset(("O", "V", "E", "RV", "P"))
-"""The newer markup, whose parameter takes ``\\`` escapes; the older ends at the first ``)``."""
-
-
 Segment = tuple[str, "str | None", "str | None"]
-"""A piece of a description: its text, the markup it came from (``C``, ``O``…, or None for plain text), and the URL
-it links to, for ``L()`` and ``U()``."""
+"""A piece of a description: its text, the markup it came from (alai-core's kind, such as ``code``, or None for plain
+text), and the URL it links to, for ``L()`` and ``U()``."""
 
 _STYLES: dict[str, tuple[str, ...]] = {
-    "B": (BOLD,),
-    "I": (ITALIC,),
-    "C": (CYAN,),
-    "V": (CYAN,),
-    "E": (CYAN,),
-    "O": (BOLD,),
-    "RV": (BOLD,),
-    "M": (BLUE,),
-    "P": (BLUE,),
+    "bold": (BOLD,),
+    "italic": (ITALIC,),
+    "code": (CYAN,),
+    "option_value": (CYAN,),
+    "env_var": (CYAN,),
+    "option_name": (BOLD,),
+    "return_value": (BOLD,),
+    "module": (BLUE,),
+    "plugin": (BLUE,),
 }
 """How each markup is shown in colour: code and values cyan, options and return values bold as docs.ansible.com shows
 them, plugin names blue as collections are in the list. ``L()`` and ``U()`` are links instead; ``R()``'s anchor is
 on docs.ansible.com, so its text is plain."""
 
 
-def markup(text: str) -> list[Segment]:
-    """A description split at Ansible's documentation markup, as
-    https://docs.ansible.com/projects/ansible/latest/dev_guide/ansible_markup.html defines it, each piece the text it
-    shows: ``C()``, ``B()`` and ``I()`` their text, ``M(fqcn)`` and ``P(fqcn#type)`` the name, ``L(text,url)`` and
-    ``R(text,anchor)`` the text, ``U(url)`` the URL, ``O()`` and ``RV()`` the option or return value (and ``=value``)
-    without the plugin, entrypoint or ``ignore:`` before it, and ``V()`` and ``E()`` their value. ``HORIZONTALLINE``
-    is dropped. 215 short descriptions on the index use it (2026-10-21), mostly ``C()``. Anything that doesn't parse
-    is left as written."""
+def markup(text: str, *, role: bool = False) -> list[Segment]:
+    """A description split at Ansible's documentation markup, each piece the text it shows: ``M()`` and ``P()`` the
+    name, ``L()`` and ``R()`` the text, ``U()`` the URL, ``O()`` and ``RV()`` the option or return value (and
+    ``=value``) without the plugin, entry point or ``ignore:`` before it, and ``V()`` and ``E()`` their value.
+    ``HORIZONTALLINE`` is a space. Markup that doesn't parse is shown as written. ``role`` is whether it's a role's,
+    whose ``O(entrypoint:name)`` names another entry point."""
     out: list[Segment] = []
-    at = 0
-    while (match := _MARKUP_RE.search(text, at)) is not None:
-        kind = match.group(1)
-        if match.start() > at:
-            out.append((text[at : match.start()], None, None))
-        if kind is None:  # HORIZONTALLINE
-            at = match.end()
-            continue
-        start = match.end()
-        if kind in _ESCAPED:
-            param: list[str] = []
-            i = start
-            while i < len(text) and text[i] != ")":
-                if text[i] == "\\" and i + 1 < len(text):
-                    i += 1
-                param.append(text[i])
-                i += 1
-            end, value = i, "".join(param)
-        else:
-            end = text.find(")", start)
-            value = text[start:end] if end >= 0 else ""
-        if end < 0 or end >= len(text):
-            out.append((text[match.start() :], None, None))
-            return out
+    for part in parse_markup(text, role=role):
+        kind = part.kind
         url = None
-        if kind in ("L", "R"):
-            value, _, target = value.partition(",")
-            url = target.strip() if kind == "L" and target.strip().startswith(("http://", "https://")) else None
-        elif kind == "U":
-            url = value if value.startswith(("http://", "https://")) else None
-        elif kind == "P":
-            value = value.split("#", 1)[0]
-        elif kind in ("O", "RV"):
-            # O(fqcn#type:name=value), O(entrypoint:name) and O(ignore:name) all show only name (and =value).
-            name, equals, rest = value.partition("=")
-            value = name.rsplit(":", 1)[-1] + equals + rest
-        out.append((value, kind, url))
-        at = end + 1
-    if at < len(text):
-        out.append((text[at:], None, None))
+        if kind in ("text", "error"):
+            shown, kind = part.text or "", None
+        elif kind == "horizontal_line":
+            shown, kind = " ", None
+        elif kind in ("module", "plugin"):
+            shown = part.fqcn or ""
+        elif kind in ("url", "link"):
+            url = part.url if (part.url or "").startswith(("http://", "https://")) else None
+            shown = (part.url if kind == "url" else part.text) or ""
+        elif kind in ("env_var", "option_name", "return_value"):
+            shown = (part.name or "") + (f"={part.value}" if part.value is not None else "")
+        elif kind == "option_value":
+            shown = part.value or ""
+        else:
+            shown = part.text or ""
+        out.append((shown, kind, url))
     return out
 
 
-def plain(text: str) -> str:
+def plain(text: str, *, role: bool = False) -> str:
     """A description with its markup reduced to the text it shows."""
-    return "".join(piece for piece, _, _ in markup(text))
+    return "".join(piece for piece, _, _ in markup(text, role=role))
 
 
 def as_sentence(segments: list[Segment]) -> list[Segment]:
-    """``sentence`` for a description's pieces: the first capitalised if it's plain text, a full stop added."""
+    """A description's pieces as a sentence: capitalised and ending in a full stop, as Ansible's convention leaves them
+    out and collections differ. The first piece is only capitalised if it's plain text, and a first word with anything
+    but lowercase letters (``oVirt``, ``floating_ips``, ``tasks/main.yml``) is a name, so it's left as it is."""
     segments = [s for s in segments if s[0]]
     if segments:
         segments[0] = (segments[0][0].lstrip(), *segments[0][1:])
@@ -720,16 +687,6 @@ def _capitalise(text: str) -> str:
     if re.fullmatch(r"[a-z]+(?:[-/][a-z]+)*", first):
         return text[0].upper() + text[1:]
     return text
-
-
-def sentence(text: str) -> str:
-    """A short description as a sentence: capitalised and ending in a full stop, as Ansible's convention leaves them
-    out and collections differ. A first word with anything but lowercase letters (``oVirt``, ``floating_ips``,
-    ``tasks/main.yml``) is a name, so it's left as it is."""
-    text = _capitalise(text.strip())
-    if not text:
-        return text
-    return text if text[-1] in ".!?" else f"{text}."
 
 
 def _and(items: list[str]) -> str:

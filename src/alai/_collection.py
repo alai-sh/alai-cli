@@ -146,7 +146,7 @@ def uninstall(settings: Settings, names: _c.Sequence[str]) -> None:
         try:
             name = collection_name(given)
         except ValueError as e:
-            raise ConfigError(_by_source(present, given) or str(e)) from None
+            raise ConfigError(_by_source(present, given) or str(e)) from e
         if name in present:
             chosen[name] = None
         else:

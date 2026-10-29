@@ -238,11 +238,14 @@ from a machine ~250 ms (TCP plus TLS) from Cloudflare.
   be a new field and placeholders in a new format, not a setting every
   client has to handle (artifacts are SHA-256 too, as Galaxy's are).
 - **Paths in `config.json` can't lead anywhere** (2026-10-25). The index
-  template, `collections` and `plugins` are refused if they lead from an
-  `https` index to anything but `https`, or from an index that isn't on
-  disk to a `file://` URL, so a remote index can't make alai read local
-  files. An index on disk can point at a remote one. The same rule as
-  redirects and `moved-to`.
+  template, `collections`, `plugins`, `dl` and `moved-to` are refused if
+  they lead from an `https` index to anything but `https`, or from an
+  index that isn't on disk to a `file://` URL, so a remote index can't make
+  alai read local files. An index on disk can point at a remote one.
+  Redirects can't leave `https` either. `dl` is resolved against the index
+  root as the index template is (2026-10-29), so it can be relative or on
+  another host. Before that it was taken as written and checked against
+  nothing, and an `http` index's `moved-to` could lead to `file://`.
 - **Index files found by SHA-256 never change** (2026-10-25). A cached copy
   that matches the listing is used with no request, as for any index file.
   Otherwise the file at its URL is fetched with no `If-None-Match`, and if

@@ -83,7 +83,7 @@ def make_index(
                 "v": 1,
                 "name": name,
                 "vers": spec["vers"],
-                "deps": [{"name": d, "req": r} for d, r in spec["deps"].items()],  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownVariableType]
+                "deps": [{"name": d, "req": r} for d, r in spec["deps"].items()],  # pyright: ignore[reportAttributeAccessIssue, reportUnknownVariableType]
                 "sha256": cksum(name, str(spec["vers"])),
                 "size": 100,
                 "yanked": spec["yanked"],

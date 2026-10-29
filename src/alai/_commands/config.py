@@ -94,7 +94,7 @@ def _show_all(settings: Settings, *, verbose: bool) -> None:
         except ConfigError as e:
             # A default that can't be worked out here, such as cache_dir without a home directory.
             value = f"unknown: {e}"
-        rows.append((setting.key, value, _source(settings, setting.target)))
+        rows.append((setting.key, value, home_path(settings.sources[setting.target])))
         if verbose:
             for value, source in settings.overridden.get(setting.target, ()):
                 rows.append(("", _text(value, tilde=True), f"{home_path(source)}, overridden"))
@@ -116,10 +116,6 @@ def _section(title: str, rows: list[tuple[str, ...]]) -> None:
     for row in rows:
         cells = [cell.ljust(width) for cell, width in zip(row[:-1], widths, strict=True)]
         print("  " + "  ".join([*cells, row[-1]]).rstrip())
-
-
-def _source(settings: Settings, target: str) -> str:
-    return home_path(settings.sources[target])
 
 
 def _text(value: object, *, tilde: bool = False) -> str:

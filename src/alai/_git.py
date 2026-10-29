@@ -105,7 +105,7 @@ def fetch(cache_dir: str, url: str, commit: str, *, offline: bool) -> str:
         os.makedirs(parent, exist_ok=True)
         work = tempfile.mkdtemp(dir=parent, prefix=".tmp-")
     except OSError as e:
-        raise GitError(f"can't write to the cache at {parent}: {e.strerror or e}") from None
+        raise GitError(f"can't write to the cache at {parent}: {e.strerror or e}") from e
     try:
         checkout = os.path.join(work, "checkout")
         _ = _git(["init", "--quiet", checkout])
@@ -122,9 +122,10 @@ def fetch(cache_dir: str, url: str, commit: str, *, offline: bool) -> str:
                 url=url,
             )
         try:
-            _ = _git(["checkout", "--quiet", "--detach", commit], cwd=checkout)
-        except GitError:
-            raise GitError(f"{url} has no commit {commit} on any branch or tag") from None
+            _ = _git(["cat-file", "-e", f"{commit}^{{commit}}"], cwd=checkout)
+        except GitError as e:
+            raise GitError(f"{url} has no commit {commit} on any branch or tag") from e
+        _ = _git(["checkout", "--quiet", "--detach", commit], cwd=checkout)
         if os.path.exists(os.path.join(checkout, ".gitmodules")):
             _ = _git(["submodule", "update", "--quiet", "--init", "--recursive"], cwd=checkout, network=True, url=url)
         # Only the files are kept: nothing a collection's build reads is in .git.
@@ -144,7 +145,7 @@ def fetch(cache_dir: str, url: str, commit: str, *, offline: bool) -> str:
             if not os.path.isdir(target):
                 raise
     except OSError as e:
-        raise GitError(f"can't fetch {url}@{commit[:7]} into the cache: {e.strerror or e}") from None
+        raise GitError(f"can't fetch {url}@{commit[:7]} into the cache: {e.strerror or e}") from e
     finally:
         shutil.rmtree(work, ignore_errors=True)
     trace(f"{url}@{commit}: fetched to {target}")
@@ -357,10 +358,10 @@ def _git(args: list[str], *, cwd: str | None = None, network: bool = False, url:
                 text=True,
                 check=False,
             )
-    except FileNotFoundError:
-        raise GitError("git isn't installed, or isn't on PATH, and git sources need it") from None
+    except FileNotFoundError as e:
+        raise GitError("git isn't installed, or isn't on PATH, and git sources need it") from e
     except OSError as e:
-        raise GitError(f"can't run git: {e.strerror or e}") from None
+        raise GitError(f"can't run git: {e.strerror or e}") from e
     if done.returncode != 0:
         said = done.stderr.strip() or f"exit status {done.returncode}"
         message = f"git {args[0]} failed: {said}"

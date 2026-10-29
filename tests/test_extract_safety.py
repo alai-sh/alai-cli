@@ -35,7 +35,8 @@ def extract(tmp_path: Path, members: list[Member], *, limit: int = _artifacts.MA
 
 
 def collection(*members: Member, files: list[dict[str, object]]) -> list[Member]:
-    return [tar_file("MANIFEST.json", manifest_json()), tar_file("FILES.json", files_json(*files)), *members]
+    data = files_json(*files)
+    return [tar_file("MANIFEST.json", manifest_json(files=data)), tar_file("FILES.json", data), *members]
 
 
 def test_named_by_where_it_came_from(tmp_path: Path) -> None:

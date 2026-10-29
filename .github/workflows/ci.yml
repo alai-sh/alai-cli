@@ -326,8 +326,13 @@ jobs:
             *) ABI=cp310-abi3 ;;
           esac
           docker run --rm -v "${PWD}:/src" -w /src -e "ABI=${ABI}" -e PYTHON_VERSION "ghcr.io/astral-sh/uv:${UV_VERSION}-alpine" sh -euc '
-            # cargo builds alai-core from its git commit, as it has no wheels to install until it is on PyPI.
-            apk add --no-cache git cargo
+            # cargo builds alai-core from its git commit, as it has no wheels to install until it is on PyPI. The cargo
+            # Alpine packages is older than the rust-version alai-core needs, so rustup installs the one
+            # rust-toolchain.toml pins.
+            apk add --no-cache git rustup gcc musl-dev
+            rustup-init -y -q --profile minimal --default-toolchain none
+            . "${HOME}/.cargo/env"
+            rustup toolchain install
             # What alai and the test group need, at the versions uv.lock pins, as tox installs them on the other jobs;
             # then the wheel for this ABI on its own.
             export UV_PROJECT_ENVIRONMENT=/venv

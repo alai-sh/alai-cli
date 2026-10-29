@@ -28,34 +28,38 @@ def build_artifact(
     version: str = "1.0.0",
     files: dict[str, bytes | Link] | None = None,
     *,
-    executable: frozenset[str] = frozenset(),
+    executable: _c.Collection[str] = (),
     manifest: dict[str, object] | None = None,
+    collection_info: dict[str, object] | None = None,
     listed: list[dict[str, object]] | None = None,
     extra: list[tarfile.TarInfo] | None = None,
 ) -> tuple[str, int]:
     """Write a collection tarball to ``path`` and return its SHA-256 and size.
 
     ``files`` maps each path to its content, or a ``Link``; their directories are added and listed in ``FILES.json``,
-    as a build does. ``listed`` replaces the ``FILES.json`` entries and ``manifest`` the ``MANIFEST.json``, for broken
-    artifacts; ``extra`` adds members ``FILES.json`` doesn't list.
+    as a build does. ``collection_info`` replaces the metadata in ``MANIFEST.json``. ``listed`` replaces the
+    ``FILES.json`` entries and ``manifest`` the whole ``MANIFEST.json``, for broken artifacts; ``extra`` adds members
+    ``FILES.json`` doesn't list.
     """
     files = {"README.md": b"# readme\n"} if files is None else files
     namespace, short = name.split(".")
     contents = {p: c for p, c in files.items() if isinstance(c, bytes)}
     dirs = sorted({"/".join(p.split("/")[:i]) for p in files for i in range(1, p.count("/") + 1)})
     entries: list[dict[str, object]] = [{"name": ".", "ftype": "dir", "chksum_type": None, "chksum_sha256": None}]
-    entries += [{"name": d, "ftype": "dir", "chksum_type": None, "chksum_sha256": None} for d in dirs]
+    entries.extend({"name": d, "ftype": "dir", "chksum_type": None, "chksum_sha256": None} for d in dirs)
     for p, content in sorted(files.items()):
         # A link's checksum is its target's, as a build records it; one pointing outside has none to take.
         data = content if isinstance(content, bytes) else contents.get(_resolve(p, content.target), b"")
         entries.append({"name": p, "ftype": "file", "chksum_type": "sha256", "chksum_sha256": _sha256(data)})
+    files_data = json.dumps({"files": entries if listed is None else listed, "format": 1}).encode()
     if manifest is None:
-        manifest = {"collection_info": {"namespace": namespace, "name": short, "version": version}}
+        info = collection_info or {"namespace": namespace, "name": short, "version": version}
+        manifest = manifest_data(info, files_data)
 
     buffer = io.BytesIO()
     with _gzipped_tar(buffer) as tar:
         _add(tar, "MANIFEST.json", json.dumps(manifest).encode())
-        _add(tar, "FILES.json", json.dumps({"files": entries if listed is None else listed, "format": 1}).encode())
+        _add(tar, "FILES.json", files_data)
         for d in dirs:
             info = tarfile.TarInfo(d)
             info.type = tarfile.DIRTYPE
@@ -121,9 +125,17 @@ def build_tarball(path: Path, members: list[Member]) -> tuple[str, int]:
     return _sha256(data), len(data)
 
 
-def manifest_json(name: str = "ns.coll", version: str = "1.0.0") -> bytes:
+def manifest_data(collection_info: dict[str, object], files_data: bytes) -> dict[str, object]:
+    """``MANIFEST.json`` as ansible-galaxy builds it, naming ``files_data`` as ``FILES.json`` by its sha256."""
+    files = {"name": "FILES.json", "ftype": "file", "chksum_type": "sha256", "chksum_sha256": _sha256(files_data)}
+    return {"collection_info": collection_info, "file_manifest_file": {**files, "format": 1}, "format": 1}
+
+
+def manifest_json(name: str = "ns.coll", version: str = "1.0.0", *, files: bytes | None = None) -> bytes:
+    """``MANIFEST.json`` naming ``files``, an empty ``FILES.json`` if None, by its sha256."""
     namespace, short = name.split(".")
-    return json.dumps({"collection_info": {"namespace": namespace, "name": short, "version": version}}).encode()
+    info: dict[str, object] = {"namespace": namespace, "name": short, "version": version}
+    return json.dumps(manifest_data(info, files_json() if files is None else files)).encode()
 
 
 def files_json(*entries: dict[str, object]) -> bytes:

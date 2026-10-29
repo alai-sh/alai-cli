@@ -73,7 +73,12 @@ def color_enabled(*, stdout: bool = False) -> bool:
 
 def styled(text: str, *codes: str, stdout: bool = False) -> str:
     """``text`` in the given styles (``BOLD``, ``GREEN``…), when colour is on for stderr, or stdout with ``stdout``."""
-    if not text or not codes or not color_enabled(stdout=stdout):
+    return ansi(text, *codes) if color_enabled(stdout=stdout) else text
+
+
+def ansi(text: str, *codes: str) -> str:
+    """``text`` in the given styles, whether or not colour is on: for a caller that has checked once."""
+    if not text or not codes:
         return text
     return f"\x1b[{';'.join(codes)}m{text}\x1b[0m"
 

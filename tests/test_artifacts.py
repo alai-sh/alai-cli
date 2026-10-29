@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 from alai_core.semver import Version
-from artifact_data import Link, build_artifact
+from artifact_data import Link, build_artifact, manifest_json
 from index_server import IndexServer, serve
 
 from alai import _artifacts, _fetch
@@ -33,6 +33,10 @@ def fetcher() -> _c.Iterator[Fetcher]:
 @pytest.fixture
 def cache(tmp_path: Path, fetcher: Fetcher) -> ArtifactCache:
     return ArtifactCache(str(tmp_path / "cache"), fetcher)
+
+
+def get(cache: ArtifactCache, artifact: Artifact) -> str:
+    return cache.get_all([artifact])[artifact.name]
 
 
 def artifact(tmp_path: Path, name: str = "ns.coll", version: str = "1.0.0", **kwargs: object) -> Artifact:
@@ -71,7 +75,7 @@ class TestGet:
         item = artifact(tmp_path, files=files, executable=frozenset({"tests/run.sh"}))
         old = os.umask(0o022)
         try:
-            path = cache.get(item)
+            path = get(cache, item)
         finally:
             _ = os.umask(old)
 
@@ -94,7 +98,7 @@ class TestGet:
         item = artifact(tmp_path, files={"a/b.txt": b"x"})
         old = os.umask(0o077)
         try:
-            path = ArtifactCache(str(tmp_path / "cache"), fetcher).get(item)
+            path = get(ArtifactCache(str(tmp_path / "cache"), fetcher), item)
         finally:
             _ = os.umask(old)
 
@@ -103,17 +107,17 @@ class TestGet:
 
     def test_cached_copy_is_trusted(self, tmp_path: Path, cache: ArtifactCache) -> None:
         item = artifact(tmp_path)
-        path = cache.get(item)
+        path = get(cache, item)
         Path(item.url.removeprefix("file://")).unlink()
 
-        assert cache.get(item) == path
+        assert get(cache, item) == path
 
     def test_over_http(self, tmp_path: Path, cache: ArtifactCache) -> None:
         item = artifact(tmp_path)
         server: IndexServer
         for server in serve(tmp_path / "dl"):
             url = f"{server.url}{item.url.rsplit('/', 1)[1]}"
-            path = cache.get(Artifact(item.name, item.version, url=url, cksum=item.cksum, size=item.size))
+            path = get(cache, Artifact(item.name, item.version, url=url, cksum=item.cksum, size=item.size))
 
             assert Path(path, "README.md").is_file()
 
@@ -121,7 +125,7 @@ class TestGet:
         unlisted = tarfile.TarInfo("unlisted.txt")
         unlisted.size = 1
 
-        path = cache.get(artifact(tmp_path, extra=[unlisted]))
+        path = get(cache, artifact(tmp_path, extra=[unlisted]))
 
         assert not Path(path, "unlisted.txt").exists()
 
@@ -154,7 +158,7 @@ class TestGet:
 
         monkeypatch.setattr(_artifacts, "extract", first)
 
-        assert cache.get(item) == cache.path(item.cksum)
+        assert get(cache, item) == cache.path(item.cksum)
         assert leftovers(cache) == []
 
 
@@ -163,27 +167,27 @@ class TestDownloadErrors:
         item = artifact(tmp_path)
 
         with pytest.raises(ArtifactError, match="doesn't match the lock: it has SHA-256"):
-            _ = cache.get(Artifact(item.name, item.version, url=item.url, cksum="0" * 64, size=item.size))
+            _ = get(cache, Artifact(item.name, item.version, url=item.url, cksum="0" * 64, size=item.size))
         assert list(Path(cache.root).iterdir()) == []
 
     def test_larger_than_listed(self, tmp_path: Path, cache: ArtifactCache) -> None:
         item = artifact(tmp_path)
 
         with pytest.raises(ArtifactError, match="larger than the 10 bytes expected"):
-            _ = cache.get(Artifact(item.name, item.version, url=item.url, cksum=item.cksum, size=10))
+            _ = get(cache, Artifact(item.name, item.version, url=item.url, cksum=item.cksum, size=10))
         assert leftovers(cache) == []
 
     def test_missing(self, tmp_path: Path, cache: ArtifactCache) -> None:
         url = (tmp_path / "nope.tar.gz").as_uri()
 
         with pytest.raises(ArtifactError, match=r"can't download ns\.coll 1\.0\.0: .*not found"):
-            _ = cache.get(Artifact("ns.coll", Version("1.0.0"), url=url, cksum="0" * 64, size=1))
+            _ = get(cache, Artifact("ns.coll", Version("1.0.0"), url=url, cksum="0" * 64, size=1))
 
     def test_unreadable(self, tmp_path: Path, cache: ArtifactCache) -> None:
         url = tmp_path.as_uri()
 
         with pytest.raises(ArtifactError, match=rf"can't download ns\.coll 1\.0\.0: {tmp_path}: Is a directory$"):
-            _ = cache.get(Artifact("ns.coll", Version("1.0.0"), url=url, cksum="0" * 64, size=1))
+            _ = get(cache, Artifact("ns.coll", Version("1.0.0"), url=url, cksum="0" * 64, size=1))
 
     @pytest.mark.parametrize(
         ("status", "message"),
@@ -196,7 +200,7 @@ class TestDownloadErrors:
             url = f"{server.url}x.tar.gz"
 
             with pytest.raises(ArtifactError, match=rf"can't download ns\.coll 1\.0\.0: {url}: {message}$"):
-                _ = cache.get(Artifact("ns.coll", Version("1.0.0"), url=url, cksum="0" * 64, size=1))
+                _ = get(cache, Artifact("ns.coll", Version("1.0.0"), url=url, cksum="0" * 64, size=1))
         assert leftovers(cache) == []
 
     def test_connection_refused(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -211,8 +215,9 @@ class TestDownloadErrors:
             Fetcher(user_agent="t") as fetcher,
             pytest.raises(ArtifactError, match=rf"can't download ns\.coll 1\.0\.0: {url}: can't connect: "),
         ):
-            _ = ArtifactCache(str(tmp_path / "cache"), fetcher).get(
-                Artifact("ns.coll", Version("1.0.0"), url=url, cksum="0" * 64, size=1)
+            _ = get(
+                ArtifactCache(str(tmp_path / "cache"), fetcher),
+                Artifact("ns.coll", Version("1.0.0"), url=url, cksum="0" * 64, size=1),
             )
 
     def test_offline_miss(self, tmp_path: Path) -> None:
@@ -220,7 +225,9 @@ class TestDownloadErrors:
             cache = ArtifactCache(str(tmp_path / "cache"), fetcher)
 
             with pytest.raises(ArtifactError, match="isn't in the cache, and alai is offline"):
-                _ = cache.get(Artifact("ns.coll", Version("1.0.0"), url="https://dl.example/x", cksum="0" * 64, size=1))
+                _ = get(
+                    cache, Artifact("ns.coll", Version("1.0.0"), url="https://dl.example/x", cksum="0" * 64, size=1)
+                )
 
     @pytest.mark.parametrize("cksum", ["../../etc", "A" * 64, "0" * 63])
     def test_bad_cksum(self, cache: ArtifactCache, cksum: str) -> None:
@@ -251,8 +258,14 @@ def appended(item: Artifact, members: dict[str, bytes]) -> Artifact:
     return Artifact(item.name, item.version, url=item.url, cksum=sha256(data), size=len(data))
 
 
-def manifest(name: str = "coll", version: str = "1.0.0") -> bytes:
-    return json.dumps({"collection_info": {"namespace": "ns", "name": name, "version": version}}).encode()
+def manifest(item: Artifact, name: str = "coll", version: str = "1.0.0", *, files: bytes | None = None) -> bytes:
+    """A ``MANIFEST.json`` for ``item``'s tarball, naming ``files``, or the ``FILES.json`` it has, by its sha256."""
+    if files is None:
+        with tarfile.open(item.url.removeprefix("file://")) as tar:
+            member = tar.extractfile("FILES.json")
+            assert member is not None
+            files = member.read()
+    return manifest_json(f"ns.{name}", version, files=files)
 
 
 class TestAppended:
@@ -260,20 +273,22 @@ class TestAppended:
     replace their MANIFEST.json: only the last is read and extracted."""
 
     def test_manifest(self, tmp_path: Path, cache: ArtifactCache) -> None:
-        item = appended(
-            artifact(tmp_path, manifest=json.loads(manifest(version="0.9.0"))), {"MANIFEST.json": manifest()}
-        )
+        built = artifact(tmp_path, collection_info={"namespace": "ns", "name": "coll", "version": "0.9.0"})
+        replacement = manifest(built)
+        item = appended(built, {"MANIFEST.json": replacement})
 
-        path = Path(cache.get(item))
+        path = Path(get(cache, item))
 
-        assert (path / "MANIFEST.json").read_bytes() == manifest()
+        assert (path / "MANIFEST.json").read_bytes() == replacement
 
     def test_files_json_and_a_file(self, tmp_path: Path, cache: ArtifactCache) -> None:
         listed = [listed_file("README.md", sha256(b"new")), listed_file("added.txt", sha256(b"added"))]
         files_json = json.dumps({"files": listed, "format": 1}).encode()
-        item = appended(artifact(tmp_path), {"README.md": b"new", "added.txt": b"added", "FILES.json": files_json})
+        built = artifact(tmp_path)
+        new = {"README.md": b"new", "added.txt": b"added", "FILES.json": files_json}
+        item = appended(built, {**new, "MANIFEST.json": manifest(built, files=files_json)})
 
-        path = Path(cache.get(item))
+        path = Path(get(cache, item))
 
         assert (path / "README.md").read_bytes() == b"new"
         assert (path / "added.txt").read_bytes() == b"added"
@@ -285,19 +300,22 @@ class TestAppended:
         original = [listed_file("README.md", sha256(b"x"))]
         listed = [*original, listed_file("extra.txt", sha256(b"e"))]
         files_json = json.dumps({"files": listed, "format": 1}).encode()
-        item = appended(artifact(tmp_path, files=files, listed=original), {"FILES.json": files_json})
+        built = artifact(tmp_path, files=files, listed=original)
+        item = appended(built, {"FILES.json": files_json, "MANIFEST.json": manifest(built, files=files_json)})
 
-        path = Path(cache.get(item))
+        path = Path(get(cache, item))
 
         assert (path / "extra.txt").read_bytes() == b"e"
 
     def test_collection_of_a_tarball(self, tmp_path: Path, cache: ArtifactCache) -> None:
         # The collection a tarball is for, when it isn't known beforehand, is read from the same MANIFEST.json.
-        item = appended(artifact(tmp_path, manifest=json.loads(manifest("other"))), {"MANIFEST.json": manifest()})
+        built = artifact(tmp_path, collection_info={"namespace": "ns", "name": "other", "version": "1.0.0"})
+        replacement = manifest(built)
+        item = appended(built, {"MANIFEST.json": replacement})
 
         path = Path(cache.add(item.url.removeprefix("file://"), item.cksum))
 
-        assert (path / "MANIFEST.json").read_bytes() == manifest()
+        assert (path / "MANIFEST.json").read_bytes() == replacement
 
 
 class TestExtractErrors:
@@ -311,7 +329,7 @@ class TestExtractErrors:
         cksum = hashlib.sha256(data).hexdigest()
 
         with pytest.raises(ArtifactError, match=r"ns\.coll 1\.0\.0: can't extract the artifact"):
-            _ = cache.get(Artifact(item.name, item.version, url=item.url, cksum=cksum, size=len(data)))
+            _ = get(cache, Artifact(item.name, item.version, url=item.url, cksum=cksum, size=len(data)))
         assert leftovers(cache) == []
 
     def test_not_gzipped(self, tmp_path: Path, cache: ArtifactCache) -> None:
@@ -324,4 +342,4 @@ class TestExtractErrors:
         item = Artifact(gzipped.name, gzipped.version, url=plain.as_uri(), cksum=sha256(data), size=len(data))
 
         with pytest.raises(ArtifactError, match=r"ns\.coll 1\.0\.0: can't extract the artifact"):
-            _ = cache.get(item)
+            _ = get(cache, item)

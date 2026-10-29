@@ -100,4 +100,4 @@ def run(args: argparse.Namespace) -> int:
     try:
         os.execve(path, [command, *args.args], environ)  # noqa: S606 # running the user's command is the point
     except OSError as e:
-        raise Error(f"can't run {command} ({path}): {e.strerror}") from None
+        raise Error(f"can't run {command} ({path}): {e.strerror}") from e

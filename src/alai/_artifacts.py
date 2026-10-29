@@ -93,42 +93,47 @@ class ArtifactCache:
         path = self.path(cksum)
         return path if os.path.isdir(path) else None
 
-    def get(self, artifact: Artifact, report: Report | None = None) -> str:
-        """The directory ``artifact`` is extracted to, downloading and extracting it first if it isn't cached:
-        ``get_all`` for one."""
-        return self.get_all([artifact], report)[artifact.name]
-
     def _workdir(self) -> str:
         """A new directory in the cache to download or extract into, for the caller to remove."""
         try:
             os.makedirs(self.root, exist_ok=True)
             return tempfile.mkdtemp(dir=self.root, prefix=".tmp-")
         except OSError as e:
-            raise ArtifactError(f"can't write to the cache at {self.root}: {e.strerror or e}") from None
+            raise ArtifactError(f"can't write to the cache at {self.root}: {e.strerror or e}") from e
+
+    def _fetch(
+        self, url: str, shown: str, *, max_size: int, magic: bytes = b"", kind: str = "file"
+    ) -> tuple[str, str, str, int]:
+        """Download ``url``, called ``shown`` in messages, into a new work directory in the cache, as
+        ``Fetcher.download`` does: the directory, the tarball in it, and its SHA-256 and size. The caller removes the
+        directory, which is already gone if this raises."""
+        from ._fetch import FetchError
+
+        if self._fetcher is None:
+            raise ArtifactError(f"{shown} isn't in the cache, and there's no fetcher to download it")
+        work = self._workdir()
+        tarball = os.path.join(work, "artifact.tar.gz")
+        try:
+            digest, size = self._fetcher.download(url, tarball, max_size=max_size, magic=magic, kind=kind)
+        except FetchError as e:
+            shutil.rmtree(work, ignore_errors=True)
+            raise ArtifactError(f"can't download {shown}: {e}") from e
+        except BaseException:
+            shutil.rmtree(work, ignore_errors=True)
+            raise
+        return work, tarball, digest, size
 
     def _download(self, artifact: Artifact, report: Report) -> tuple[str, str]:
         """Download ``artifact`` into a new work directory in the cache, checked against the lock: the directory and
         the tarball in it, for ``_unpack_download``, which removes the directory."""
-        from ._fetch import FetchError
-
-        if self._fetcher is None:
-            raise ArtifactError(f"{artifact} isn't in the cache, and there's no fetcher to download it")
-        work = self._workdir()
-        try:
-            tarball = os.path.join(work, "artifact.tar.gz")
-            report(artifact, "downloading")
-            try:
-                digest, size = self._fetcher.download(artifact.url, tarball, max_size=artifact.size)
-            except FetchError as e:
-                raise ArtifactError(f"can't download {artifact}: {e}") from None
-            if digest != artifact.cksum or size != artifact.size:
-                raise ArtifactError(
-                    f"{artifact} from {artifact.url} doesn't match the lock: it has SHA-256 {digest} and "
-                    + f"{size} bytes, where the lock has {artifact.cksum} and {artifact.size} bytes"
-                )
-        except BaseException:
+        report(artifact, "downloading")
+        work, tarball, digest, size = self._fetch(artifact.url, str(artifact), max_size=artifact.size)
+        if digest != artifact.cksum or size != artifact.size:
             shutil.rmtree(work, ignore_errors=True)
-            raise
+            raise ArtifactError(
+                f"{artifact} from {artifact.url} doesn't match the lock: it has SHA-256 {digest} and "
+                + f"{size} bytes, where the lock has {artifact.cksum} and {artifact.size} bytes"
+            )
         report(artifact, "waiting")
         return work, tarball
 
@@ -151,9 +156,9 @@ class ArtifactCache:
         """The directory the collection tarball at ``tarball``, whose SHA-256 is ``cksum``, is extracted to,
         extracting it first if it isn't cached. Its collection needn't be known beforehand: it's the one its
         ``MANIFEST.json`` names, which the caller checks."""
-        target = self.path(cksum)
-        if os.path.isdir(target):
+        if target := self.cached(cksum):
             return target
+        target = self.path(cksum)
         work = self._workdir()
         try:
             self._unpack(tarball, work, target, tarball, None)
@@ -165,25 +170,12 @@ class ArtifactCache:
         """Download the collection tarball at ``url`` and extract it into the cache, for a source that names a URL
         rather than an index's artifact: its SHA-256, size, and the directory it's extracted to. Its collection is
         the one its ``MANIFEST.json`` names, which the caller checks."""
-        from ._fetch import FetchError
-
-        if self._fetcher is None:
-            raise ArtifactError(f"{url} isn't in the cache, and there's no fetcher to download it")
-        work = self._workdir()
+        work, tarball, digest, size = self._fetch(
+            url, url, max_size=MAX_ARCHIVE_SIZE, magic=GZIP_MAGIC, kind="gzip file, so not a collection tarball"
+        )
         try:
-            tarball = os.path.join(work, "artifact.tar.gz")
-            try:
-                digest, size = self._fetcher.download(
-                    url,
-                    tarball,
-                    max_size=MAX_ARCHIVE_SIZE,
-                    magic=GZIP_MAGIC,
-                    kind="gzip file, so not a collection tarball",
-                )
-            except FetchError as e:
-                raise ArtifactError(f"can't download {url}: {e}") from None
             target = self.path(digest)
-            if not os.path.isdir(target):
+            if self.cached(digest) is None:
                 self._unpack(tarball, work, target, url, None)
             return digest, size, target
         finally:
@@ -214,14 +206,14 @@ class ArtifactCache:
                 if not os.path.isdir(target):
                     raise
         except OSError as e:
-            raise ArtifactError(f"can't extract {shown} into the cache: {e.strerror or e}") from None
+            raise ArtifactError(f"can't extract {shown} into the cache: {e.strerror or e}") from e
         trace(f"{name} {version}: extracted to {target}")
 
     def get_all(self, artifacts: _c.Iterable[Artifact], report: Report | None = None) -> dict[str, str]:
         """Each artifact's extracted directory, by collection name, fetching those that aren't cached in parallel.
 
         Every one is attempted; if any fails, the first by name is raised once the rest have finished. ``report`` is
-        as for ``get``.
+        told each one's progress.
         """
         from ._fetch import MAX_CONNECTIONS
 
@@ -275,13 +267,13 @@ def extract(
     must be those; without, as ansible-galaxy reads a tarball's (``_get_meta_from_tar``), they're checked once it's
     extracted, into a directory the caller discards on an error. ``shown`` is where it came from, for messages.
 
-    Only ``MANIFEST.json``, ``FILES.json`` and the entries ``FILES.json`` lists are extracted, each file checked
-    against its SHA-256 there. Every path and symlink must stay inside the collection, checked on disk as well as by
-    name, since one symlink can lead another out. Files are ``0644``, or ``0755`` if the tarball marks them
-    executable, and directories ``0755``, both masked by the process umask: not the tarball's own modes. More than
-    ``limit`` bytes unpacked from the tarball is refused, counting what a hard link copies and a symlink's checksum
-    reads; 0 is no limit. The work is alai-core's (``alai_core.artifact.extract``); the design is in
-    ``design/performance.md``.
+    Only ``MANIFEST.json``, the files manifest it names (``FILES.json`` as ansible-galaxy builds it) and the entries
+    that lists are extracted, each file checked against its SHA-256 there. Every path and symlink must stay inside the
+    collection, checked on disk as well as by name, since one symlink can lead another out. Files are ``0644``, or
+    ``0755`` if the tarball marks them executable, and directories ``0755``, both masked by the process umask: not the
+    tarball's own modes. More than ``limit`` bytes unpacked from the tarball is refused, counting what a hard link
+    copies and a symlink's checksum reads; 0 is no limit. The work is alai-core's (``alai_core.artifact.extract``); the
+    design is in ``design/performance.md``.
     """
     # Imported here, so commands that never extract don't load it.
     from alai_core.artifact import ExtractError
@@ -297,19 +289,19 @@ def extract(
         namespace, short, text = extract_artifact(tarball, dest, limit=limit, expected=want)
     except ExtractError as e:
         if want is None and e.kind == "missing" and e.entry == "MANIFEST.json":
-            raise ArtifactError(f"{shown} has no MANIFEST.json, so it isn't a built collection") from None
+            raise ArtifactError(f"{shown} has no MANIFEST.json, so it isn't a built collection") from e
         hint = ""
         if e.kind == "too_large":
             hint = f"; set {MAX_UNPACKED_SIZE_ENV} to a larger number of bytes, or 0 for no limit, if it's genuine"
-        raise ArtifactError(f"{shown}: {e}{hint}") from None
+        raise ArtifactError(f"{shown}: {e}{hint}") from e
     except OSError as e:
-        raise ArtifactError(f"{shown}: can't extract the artifact: {e.strerror or e}") from None
+        raise ArtifactError(f"{shown}: can't extract the artifact: {e.strerror or e}") from e
     if expected is not None:
         return expected
     try:
         return collection_name(f"{namespace}.{short}"), Version(text)
     except ValueError as e:
-        raise ArtifactError(f"{shown}: MANIFEST.json: {e}") from None
+        raise ArtifactError(f"{shown}: MANIFEST.json: {e}") from e
 
 
 def max_unpacked_size(environ: _c.Mapping[str, str]) -> int:

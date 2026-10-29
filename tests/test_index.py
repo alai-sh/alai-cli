@@ -68,7 +68,7 @@ class TestConfig:
     def test_example(self) -> None:
         parsed, moved_to = parse_config((EXAMPLE / "config.json").read_bytes(), ROOT, f"{ROOT}config.json")
 
-        assert (parsed.root, parsed.format, parsed.index, parsed.collections_url, parsed.plugins_url) == (
+        assert (parsed.root, parsed.file.format, parsed.file.index, parsed.collections_url, parsed.plugins_url) == (
             ROOT,
             1,
             "index/{namespace}/{name}.jsonl",
@@ -99,7 +99,7 @@ class TestConfig:
 
         parsed, _ = parse_config(config(formats=formats), ROOT, "u")
 
-        assert (parsed.format, parsed.index) == (1, "v1/{namespace}/{name}.jsonl")
+        assert (parsed.file.format, parsed.file.index) == (1, "v1/{namespace}/{name}.jsonl")
 
     @pytest.mark.parametrize(
         ("template", "hashed"),
@@ -112,7 +112,7 @@ class TestConfig:
     def test_index_template(self, template: str, hashed: bool) -> None:
         parsed, _ = parse_config(config(formats={"1": {"index": template, "collections": "c.json"}}), ROOT, "u")
 
-        assert (parsed.index, parsed.hashed) == (template, hashed)
+        assert (parsed.file.index, parsed.hashed) == (template, hashed)
 
     @pytest.mark.parametrize(
         ("root", "path"),
@@ -124,7 +124,7 @@ class TestConfig:
     def test_index_elsewhere(self, root: str, path: str) -> None:
         parsed, _ = parse_config(config(formats={"1": {"index": path, "collections": "c.json"}}), root, "u")
 
-        assert parsed.index == path
+        assert parsed.file.index == path
 
     def test_moved_to(self) -> None:
         assert parse_config(config(**{"moved-to": "https://new.example/"}), ROOT, "u")[1] == "https://new.example/"
@@ -175,6 +175,11 @@ class TestConfig:
                 config(formats={"1": {"index": "i/{namespace}/{name}", "collections": "c", "plugins": "ftp://p"}}),
                 r"'formats\.1\.plugins': refusing ftp://p",
             ),
+            (
+                config(dl="http://dl.example/{sha256-checksum}"),
+                r"'dl': refusing http://dl\.example/0{64}, from an index at https://",
+            ),
+            (config(dl="file:///srv/{sha256-checksum}"), r"'dl': refusing file:///srv/0{64}"),
             (config(dl="https://dl.example/artifact.tar.gz"), "'dl' must be a URL template with a placeholder"),
             (config(dl=None), "'dl' must be a URL template"),
             (config(**{"moved-to": 1}), "'moved-to' must be a URL or null"),
@@ -251,6 +256,11 @@ class TestIndexFile:
             == f"https://dl.example/ns/coll/1.0.0%2Bbuild.1/aa/{CKSUM}.tar.gz"
         )
 
+    def test_artifact_url_relative(self) -> None:
+        parsed, _ = parse_config(config(dl="/dl/{sha256-checksum}.tar.gz"), f"{ROOT}sub/", "u")
+
+        assert artifact_url(parsed, "ns.coll", Version("1.0.0"), CKSUM) == f"{ROOT}dl/{CKSUM}.tar.gz"
+
 
 @pytest.fixture
 def fetcher() -> _c.Iterator[Fetcher]:
@@ -281,7 +291,9 @@ class TestIndexClient:
         index = client(url, fetcher, tmp_path / "cache")
 
         assert index_file_url(index.config(), "community.general") == f"{url}index/community/general.jsonl"
-        assert sorted(index.collections()) == [
+        listed = index.collections()
+        assert listed is not None
+        assert sorted(listed) == [
             "alai_example.demo",
             "community.general",
             "community.library_inventory_filtering_v1",
@@ -463,20 +475,24 @@ class TestMovedTo:
         with pytest.raises(IndexDataError, match="more than 5 moved-to hops"):
             _ = client(f"{server.url}0/", fetcher, tmp_path / "cache").config()
 
-    def test_refuses_downgrade(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        ("root", "moved_to"),
+        [(ROOT, "http://index.example/"), ("http://index.example/", "file:///srv/index/")],
+    )
+    def test_refuses_downgrade(self, tmp_path: Path, root: str, moved_to: str) -> None:
         class Stub:
             def cached(self, cache_path: str | None) -> None:
                 return None
 
             def get(self, url: str, cache_path: str | None) -> bytes:
-                return config(**{"moved-to": "http://index.example/"})
+                return config(**{"moved-to": moved_to})
 
             def fetch(self, url: str, cache_path: str | None) -> None:
                 return None
 
-        index = IndexClient(Index("test", ROOT), Stub(), str(tmp_path))  # pyright: ignore[reportArgumentType]
+        index = IndexClient(Index("test", root), Stub(), str(tmp_path))  # pyright: ignore[reportArgumentType]
 
-        with pytest.raises(IndexDataError, match=r"refusing to follow moved-to from https to http://index\.example/"):
+        with pytest.raises(IndexDataError, match=f"'moved-to': refusing {moved_to}, from an index at {root}"):
             _ = index.config()
 
 
@@ -490,7 +506,7 @@ def relist(site: Path) -> None:
 
 
 @contextlib.contextmanager
-def run(url: str, cache: Path, *, offline: bool = False) -> _c.Iterator[IndexClient]:
+def run(url: str, cache: Path, *, offline: bool = False) -> _c.Generator[IndexClient]:
     """One alai run: a fresh Fetcher, so nothing is remembered from the last but the cache on disk."""
     with Fetcher(user_agent="alai-test", offline=offline) as f:
         yield IndexClient(Index("test", url, source="alai.toml"), f, str(cache))

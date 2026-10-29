@@ -15,7 +15,7 @@ import argparse
 import collections.abc as _c
 import sys
 
-from ._common import ConfigError
+from ._common import ConfigError, no_group
 from ._config import SETTINGS, Overrides, SettingDefinition, Settings, load_settings
 from ._output import terminal_width
 
@@ -260,7 +260,7 @@ def upgrade_from_args(args: argparse.Namespace) -> Upgrade:
     try:
         collections = {collection_name(n) for n in args.upgrade_collection}
     except ValueError as e:
-        raise ConfigError(f"--upgrade-collection: {e}") from None
+        raise ConfigError(f"--upgrade-collection: {e}") from e
     upgrade = Upgrade(everything=args.upgrade, collections=collections, groups=getattr(args, "upgrade_group", []))
     if upgrade and getattr(args, "frozen", False):
         usage_error(args, "--upgrade, --upgrade-collection and --upgrade-group resolve, which --frozen doesn't")
@@ -276,7 +276,7 @@ def reinstall_from_args(args: argparse.Namespace) -> bool | set[str]:
     try:
         return {collection_name(n) for n in args.reinstall_collection} or False
     except ValueError as e:
-        raise ConfigError(f"--reinstall-collection: {e}") from None
+        raise ConfigError(f"--reinstall-collection: {e}") from e
 
 
 def selected_groups(args: argparse.Namespace, known: _c.Collection[str]) -> tuple[bool, list[str]]:
@@ -289,8 +289,7 @@ def selected_groups(args: argparse.Namespace, known: _c.Collection[str]) -> tupl
         # --no-group dev and --no-dev are fine without a dev group, so a CI job can always pass them.
         for name in sorted(set(names)):
             if name not in known and not (defaults_ok and name in DEFAULT_GROUPS):
-                have = ", ".join(f"'{g}'" for g in sorted(known))
-                raise ConfigError(f"{flag}: alai.toml has no group '{name}'" + (f" (it has {have})" if have else ""))
+                raise no_group(flag, name, known)
 
     check("--group", args.group)
     check("--only-group", args.only_group)

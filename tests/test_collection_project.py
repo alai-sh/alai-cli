@@ -12,8 +12,8 @@ import os
 from pathlib import Path
 
 import pytest
-from alai_core.toml import loads
-from helpers import lines
+from alai_core.semver import Version
+from helpers import lines, lock_table
 
 from alai import _config
 from alai._cli import main
@@ -179,9 +179,9 @@ class TestGalaxy:
             ("name: col\nversion: 1.0.0\n", "'namespace' and 'name' are required strings"),
             ("namespace: ns\nname: Col\nversion: 1.0.0\n", "collection names are lowercase"),
             ("namespace: ns\nname: col\n", "'version' is required"),
-            ("namespace: ns\nname: col\nversion: one\n", "'version': "),
+            ("namespace: ns\nname: col\nversion: one\n", "version: invalid version"),
             # Kept as written, so it's refused as a version rather than read as the float 1.1, as PyYAML would.
-            ("namespace: ns\nname: col\nversion: 1.10\n", "'version': "),
+            ("namespace: ns\nname: col\nversion: 1.10\n", "version: invalid version"),
             ("namespace: ns\nname: col\nversion: 1.0.0\ndependencies: [a.a]\n", "'dependencies' must be a mapping"),
             ("namespace: ns\nname: col\nversion: 1.0.0\ndependencies: {a.a: 1}\n", "dependencies.a.a: expected"),
             ("namespace: ns\nname: col\nversion: 1.0.0\ndependencies: {a.a: '^1'}\n", "dependencies.a.a: invalid"),
@@ -195,6 +195,25 @@ class TestGalaxy:
 
         with pytest.raises(ConfigError, match=error.replace("(", "\\(").replace("^", "\\^")):
             _ = read_source_collection(str(tmp_path / "galaxy.yml"))
+
+    def test_every_problem_reported(self, tmp_path: Path) -> None:
+        _ = (tmp_path / "galaxy.yml").write_text("namespace: ns\nname: col\nversion: one\ndependencies: {a.a: '^1'}\n")
+
+        with pytest.raises(ConfigError) as e:
+            _ = read_source_collection(str(tmp_path / "galaxy.yml"))
+
+        assert [line.split(": ", 2)[1] for line in str(e.value).splitlines()] == ["version", "dependencies.a.a"]
+
+    def test_version_given_covers_only_the_version(self, tmp_path: Path) -> None:
+        # A version given in place of the file's stands in for its own, but not for the rest.
+        galaxy = tmp_path / "galaxy.yml"
+        _ = galaxy.write_text("namespace: ns\nname: col\nversion: '{{ v }}'\n")
+        given = Version("2.0.0")
+
+        assert read_source_collection(str(galaxy), given, source="[project.sources]").version == given
+        _ = galaxy.write_text("namespace: ns\nname: col\nversion: '{{ v }}'\ndependencies: {a.a: '^1'}\n")
+        with pytest.raises(ConfigError, match=r"dependencies\.a\.a: invalid"):
+            _ = read_source_collection(str(galaxy), given, source="[project.sources]")
 
     def test_duplicate_key_warned(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         _ = (tmp_path / "galaxy.yml").write_text("namespace: ns\nname: col\nversion: 1.0.0\nversion: 1.1.0\n")
@@ -211,13 +230,30 @@ class TestGalaxy:
         with pytest.raises(ConfigError, match=r"runtime\.yml: requires_ansible: .*expected PEP 440"):
             _ = read_source_collection(str(tmp_path / "galaxy.yml"))
 
-    def test_requires_ansible_not_a_string(self, tmp_path: Path) -> None:
+    def test_requires_ansible_unquoted_number(self, tmp_path: Path) -> None:
+        # The string "2.15", as ansible-core reads runtime.yml, which isn't a specifier set.
         galaxy(tmp_path)
         (tmp_path / "meta").mkdir()
         _ = (tmp_path / "meta/runtime.yml").write_text("requires_ansible: 2.15\n")
 
+        with pytest.raises(ConfigError, match=r"requires_ansible: invalid specifier '2\.15'.*ansible-core only warns"):
+            _ = read_source_collection(str(tmp_path / "galaxy.yml"))
+
+    def test_requires_ansible_not_a_string(self, tmp_path: Path) -> None:
+        galaxy(tmp_path)
+        (tmp_path / "meta").mkdir()
+        _ = (tmp_path / "meta/runtime.yml").write_text("requires_ansible: ['>=2.15']\n")
+
         with pytest.raises(ConfigError, match="'requires_ansible' must be a string"):
             _ = read_source_collection(str(tmp_path / "galaxy.yml"))
+
+    def test_runtime_not_a_mapping(self, tmp_path: Path) -> None:
+        # ansible-core can't load it, but it's read as empty, as alai only needs requires_ansible from it.
+        galaxy(tmp_path)
+        (tmp_path / "meta").mkdir()
+        _ = (tmp_path / "meta/runtime.yml").write_text("- a\n")
+
+        assert read_source_collection(str(tmp_path / "galaxy.yml")).requires_ansible is None
 
     def test_empty(self, tmp_path: Path) -> None:
         _ = (tmp_path / "galaxy.yml").write_text("")
@@ -265,7 +301,7 @@ class TestSync:
         assert main(["lock", "-q"]) == 0
 
         text = (project / "alai.lock").read_text()
-        data = loads(text)
+        data = lock_table(project)
         assert data["project"] == {"requires_ansible": ">=2.15", "collections": ["a.a>=1.0.0", "c.c"]}
         assert [c["name"] for c in data["collection"]] == ["a.a", "b.b", "c.c", "ns.col"]
         assert data["collection"][-1] == {
@@ -529,7 +565,7 @@ class TestModuleDebugging:
     @pytest.mark.parametrize("name", ["_ANSIBLE_ANSIBALLZ_DEBUGPY_CONFIG", "_ANSIBLE_ANSIBALLZ_PYDEVD_CONFIG"])
     def test_adds_the_checkout(self, project: Path, name: str) -> None:
         galaxy(project)
-        config = {"host": "localhost", "port": 1234, "source_mapping": {}}
+        config: dict[str, object] = {"host": "localhost", "port": 1234, "source_mapping": {}}
 
         environ = self.environment(project, {name: json.dumps(config)})
 

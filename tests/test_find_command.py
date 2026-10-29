@@ -14,7 +14,7 @@ from index_data import make_index, plugin
 from alai import _find
 from alai._cli import main
 from alai._common import EXIT_ERROR, EXIT_NOT_FOUND
-from alai._find import as_sentence, markup, plain, sentence
+from alai._find import as_sentence, markup, plain
 
 PLUGINS = [
     plugin("ansible.builtin.copy", short_description="Copy files to remote locations"),
@@ -633,7 +633,7 @@ def test_invalid_limit(value: str, message: str, capsys: pytest.CaptureFixture[s
     ],
 )
 def test_sentence(text: str, expected: str) -> None:
-    assert sentence(text) == expected
+    assert "".join(piece for piece, _, _ in as_sentence(markup(text))) == expected
 
 
 @pytest.mark.parametrize(
@@ -651,14 +651,14 @@ def test_sentence(text: str, expected: str) -> None:
         ("Return V(pong) on success", "Return pong on success"),
         ("Close a O(connection_name)", "Close a connection_name"),
         ("Set O(ns.coll.mod#module:state=present)", "Set state=present"),
-        ("Set O(main:path) for the role", "Set path for the role"),
+        ("Set O(main:path) outside a role", "Set O(main:path) outside a role"),
         ("Once O(ignore:old_option) was used", "Once old_option was used"),
         ("Returns RV(ansible.builtin.stat#module:stat.exists=true)", "Returns stat.exists=true"),
         ("See R(the guide,platform_options) first", "See the guide first"),
         ("Value V(a=b:c) kept whole", "Value a=b:c kept whole"),
         ("Value V(a\\)b) escaped", "Value a)b escaped"),
         ("B(Bold) and E(HOME)", "Bold and HOME"),
-        ("Before HORIZONTALLINE after", "Before  after"),
+        ("Before HORIZONTALLINE after", "Before after"),
         ("Unclosed C(oops", "Unclosed C(oops"),
         ("Not markup: ABC(x) or c(x)", "Not markup: ABC(x) or c(x)"),
     ],
@@ -670,13 +670,25 @@ def test_plain(text: str, expected: str) -> None:
 def test_markup_pieces() -> None:
     assert markup("Use C(lxc) with O(ns.c.p#module:name=x), see L(docs,https://e.example) or R(guide,anchor)") == [
         ("Use ", None, None),
-        ("lxc", "C", None),
+        ("lxc", "code", None),
         (" with ", None, None),
-        ("name=x", "O", None),
+        ("name=x", "option_name", None),
         (", see ", None, None),
-        ("docs", "L", "https://e.example"),
+        ("docs", "link", "https://e.example"),
         (" or ", None, None),
-        ("guide", "R", None),
+        ("guide", "rst_ref", None),
+    ]
+
+
+def test_markup_in_a_role() -> None:
+    assert plain("Set O(main:path) for the role", role=True) == "Set path for the role"
+
+
+def test_markup_links_only_to_the_web() -> None:
+    assert markup("U(file:///etc/passwd) L(x,javascript:alert(1)") == [
+        ("file:///etc/passwd", "url", None),
+        (" ", None, None),
+        ("x", "link", None),
     ]
 
 

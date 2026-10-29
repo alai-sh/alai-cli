@@ -189,7 +189,9 @@ dependencies = []
 
         assert same(parsed, lock)
         assert parsed.manifest.collections == [odd]
-        assert parsed.collections[0].source.url == f"https://x/{odd}"
+        source = parsed.collections[0].source
+        assert isinstance(source, IndexSource)
+        assert source.url == f"https://x/{odd}"
 
     def test_bare_and_quoted_keys(self) -> None:
         text = render_lock(Lock(raw(groups={"lint-only": [], "my group": []}), []))

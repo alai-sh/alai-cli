@@ -92,11 +92,12 @@ def run(args: argparse.Namespace) -> int:
     from .._find import find
     from .._plugins import Query
 
-    if args.exact and any(c in args.query for c in "*?["):
+    query = Query(args.query, exact=args.exact, types=args.types)
+    if args.exact and query.glob:
         args.parser.error("-x/--exact can't be used with a glob")
     return find(
         settings_from_args(args),
-        Query(args.query, exact=args.exact, types=args.types),
+        query,
         installed_only=args.installed,
         include_removed=args.include_removed,
         limit=args.limit,
@@ -107,8 +108,8 @@ def run(args: argparse.Namespace) -> int:
 def _count(text: str) -> int:
     try:
         value = int(text)
-    except ValueError:
-        raise argparse.ArgumentTypeError(f"'{text}' isn't a whole number") from None
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(f"'{text}' isn't a whole number") from e
     if value < 0:
         raise argparse.ArgumentTypeError("can't be negative")
     return value

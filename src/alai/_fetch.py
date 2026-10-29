@@ -141,19 +141,21 @@ class Fetcher:
         so a response that's something else, such as an error page, isn't downloaded whole. Not found and offline are
         FetchErrors, as the caller only asks for what a lock or a source names.
         """
-        if url.startswith("file:") or self.offline:
+        if url.startswith("file:"):
             return self._copy(url, path, max_size=max_size, magic=magic, kind=kind)
+        if self.offline:
+            raise FetchError(f"{url} isn't in the cache, and alai is offline")
         try:
             status, reason, redirects, sha256, size = self._http(url).download(url, path, max_size, magic)
         except _native.HttpError as e:
             error_kind, _ = e.args
             if error_kind == "too_large":
-                raise FetchError(f"{url}: larger than the {max_size} bytes expected") from None
+                raise FetchError(f"{url}: larger than the {max_size} bytes expected") from e
             if error_kind == "not_magic":
-                raise FetchError(f"{url}: not a {kind}") from None
-            raise _transport_error(url, e, self._http(url).proxy(url)) from None
+                raise FetchError(f"{url}: not a {kind}") from e
+            raise _transport_error(url, e, self._http(url).proxy(url)) from e
         except OSError as e:
-            raise FetchError(f"can't write {path}: {e.strerror or e}") from None
+            raise FetchError(f"can't write {path}: {e.strerror or e}") from e
         _trace_redirects(url, redirects)
         if status in _NOT_FOUND:
             raise FetchError(f"{url}: not found (HTTP {status})")
@@ -163,7 +165,7 @@ class Fetcher:
         return sha256, size
 
     def _copy(self, url: str, path: str, *, max_size: int, magic: bytes, kind: str) -> tuple[str, int]:
-        """``download`` for a file URL, or offline."""
+        """``download`` for a file URL."""
         digest = hashlib.sha256()
         size = 0
         start = b""
@@ -180,25 +182,22 @@ class Fetcher:
                     digest.update(chunk)
                     _ = out.write(chunk)
         except OSError as e:
-            raise FetchError(f"can't write {path}: {e.strerror or e}") from None
+            raise FetchError(f"can't write {path}: {e.strerror or e}") from e
         if len(start) < len(magic):
             raise FetchError(f"{url}: not a {kind}")
         trace(f"read {url}: {size} bytes")
         return digest.hexdigest(), size
 
     def _chunks(self, url: str) -> _c.Iterator[bytes]:
-        if url.startswith("file:"):
-            path = _file_path(url)
-            try:
-                with open(path, "rb") as fd:
-                    while chunk := fd.read(_CHUNK):
-                        yield chunk
-            except FileNotFoundError:
-                raise FetchError(f"{path}: not found") from None
-            except OSError as e:
-                raise FetchError(f"{path}: {e.strerror or e}") from None
-            return
-        raise FetchError(f"{url} isn't in the cache, and alai is offline")
+        path = _file_path(url)
+        try:
+            with open(path, "rb") as fd:
+                while chunk := fd.read(_CHUNK):
+                    yield chunk
+        except FileNotFoundError as e:
+            raise FetchError(f"{path}: not found") from e
+        except OSError as e:
+            raise FetchError(f"{path}: {e.strerror or e}") from e
 
     def preconnect(self, url: str) -> None:
         """Start connecting to ``url``'s host, for requests soon to follow; nothing if offline or not HTTPS."""
@@ -236,7 +235,7 @@ class Fetcher:
         try:
             status, reason, redirects, etag, body = self._http(requested).get(requested, headers)
         except _native.HttpError as e:
-            raise _transport_error(requested, e, self._http(requested).proxy(requested)) from None
+            raise _transport_error(requested, e, self._http(requested).proxy(requested)) from e
         _trace_redirects(requested, redirects, label)
 
         if status == 304 and cached:
@@ -282,7 +281,7 @@ def _file_path(url: str) -> str:
     try:
         return file_url_to_path(url)
     except ValueError as e:
-        raise FetchError(f"{url}: {e}") from None
+        raise FetchError(f"{url}: {e}") from e
 
 
 def _read_file(url: str, what: str | None = None) -> bytes | None:
@@ -295,7 +294,7 @@ def _read_file(url: str, what: str | None = None) -> bytes | None:
         trace(f"read {path}{label}: not found")
         return None
     except OSError as e:
-        raise FetchError(f"{path}: {e.strerror or e}") from None
+        raise FetchError(f"{path}: {e.strerror or e}") from e
     trace(f"read {path}{label}: {len(data)} bytes")
     return data
 
@@ -338,7 +337,7 @@ def _write_cache(path: str, url: str, etag: str | None, body: bytes) -> None:
             _remove(temp)
             raise
     except OSError as e:
-        raise FetchError(f"can't write to the cache at {path}: {e.strerror or e}") from None
+        raise FetchError(f"can't write to the cache at {path}: {e.strerror or e}") from e
 
 
 def _remove(path: str) -> None:

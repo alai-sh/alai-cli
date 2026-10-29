@@ -10,15 +10,18 @@ from alai_core.pep440 import Version as AnsibleVersion
 from alai_core.semver import Version, VersionReq
 from helpers import write_file
 
-from alai._common import ConfigError
-from alai._config import LinkMode, Overrides, find_project, load_settings
-from alai._manifest import IndexPin, Manifest, Requirement, collection_name, load_manifest
+from alai._common import ConfigError, read_toml
+from alai._config import LinkMode, Overrides, Project, find_project, load_settings, raw_manifest
+from alai._manifest import IndexPin, Manifest, Requirement, collection_name, parse_manifest
+
+
+def load_manifest(project: Project) -> Manifest:
+    assert project.config_file is not None
+    return parse_manifest(raw_manifest(read_toml(project.config_file), project.config_file))
 
 
 def manifest(cwd: Path) -> Manifest:
-    result = load_manifest(find_project(str(cwd)))
-    assert result is not None
-    return result
+    return load_manifest(find_project(str(cwd)))
 
 
 class TestRequirement:
@@ -123,11 +126,6 @@ ignore_requires_ansible = ["some.collection"]
         path = write_file(tmp_path / "alai.toml", 'link_mode = "copy"\n')
 
         assert manifest(tmp_path) == Manifest(str(path))
-
-    def test_no_project_file(self, tmp_path: Path) -> None:
-        write_file(tmp_path / "ansible.cfg")
-
-        assert load_manifest(find_project(str(tmp_path))) is None
 
     def test_ignore_requires_ansible_deduplicated(self, tmp_path: Path) -> None:
         write_file(tmp_path / "alai.toml", '[project.overrides]\nignore_requires_ansible = ["a.b", "c.d", "a.b"]\n')
@@ -237,7 +235,6 @@ class TestManifestAndConfig:
 
         assert settings.link_mode == LinkMode.COPY
         result = load_manifest(settings.project)
-        assert result is not None
         assert [r.name for r in result.collections] == ["a.b"]
 
     @pytest.mark.parametrize(
