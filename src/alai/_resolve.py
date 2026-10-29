@@ -468,13 +468,12 @@ class _Table:
         own metadata. A locked version passed over without any of these reasons gets none.
         """
         on = self.requirements_on(chosen, roots)
-        by_name = {c.name: c for c in locked.collections} if locked is not None else {}
         out: dict[str, str] = {}
         for name, candidate in sorted(chosen.items()):
             if self._manifest.root is not None and name == self._manifest.root.name:
                 continue
             reqs = on.get(name, [])
-            was = by_name.get(name)
+            was = locked.get(name) if locked is not None else None
             if was is None:
                 parents = ", ".join(sorted({r.parent for r in reqs}))
                 out[name] = f"{name} is needed by {parents}"

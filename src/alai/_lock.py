@@ -271,7 +271,7 @@ class LockedRoot(Record):
 
 
 class Lock(Record):
-    __slots__ = ("collections", "manifest", "root")
+    __slots__ = ("_by_name", "collections", "manifest", "root")
 
     def __init__(
         self, manifest: RawManifest, collections: _c.Iterable[LockedCollection], root: LockedRoot | None = None
@@ -283,9 +283,10 @@ class Lock(Record):
         ``[project]``), and the overrides and sources for the whole resolution (its ``[overrides]`` and
         ``[sources]``)."""
         self.collections = tuple(sorted(collections, key=lambda c: c.name))
+        self._by_name = {c.name: c for c in self.collections}
 
     def get(self, name: str) -> LockedCollection | None:
-        return next((c for c in self.collections if c.name == name), None)
+        return self._by_name.get(name)
 
     def select(self, groups: _c.Iterable[str], *, project: bool = True) -> list[LockedCollection]:
         """What installing the project's requirements, unless not ``project``, and those of ``groups`` needs: each
@@ -365,7 +366,15 @@ def local_changed(collection: LockedCollection, manifest: Manifest) -> str | Non
 
 
 def _parsed(requirements: _c.Iterable[str]) -> frozenset[tuple[object, ...]]:
-    return frozenset((name, clauses) for name, (clauses, _) in _by_name(requirements).items())
+    out: set[tuple[object, ...]] = set()
+    for text in requirements:
+        try:
+            r = Requirement.parse(text)
+        except ValueError:
+            out.add((text,))
+            continue
+        out.add((r.name, r.req.clauses))
+    return frozenset(out)
 
 
 def _by_name(items: _c.Iterable[str]) -> dict[str, tuple[object, str]]:
