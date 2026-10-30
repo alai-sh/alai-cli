@@ -251,6 +251,24 @@ class TestCatalog:
         assert index.suggest(Query("dockr_container")) == ["docker_container"]
         assert index.suggest(Query("zzz")) == []
 
+    def test_suggest_full_names_for_a_fqcn(self) -> None:
+        index = catalog(
+            plugin("ansible.windows.win_disk_info"),
+            plugin("zzz.zzz.win_disk_info"),
+            plugin("ali.ali.ali_disk_info"),
+            plugin("ansible.windows.win_disk_info", "lookup"),
+        )
+
+        # The closest short name first, then the closest collection.
+        assert index.suggest(Query("ansible.legacy.win_disk_inf")) == [
+            "ansible.windows.win_disk_info",
+            "zzz.zzz.win_disk_info",
+            "ali.ali.ali_disk_info",
+        ]
+        assert index.suggest(Query("ansible.windwos.win_disk_info", types=("lookup",))) == [
+            "ansible.windows.win_disk_info"
+        ]
+
 
 class TestFollow:
     def route(self, *lines: dict[str, object]) -> tuple[list[str], str | None, str | None]:
@@ -267,6 +285,14 @@ class TestFollow:
     def test_one_hop(self) -> None:
         assert self.route(plugin("a.a.start", routing={"redirect": "b.b.end"}), plugin("b.b.end")) == (
             ["b.b.end"],
+            None,
+            None,
+        )
+
+    def test_into_a_subdirectory(self) -> None:
+        # ansible-core takes ns.coll.subdir.name as a FQCN: the plugin in plugins/modules/subdir/.
+        assert self.route(plugin("a.a.start", routing={"redirect": "b.b.sub.end"}), plugin("b.b.sub.end")) == (
+            ["b.b.sub.end"],
             None,
             None,
         )
@@ -459,6 +485,14 @@ class TestAssess:
 
         assert found.usable is usable
 
+    def test_removed_rather_than_newer(self) -> None:
+        # Added after the installed version and gone from the latest: no upgrade is worth suggesting.
+        index = catalog(plugin("a.a.brief", since="3.0.0", until="5.0.0"))
+
+        found = assess(index.search(Query("brief"))[0], index, {"a.a": Version("2.0.0")}, Query("brief"))
+
+        assert found.state == REMOVED
+
     def test_builtin_is_installed(self) -> None:
         index = catalog(plugin("ansible.builtin.copy"))
 
@@ -500,6 +534,14 @@ class TestRank:
             plugin("ansible.windows.win_user"),
             query="win_user",
         ) == ["ansible.windows.win_user", "zzz.zzz.win_user", "ansible.builtin.win_user"]
+
+    def test_modules_first(self) -> None:
+        assert self.order(
+            plugin("aaa.aaa.user", "role"),
+            plugin("bbb.bbb.user", "lookup"),
+            plugin("zzz.zzz.user"),
+            plugin("ansible.builtin.user", "filter"),
+        ) == ["ansible.builtin.user", "zzz.zzz.user", "aaa.aaa.user", "bbb.bbb.user"]
 
     def test_cached_first(self) -> None:
         assert self.order(plugin("community.general.user"), plugin("zzz.zzz.user"), cached={"zzz.zzz"}) == [

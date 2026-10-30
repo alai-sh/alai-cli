@@ -128,8 +128,10 @@ def index_path(root: Path, name: str) -> str:
 
 
 def plugin(fqcn: str, type_: str = "module", **fields: object) -> dict[str, object]:
-    """One plugin index line: ``plugin("a.a.thing", since="1.0.0", routing={...})``."""
-    collection, name = fqcn.rsplit(".", 1)
+    """One plugin index line: ``plugin("a.a.thing", since="1.0.0", routing={...})``, a name after the collection keeping
+    any subdirectories, ``a.a.sub.thing``."""
+    namespace, collection, name = fqcn.split(".", 2)
+    collection = f"{namespace}.{collection}"
     return {"v": 1, "type": type_, "name": name, "collection": collection, **fields}
 
 

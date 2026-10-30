@@ -776,8 +776,8 @@ recording = "config-show"
 [[reference.find]]
 recording = "find"
 description = """
-`community.general` 11.0.0 is installed. Its `docker_container` was removed
-in 2.0.0, but it still redirects to `community.docker`'s, so a playbook
+`community.general` 11.0.0 is installed. Its `docker_container` moved in
+2.0.0: it redirects to `community.docker`'s, so a playbook
 that uses either name keeps working once `community.docker` is installed.
 `to_` matches part of each filter's name, underlined on a terminal.
 """

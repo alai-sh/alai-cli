@@ -232,7 +232,7 @@ class Catalog:
         wanted = {k for k in keys if k not in self._got}
         if not wanted:
             return
-        names = {fqcn.rsplit(".", 1)[-1] for _, fqcn in wanted}
+        names = {split_fqcn(fqcn)[1] for _, fqcn in wanted}
         for index in self.indexes:
             for plugin in index.named(names):
                 if plugin.key in wanted and self._got.get(plugin.key) is None:
@@ -246,7 +246,7 @@ class Catalog:
         pending = list(plugins)
         seen: set[tuple[str, str]] = set()
         while pending:
-            keys = {(p.type, as_builtin(t)) for p in pending if (t := p.redirect) and t.count(".") == 2} - seen
+            keys = {(p.type, as_builtin(t)) for p in pending if (t := p.redirect) and is_fqcn(t)} - seen
             seen |= keys
             self.preload(keys)
             pending = [p for k in keys if (p := self._got.get(k)) is not None]
@@ -259,13 +259,25 @@ class Catalog:
         return self._got[key]
 
     def suggest(self, query: Query) -> list[str]:
-        """Names close to what was asked for, when nothing matched it."""
+        """Names close to what was asked for, when nothing matched it: short names, or for a FQCN the full names of
+        the plugins with those short names that are closest to it, so another collection's plugin of that name is
+        offered."""
         import difflib
 
         names: set[str] = set()
         for index in self.indexes:
             names |= index.names()
-        return difflib.get_close_matches(query.text.rsplit(".", 1)[-1], sorted(names), n=3, cutoff=0.75)
+        collection, name = split_fqcn(query.text) if query.fqcn else ("", query.text.rsplit(".", 1)[-1])
+        close = difflib.get_close_matches(name, sorted(names), n=3, cutoff=0.75)
+        if not query.fqcn or not close:
+            return close
+        found = {
+            (close.index(p.name), -difflib.SequenceMatcher(None, collection, p.collection).ratio(), p.fqcn)
+            for i in self.indexes
+            for p in i.named(set(close))
+            if not query.types or p.type in query.types
+        }
+        return [fqcn for *_, fqcn in sorted(found)][:3]
 
 
 def find_copies(plugins: _c.Iterable[Plugin | PluginEntry]) -> dict[str, Copy]:
@@ -378,10 +390,25 @@ class Route(Record):
         follow it, as it reads each hop's routing from that hop's collection. ``ansible.legacy`` is ``ansible.builtin``."""
         names: list[str] = []
         for name, _ in self.hops:
-            collection = as_builtin(name).rsplit(".", 1)[0]
+            collection = split_fqcn(as_builtin(name))[0]
             if collection not in names:
                 names.append(collection)
         return names
+
+
+_FQCN = re.compile(r"\w+(\.\w+){2,}")
+
+
+def is_fqcn(name: str) -> bool:
+    """Whether ``name`` is a FQCN as ansible-core takes a redirect's: ``ns.coll.name``, or with subdirectories,
+    ``ns.coll.subdir.name``."""
+    return _FQCN.fullmatch(name) is not None
+
+
+def split_fqcn(fqcn: str) -> tuple[str, str]:
+    """A FQCN's collection and name, the name keeping any subdirectories, as the index has it."""
+    namespace, collection, name = fqcn.split(".", 2)
+    return f"{namespace}.{collection}", name
 
 
 def as_builtin(name: str) -> str:
@@ -407,7 +434,7 @@ def follow(plugin: Plugin, catalog: Catalog, installed: _c.Mapping[str, Version 
     seen = [plugin.fqcn]
     current = plugin
     while (target := current.redirect) is not None:
-        if target.count(".") != 2:
+        if not is_fqcn(target):
             return Route(hops, f"redirect to '{target}', which isn't a FQCN", None)
         found = catalog.get(plugin.type, as_builtin(target))
         hops.append((target, found))
@@ -494,11 +521,12 @@ def assess(plugin: Plugin, catalog: Catalog, installed: _c.Mapping[str, Version 
         state = BROKEN if plugin.tombstone is None else REMOVED
     elif route is not None:
         state = (MISSING if missing else NEWER if outdated else REDIRECT) if is_installed else REDIRECT
+    elif until is not None and (version is None or version >= until or (since is not None and version < since)):
+        # Not installed: gone from its latest version. Installed: gone from the version there, or added after it and
+        # gone from the latest, so it's removed rather than to be upgraded to.
+        state = REMOVED
     elif version is not None and since is not None and version < since:
         state = NEWER
-    elif until is not None and (version is None or version >= until):
-        # Not installed: gone from its latest version. Installed: gone from the version there.
-        state = REMOVED
     elif plugin.deprecation is not None:
         state = DEPRECATED
     else:
@@ -519,7 +547,7 @@ def assess(plugin: Plugin, catalog: Catalog, installed: _c.Mapping[str, Version 
 def rank(found: Found, cached: _c.Container[str]) -> tuple[object, ...]:
     """The sort key for a match: what was named before partial matches, what can be used before redirects to it and
     those before what's gone, then ``ansible.builtin``, collections used before (in the artifact cache), those in the ``ansible`` package, others in
-    its namespaces, probable copies last, and by name within each."""
+    its namespaces, probable copies last, and by name within each, modules first as they're what's most looked for."""
     plugin = found.plugin
     collection = plugin.collection
     namespace = collection.split(".")[0]
@@ -535,6 +563,7 @@ def rank(found: Found, cached: _c.Container[str]) -> tuple[object, ...]:
         tier,
         found.copy is not None,
         _ORDER.index(found.state),
+        plugin.type != "module",
         collection,
         plugin.type,
         plugin.name,

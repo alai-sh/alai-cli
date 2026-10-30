@@ -18,8 +18,17 @@ finds collections you haven't installed, and lists the ones you have first.
 | Query | Finds | Example |
 |---|---|---|
 | A word | Every plugin whose name contains it, exact names first | `alai find user` finds `user`, `win_user` and `user_info` |
-| A glob, with `*`, `?` or `[...]` | Names that match it; with dots, full names that do | `alai find '*_info'`, `alai find 'community.general.*'` |
+| A glob, with `*`, `?` or `[...]` | Short names that match it, or with `namespace.collection.*` the plugins in that collection | `alai find '*_info'`, `alai find 'community.general.*'` |
 | A full name (FQCN) | That plugin's [details](#a-plugins-details) | `alai find community.general.docker_container` |
+
+A glob is matched against full names once it has a namespace and a
+collection in front, and against short names otherwise. So
+`'mgdis.ovh.*'` finds every plugin in `mgdis.ovh`, including ones in
+subdirectories such as `mgdis.ovh.cloud.block_storage.block_storage`. To
+search every collection in a namespace, give both parts, as in
+`alai find 'community.*.*'`. `'community.*'` on its own matches short
+names, so it finds only plugins in a `community/` subdirectory. That's
+also how to search a subdirectory, as in `alai find 'cloud.*'`.
 
 `-x/--exact` matches whole names only, so `alai find -x user` leaves out
 `win_user`. `-t/--type` limits the search to one type, using the names
@@ -27,11 +36,13 @@ finds collections you haven't installed, and lists the ones you have first.
 `role` and `playbook`.
 
 When nothing matches, alai suggests similar names and exits with code 1.
+For a full name it suggests full names, such as
+`ansible.windows.win_disk_info` for `ansible.legacy.win_disk_info`.
 
 ### Quoting globs
 
-Put a glob in single quotes: `alai find '*_info'`, not `alai find *_info`.
-Without quotes, `*`, `?` and `[...]` will be expanded by the shell before alai
+Put a glob in single quotes, as in `alai find '*_info'` rather than
+`alai find *_info`. Without quotes, `*`, `?` and `[...]` will be expanded by the shell before alai
 sees them. Single quotes keep everything as typed. A word or a full name with
 no glob characters does not need to be quoted.
 
@@ -76,10 +87,11 @@ Piped, alai lists every match rather than the first 20, and
 
 ## What's listed first
 
-Matches are in two sections: **Installed**, the collections in the
-project's collections directory together with `ansible.builtin` and
-`eda.builtin`, which ansible-core and ansible-rulebook always have, and
-**Not installed**, everything else on the index. Within each, matches are listed in this order:
+Matches are in two sections. **Installed** has the collections in the
+project's collections directory, plus `ansible.builtin` and `eda.builtin`,
+which come with ansible-core and ansible-rulebook. **Not installed** has
+everything else on the index. Within each section, matches are listed in
+this order:
 
 1. Exact names before partial matches.
 2. Plugins that aren't redirects, then redirects, then ones that are
@@ -97,7 +109,7 @@ project's collections directory together with `ansible.builtin` and
    plugin's details say which collection it seems to copy. That's a guess,
    from at least half their plugins having the same names, so it's only
    used to rank them lower, not to hide them.
-8. By collection and name.
+8. Modules before other types, then by collection and name.
 
 This order tries to provide a priority based listing to show more relevant
 entries first before the remaining matches.
@@ -109,6 +121,11 @@ such as `alai find user | less` or `| grep`, there is no limit unless `--limit`
 is explicitly provided. The `--installed` argument lists only the plugins
 that are installed.
 
+Plugins that have been removed or are just an alias/redirection to another
+plugin are not listed by default unless it is an alias to a plugin with a
+different name. Use `-a`/`--all` to list removed plugins and aliases for
+partial matches too.
+
 ## What the markers mean
 
 Each line starts with a marker:
@@ -117,11 +134,39 @@ Each line starts with a marker:
 |---|---|
 | `✓`{ .ansi-green } | In an installed collection |
 | `·`{ .ansi-dim } | In a collection that isn't installed |
-| `↑`{ .ansi-yellow } | Added in a newer version of the collection than the one installed: upgrade it to use it |
-| `↪`{ .ansi-cyan } | Redirects to another plugin, shown after `→`: the name still works, as Ansible loads that plugin instead |
+| `↑`{ .ansi-yellow } | Added in a newer version of the collection than the one installed. Upgrade it to use it |
+| `↪`{ .ansi-cyan } | Redirects to the plugin shown after `→`. The name still works, as Ansible loads that plugin instead |
 | `↪`{ .ansi-yellow } | Installed, but redirects through a collection that isn't, so Ansible can't load it until that's installed too |
-| `⚠`{ .ansi-yellow } | Deprecated, to be removed in the version or on the date shown |
+| `⚠`{ .ansi-yellow } | Deprecated, or redirects through a deprecated name. Its details say when it's due to be removed, and usually what to use instead |
 | `✗`{ .ansi-red } | Removed, or its redirect leads nowhere Ansible can load |
+
+When more than one applies, the marker shows the one that matters most
+for using the plugin, in this order:
+
+1. `✗` means you can't use it.
+2. `⚠` means you shouldn't use it.
+3. `↑` or a yellow `↪` means you can use it once something is upgraded or
+   installed.
+4. A cyan `↪` means you can use it under another name.
+5. `✓` or `·` means you can use it.
+
+In place of the description, a line that isn't simply usable says why that is
+the case. For example a redirect shows the plugin it ends at, with anything
+that stands in the way in brackets:
+
+```
+↪ module    ansible.builtin.nmcli               → community.general.nmcli
+↪ module    ansible.builtin.docker_container    → community.docker.docker_container (not installed)
+⚠ module    awx.awx.tower_project               → awx.awx.project (deprecated)
+↑ module    ansible.builtin.disk_info           → community.general.disk_info (needs 3.0.0, local 2.5.0)
+✗ module    ansible.builtin.win_domain_user     → community.windows.win_domain_user (removed)
+```
+
+Otherwise the description is a short reason why it is not a normal target,
+such as `needs 3.9.1 (local 2.8.0)`, `deprecated`, `removed in 13.0.0` or
+`redirect loop`. The "Local" part here refers to the version installed in
+the project. A plugin's [details](#a-plugins-details) say when it moved or
+was renamed, and show each step of a redirect.
 
 `alai find` renders
 [Ansible's documentation markup](https://docs.ansible.com/projects/ansible/latest/dev_guide/ansible_markup.html)
@@ -138,20 +183,21 @@ as best it can. For example, `C(lxc)` is shown in cyan, and `U()` as a link.
     ",xterm-ghostty:hyperlinks"` (using your terminal's `TERM`, or `*`)
     in its config, and you detach and reattach afterwards.
 
-A plugin that was removed is only listed when its whole name is searched
-for, short or full, as that's how to find where it went. Use
-`--include-removed` to list them for partial matches too.
-
 ## A plugin's details
 
 Searching for a full name shows the details of that plugin, such as:
 
 - **Installed**: Whether the plugin is installed for the project. For
   `ansible.builtin` and `eda.builtin` it means Ansible sees the plugin
-  wherever ansible-core or ansible-rulebook is; alai doesn't check that
+  wherever ansible-core or ansible-rulebook is. alai doesn't check that
   either is in your Python environment, and the line says so.
 - **Versions**: The versions the plugin is present in.
-- **Route**: The plugin redirection if present.
+- **Removal**: When a deprecated plugin is planned to be removed, if its
+  collection provides the version or date.
+- **Route**: The plugin, then each name it redirects to. The plugin it
+  ends at has its description under it. A step's deprecation or removal
+  message from its collection is shown under that step, as Ansible warns
+  at every step it passes.
 - **Hint**: Extra information for how to install/use the plugin.
 
 [A plugin's details and where its redirects lead](casts/find-detail.cast){ .alai-cast }
@@ -214,7 +260,7 @@ following is the JSON output of
 | Field | |
 |---|---|
 | `v` | The format's version, which changes if a field is removed or changes meaning |
-| `plugins` | The matches, in the order the text output would list them, then every plugin their redirects lead to that the index has, each listed once |
+| `plugins` | The same matches the text output lists, in the same order, then every plugin their redirects lead to that the index has, each listed once. Like the text output, it leaves out removed plugins and aliases unless they're named exactly or `-a`/`--all` is given |
 | `collections` | Every collection the plugins are in or redirect to, by name, with whether it's [installed](#whats-listed-first) and, if so, its `version` and the `path` of its directory. `ansible.builtin` and `eda.builtin` are always installed, with no version or path. `version` is `null` if it can't be read |
 | `omitted` | How many matches `--limit` left out |
 
@@ -222,10 +268,10 @@ Each plugin has:
 
 | Field | |
 |---|---|
-| `type` | Its type, as `-t` takes it: `module`, `filter`, `role`… |
+| `type` | Its type, as `-t` takes it, such as `module`, `filter` or `role` |
 | `name` | Its short name |
 | `collection` | The collection it's in, or `ansible.builtin` for ansible-core's own and `eda.builtin` for ansible-rulebook's |
-| `since` | The lowest version of its collection that has it; for `ansible.builtin` and `eda.builtin`, the ansible-core or ansible-rulebook version it was added in. Only if known |
+| `since` | The lowest version of its collection that has it. For `ansible.builtin` and `eda.builtin`, it's the ansible-core or ansible-rulebook version it was added in. Only if known |
 | `until` | The version of its collection it was removed in. Only if it was removed |
 | `short_description` | One line from its documentation, with any [Ansible markup](https://docs.ansible.com/projects/ansible/latest/dev_guide/ansible_markup.html) such as `C(...)` as written. Only if it has one |
 | `routing` | Its entry in its collection's `meta/runtime.yml` `plugin_routing` (`redirect`, `deprecation`, `tombstone`), as the collection wrote it. Only if it has one |

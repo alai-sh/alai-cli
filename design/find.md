@@ -88,15 +88,42 @@ searches locally is the reason the index has one.
   `isatty()`, as colour and the legend already are, and `less`, `grep`,
   `fzf` and a file all want the whole list. `ls` likewise changes its
   output when it isn't writing to a terminal.
-- **Removed plugins are listed only when named exactly** (a whole name or a
-  FQCN), as looking one up is how to find where it went;
-  `--include-removed` lists those matching part of a name too. This holds
+- **Removed plugins and aliases are listed only when named exactly** (a
+  whole name or a FQCN), as looking one up is how to find where it went;
+  `-a/--all` lists those matching part of a name too. This holds
   in the Installed section as well: an installed collection's removed
   plugin is listed when named, marked removed, since the user may be using
-  it.
+  it. An alias is a line that's only routing, with a redirect: no file in
+  any version, or for `ansible.builtin` not one ansible-core ships. It's
+  hidden only when the plugin its route ends at is listed too, so a row
+  never just repeats another. An alias that renames stays, as the way to
+  find the new name from the old (`ngine_io.vultr.vultr_region_facts` →
+  `vultr_region_info`). Of the index's 1,162 aliases outside the builtin
+  collections, 92 in 18 collections rename like that; most of the rest only
+  drop an old subdirectory prefix (2026-10-30). Hiding only the builtin
+  ones was weighed and rejected: any installed collection's aliases crowd
+  the Installed section the same way, `community.general` having 260
+  routing entries. Aliases were hidden on
+  2026-10-30, as `ansible.builtin`'s 3,973 counted as installed and the
+  limit fills the Installed section first: outside a project, `find copy`
+  listed 12 aliases such as `ansible.builtin.win_copy` and no plugin that
+  wasn't installed, and `find user` 15 aliases. The flag was
+  `--include-removed`, renamed when aliases joined it. uv names such flags
+  for what they widen (`uv python list --all-versions`, `--all-platforms`,
+  `--all-arches`, uv 0.13.5) because it has several; `find` widens one
+  thing, names that aren't a plugin of their own, so it's plain `--all`,
+  as `ls -a` and `docker ps -a`.
 - **Nothing found is a warning and exit 1**, as `uv pip show`, with up to
   three close names from `difflib` (`did you mean 'docker_container'?`).
-  No configured index with a plugin index is an error (exit 2).
+  No configured index with a plugin index is an error (exit 2). For a
+  FQCN the suggestions are full names (2026-10-30, as
+  `ansible.legacy.win_disk_info` suggested `win_disk_info`, which didn't
+  say where it is): the plugins with the closest short names, ordered by
+  how close the short name is, then by how close the collection is
+  (`ansible.windwos.win_copy` suggests `ansible.windows.win_copy` first).
+  Comparing whole FQCNs was tried first, but let a similar collection
+  outrank the right name (`community.general.win_disk_inf` suggested
+  `stevefulme1.ddn.ddn_disk_info` first).
 
 ### Output
 
@@ -115,8 +142,105 @@ searches locally is the reason the index has one.
   version than installed, `↪` redirects (yellow when the route needs a
   collection that isn't installed), `⚠` deprecated, `✗` removed or a
   broken redirect. Where a plugin isn't simply usable, the row says why in
-  place of its description (`added in 3.9.1, installed 3.8.0`,
-  `removed in 2.0.0; → community.docker.docker_container`).
+  place of its description.
+- **A row gives the reason, not the history** (asked for 2026-10-30, as
+  rows such as `removed in 2.0.0; → X (via 1 more); Y isn't installed;
+  deprecated on the way` read as mechanical, the reason for the marker
+  came last and was cut first, and a redirect started with `→` in one row
+  and `moved in 2.0.0 →` in the next). A redirect is always `→ TARGET`,
+  where its route ends, with what stands in the way in brackets:
+  `(deprecated)`, `(not installed)`, `(needs 3.0.0, local 2.5.0)`, `(not
+  on the index)`, joined with commas; a broken one `→ TARGET (removed)`,
+  `→ TARGET (not a full name)` or `redirect loop`. Anything else is a
+  short reason: `needs 3.9.1 (local 2.8.0)`, `deprecated`, `removed in
+  13.0.0`, `removed in 2.0.0 (local 2.5.0)` (the local version only when
+  it's past the removal), `removed in 2024-03-22, use X` for a tombstone
+  that also redirects. "Local", not "installed", as the user found
+  "installed 2.5.0" unclear. Moved, renamed, the steps and planned removal
+  dates are in the details. Weighed against keeping the description with
+  a status in front of it (better for browsing, but on 80 columns the
+  description is what's cut whenever there's a status) and grouping
+  aliases under the plugin they lead to (closest to "what are my
+  options", but the limit, counts, sections and ranking would all work on
+  groups, and piped output would nest).
+- **The box and section headings stop a column short of the terminal**,
+  as rows do (2026-10-30), so no line leaves the terminal waiting to wrap.
+  Made while looking into a garbled bash prompt over SSH, which turned out
+  to be the SSH session, not alai: the output's escapes, checked through a
+  pseudo-terminal, are balanced and end in a newline.
+- **A `warning_text` wraps inside the box** on a terminal (asked for
+  2026-10-30), at the top and under a route step, with each line starting
+  where the first does. Its markup is rendered as a description's is (14
+  on the index have some, such as community.general.aix_devices's
+  `C(ibm.power_aix)`, noticed by the user), in the warning's colour with
+  the markup's style over it. So it's wrapped by `_wrap`, word by word
+  over the styled pieces, as `textwrap` only takes plain text; a word can
+  span pieces (`C(name),`), and pieces in the same style are joined. The
+  description and route lines aren't wrapped yet; a path is one long word
+  anyway. Piped, nothing is wrapped, as nothing is cut in the list either.
+- **The details' top is what the collection says** (asked for 2026-10-30):
+  the description, then the plugin's own tombstone or deprecation
+  `warning_text`, before the fields, rather than under the verdict. The
+  Versions line is only the range, `0.1.0 up to 2.0.0` for a removed one,
+  as `0.1.0 until 2.0.0, which moved it` read oddly and `0.1.0 to 2.0.0,
+  removed in 2.0.0` said the version twice and read as if 2.0.0 had it.
+  Whether it's removed or moved is the verdict's and the route's. The
+  route's first step is the plugin itself, so it says `this plugin`
+  (grey) and where its collection is installed, if it is, and nothing the
+  lines above already say. The last step's description is a sentence on
+  its own line under it, like a step's `warning_text`, as `Execute tasks
+  in pods running on Kubernetes., kubernetes.core isn't installed` read
+  badly.
+- **"Removed" only when the name fails** (asked for 2026-10-30, as "removed
+  in" beside a working redirect read as if the name was gone). In the
+  details, a plugin with `until` whose name still redirects, with the
+  route intact, was `moved in X` to another collection or `renamed in X`
+  within its own (652 lines, 744 more with a deprecation on the index), on
+  a route step after the plugin's own. A
+  deprecation on a redirect step is `old name deprecated`, as it's the
+  name that goes, not the plugin it leads to (about 1,550 lines). Rows
+  first said the same, then gave only the reason (above). "Moved in X"
+  assumes the redirect came with the removal, which the index can't
+  confirm, but nearly always holds.
+- **A deprecation's planned removal is in the details only** (2026-10-30):
+  the row says `deprecated`, and the details have a `Removal` line,
+  `planned in 14.0.0` or `planned on 2022-01-23`, after Versions, with
+  the `warning_text` at the top (asked for, so a deprecation with a known
+  end is marked whether or not the plugin's installed; the verdict had it
+  only when it was usable). Of the index's 2,231 deprecations,
+  1,777 give a version and 409 a date, 309 of those already past (258 on
+  redirects that still work, such as `awx.awx.tower_*`'s 2022-01-23), and
+  versions slip the same way, so in a row it was mostly length and doubt.
+  Flagging overdue ones was rejected: dates can be checked, but versions
+  can't, as the index has no latest version per collection.
+- **Each route step shows its own `warning_text`** (2026-10-30), under the
+  step, yellow for a deprecation and red for a tombstone, and its planned
+  removal: ansible-core warns at every step it passes, and only the
+  plugin's own text was shown, so `ansible.builtin.tower_project` hid
+  `awx.awx.tower_project`'s "use awx.awx.project instead". The index
+  carries routing from each collection's latest stable version only
+  (galaxy-sync's `plugins.py`), so a `warning_text` an earlier release had
+  and a later one dropped isn't there, as for
+  `community.general.docker_container`'s bare redirect in 10.7.3 and
+  13.5.0. Kept that way: the plugin index is a snapshot per plugin, not
+  per version, and the user would rather the merge rules keep such text
+  (galaxy-sync's side) than the format grow. An installed collection's
+  own routing is read from disk once local collections are searched
+  ([Not done yet](#not-done-yet)).
+- **The marker is the verdict that matters most** (asked for 2026-10-30):
+  `✗` can't use it, then `⚠` shouldn't (a deprecation on the plugin or
+  any step of its route, as ansible-core warns at each), then `↑` and the
+  yellow `↪` (usable once something's upgraded or installed), then the
+  cyan `↪` (works, under another name), then `✓` and `·`. Before, a
+  redirect beat a deprecation, so a deprecated redirect such as
+  `awx.awx.tower_project` was a cyan `↪` and the user, who searches for
+  what they can use, wasn't warned off it. The notes still say everything
+  (`→ awx.awx.project`), and one deprecated only further along its route
+  says `deprecated on the way`. The marker is picked in the output, not
+  by reordering the states: the details' verdict, the hints and ranking
+  still read the state, so a plugin both deprecated and too old keeps its
+  upgrade hint. One added after the installed version and gone from the
+  latest is removed, not newer: no upgrade to the latest brings it.
 - **A legend, one line, only of the markers shown**, and only on a
   terminal, not with `-q`. The user asked how people would know what the
   markers and colours mean without spending space; the notes already
@@ -234,7 +358,13 @@ ordered by, in turn:
 6. collections in the `ansible` package, then other collections in those
    namespaces;
 7. not a probable copy;
-8. status, then collection, type and name.
+8. status, then modules before other types, then collection, type and
+   name.
+
+Modules first (asked for 2026-10-30), as they're what most searches are
+for. Only within the same standing: a module in some other collection
+doesn't outrank a filter in `ansible.builtin` or a lookup in the
+`ansible` package. The rest of the types stay by name.
 
 Redirects rank after plugins (2026-10-21, once the index had
 `ansible.builtin`): `ansible_builtin_runtime.yml` redirects every module
@@ -283,7 +413,14 @@ read from its source:
   redirect is considered.
 - **A deprecation warns and carries on**, at every hop.
 - **A redirect must be a FQCN**, or ansible-core fails with "Redirects must
-  use fully qualified collection names".
+  use fully qualified collection names". A FQCN is what
+  `AnsibleCollectionRef.is_valid_fqcr` takes, `^\w+(\.\w+){2,}$`, so it
+  can have subdirectories: `mgdis.ovh.cloud.block_storage.block_storage`
+  is the module in `plugins/modules/cloud/block_storage/`, which the index
+  names `cloud.block_storage.block_storage` (`is_fqcn` and `split_fqcn` in
+  `_plugins.py`). alai first required exactly two dots, which showed the
+  15 such redirects on the index as broken, with a "Same name" guess
+  (found by the user, 2026-10-30).
 - **A name reached twice is `AnsiblePluginCircularRedirect`.** There's no
   limit on hops. The type never changes.
 
@@ -347,7 +484,11 @@ The live index (2026-10-21) has 2,817 one-hop redirects, 24 of two hops
 (`community.aws.elb_classic_lb` → `amazon.aws.ec2_elb_lb` →
 `amazon.aws.elb_classic_lb`), none longer, 2 that redirect to themselves,
 57 to names that aren't FQCNs (broken in current ansible-core), and 39
-into `ansible.builtin`, which the index lacked until it was synced.
+into `ansible.builtin`, which the index lacked until it was synced. With
+`ansible.builtin` in the index (2026-10-30), 349 routes have two hops or
+more, 168 of them changing a short name, and some have three
+(`ansible.builtin.ec2_vpc_peer` → `community.aws.ec2_vpc_peer` →
+`amazon.aws.ec2_vpc_peer` → `amazon.aws.ec2_vpc_peering`).
 
 ### Reading the file
 
