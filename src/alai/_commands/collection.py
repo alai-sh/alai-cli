@@ -109,6 +109,35 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
     add_settings_args(list_, "collections_dir")
     list_.set_defaults(parser=list_, handler=run_list)
 
+    path = collection_commands.add_parser(
+        "path",
+        help="show where a collection's files are on disk",
+        description="Show where each collection's files are on disk, for tools that read them, such as a "
+        + "documentation viewer. alai uses the first copy it finds, checking the collection project's own checkout, "
+        + "the collections directory, the version in alai.lock and the newest version in the cache, in that order. "
+        + "If none of them has the collection, alai downloads the latest version from the indexes into the cache. "
+        + "For ansible.builtin and "
+        + "eda.builtin, it's the source of the latest ansible-core or ansible-rulebook release on the Python index. "
+        + "With --output-format json, NAME can be left out to show only the project's own collection.",
+        formatter_class=HelpFormatter,
+    )
+    _ = path.add_argument("names", metavar="NAME", nargs="*", help="a collection, such as community.general")
+    _ = path.add_argument(
+        "--no-download",
+        action="store_true",
+        help="only use what's already on disk, without downloading anything or checking the indexes for a newer "
+        + "version",
+    )
+    _ = path.add_argument(
+        "--output-format",
+        choices=("text", "json"),
+        default="text",
+        help="text, the default, or json for scripts",
+    )
+    add_global_args(path, suppress=True)
+    add_settings_args(path, "resolve", "collections_dir")
+    path.set_defaults(parser=path, handler=run_path)
+
 
 def run_install(args: argparse.Namespace) -> int:
     from .._collection import install
@@ -142,3 +171,13 @@ def run_list(args: argparse.Namespace) -> int:
 
     list_collections(settings_from_args(args), output_format=args.output_format)
     return 0
+
+
+def run_path(args: argparse.Namespace) -> int:
+    from .._locate import collection_path
+
+    if not args.names and args.output_format == "text":
+        args.parser.error("the following arguments are required: NAME")
+    return collection_path(
+        settings_from_args(args), args.names, download=not args.no_download, output_format=args.output_format
+    )

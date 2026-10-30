@@ -117,6 +117,7 @@ $ alai collection [OPTIONS] <COMMAND>
 | [`install`](#alai-collection-install) | Install collections and what they need |
 | [`uninstall`](#alai-collection-uninstall) | Uninstall collections |
 | [`list`](#alai-collection-list) | List the installed collections |
+| [`path`](#alai-collection-path) | Show where a collection's files are on disk |
 
 Also takes the [global options](#global-options).
 
@@ -231,6 +232,38 @@ $ alai collection list [OPTIONS]
 | Option | Description |
 |---|---|
 | `--collections-dir DIR` | Install collections under DIR/ansible_collections |
+
+Also takes the [global options](#global-options).
+
+## alai collection path
+
+Show where each collection's files are on disk, for tools that read them, such as a documentation viewer. alai uses the first copy it finds, checking the collection project's own checkout, the collections directory, the version in alai.lock and the newest version in the cache, in that order. If none of them has the collection, alai downloads the latest version from the indexes into the cache. For ansible.builtin and eda.builtin, it's the source of the latest ansible-core or ansible-rulebook release on the Python index. With `--output-format` json, NAME can be left out to show only the project's own collection.
+
+```console
+$ alai collection path [OPTIONS] [NAME ...]
+```
+
+### Arguments
+
+| Argument | Description |
+|---|---|
+| `NAME` | A collection, such as community.general |
+
+### Options
+
+| Option | Description |
+|---|---|
+| `--no-download` | Only use what's already on disk, without downloading anything or checking the indexes for a newer version |
+| `--output-format {text,json}` | Text, the default, or json for scripts |
+
+### Settings
+
+| Option | Description |
+|---|---|
+| `--collections-dir DIR` | Install collections under DIR/ansible_collections |
+| `--offline`, `--no-offline` | Use only what's cached, without connecting to any index |
+| `--index NAME=URL` | An index to resolve from, before those in config files; can be repeated |
+| `--default-index [NAME=]URL` | Replace the default index |
 
 Also takes the [global options](#global-options).
 

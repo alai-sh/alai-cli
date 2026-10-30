@@ -627,8 +627,11 @@ dependency and no gap on Python 3.10 and 3.11.
   plugins itself (`_builtin`): alai-core's `extract_ansible_core` and
   `extract_ansible_rulebook` over the parts of each sdist they read
   (`artifact.extract_sdist`), written as plugin index lines in
-  `<cache_dir>/builtin-v1/<project>/<version>.jsonl` and searched as
-  another index's file, first. Every index's lines for either collection
+  `<cache_dir>/python-index-v1/<host>-<hash>/<project>/<version>.jsonl`,
+  named for `python_index` as `index/` is for an index, and searched as
+  another index's file, first. The extracted source is kept beside them, in
+  `<version>/`, for `alai collection path`
+  ([collection-path.md](collection-path.md)). Every index's lines for either collection
   are ignored, always (`PluginIndex(skip=...)`), not only until the public
   index drops its `ansible.builtin` lines: a third-party index's would
   describe some release of its choosing, where alai's come from the

@@ -94,6 +94,7 @@ those items; change it with them.
 | [index-client.md](index-client.md) | Fetching and caching the index: the extension's HTTP client and HTTP/2, TLS verification, cache layout, revalidation, proxies, errors, and what `index.alai.sh` does |
 | [performance.md](performance.md) | Where the time goes, measured on `sivel.acd`: extraction, cloning, HTTP/2, the Rust extension and how alai ships with it |
 | [list.md](list.md) | `alai collection list`: what uv lists and where, comparing the directory with `alai.lock`, and the output |
+| [collection-path.md](collection-path.md) | `alai collection path`: where a collection's files are for tools such as alai-doc, the order it looks in, and the JSON |
 | [find.md](find.md) | `alai find`: searching the plugin index, ranking without download counts, probable copies, following routing as ansible-core does, and the output |
 | [output.md](output.md) | Verbosity, what goes to stdout and stderr, JSON, colour and progress |
 | [documentation.md](documentation.md) | What the published docs cover, the generator, the generated CLI reference and its terminal recordings, and how they're deployed |
