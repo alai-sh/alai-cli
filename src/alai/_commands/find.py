@@ -64,9 +64,12 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         help="only plugins in installed collections and ansible.builtin",
     )
     find.add_argument(
-        "--include-removed",
+        "-a",
+        "--all",
+        dest="include_all",
         action="store_true",
-        help="list removed plugins that match part of a name too; ones named exactly always are",
+        help="list removed plugins and aliases to listed plugins that match part of a name too; ones named exactly "
+        + "always are",
     )
     find.add_argument(
         "--limit",
@@ -97,7 +100,7 @@ def run(args: argparse.Namespace) -> int:
         settings_from_args(args),
         query,
         installed_only=args.installed,
-        include_removed=args.include_removed,
+        include_all=args.include_all,
         limit=args.limit,
         output_format=args.output_format,
     )

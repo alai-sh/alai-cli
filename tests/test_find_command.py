@@ -86,8 +86,8 @@ def out(capsys: pytest.CaptureFixture[str]) -> list[str]:
 
 
 def section(title: str) -> str:
-    """A section's heading, as wide as the 80-column terminal."""
-    return f"── {title} ".ljust(80, "─")
+    """A section's heading, a column short of the 80-column terminal."""
+    return f"── {title} ".ljust(79, "─")
 
 
 class TestListing:
@@ -96,10 +96,8 @@ class TestListing:
 
         assert out(capsys) == [
             section("Installed (2)"),
-            " ↪ module  ansible.builtin.docker_container    → community.docker.docker_container; community.docker isn't "
-            + "installed",
-            " ↪ module  community.general.docker_container  removed in 2.0.0; → community.docker.docker_container; "
-            + "community.docker isn't installed",
+            " ↪ module  ansible.builtin.docker_container    → community.docker.docker_container (not installed)",
+            " ↪ module  community.general.docker_container  → community.docker.docker_container (not installed)",
             "",
             section("Not installed (1)"),
             " · module  community.docker.docker_container   manage Docker containers",
@@ -211,12 +209,12 @@ class TestListing:
         assert out(capsys) == [
             section("Installed (2)"),
             " ✓ module  community.general.copy_thing  Copies things",
-            " ↑ module  community.general.new_thing   added in 3.0.0, installed 2.5.0",
+            " ↑ module  community.general.new_thing   needs 3.0.0 (local 2.5.0)",
         ]
 
     def test_partial_match_leaves_out_removed(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         assert find("old_thin") == EXIT_NOT_FOUND
-        assert find("old_thin", "--include-removed") == 0
+        assert find("old_thin", "--all") == 0
 
         assert out(capsys)[1] == " ✗ module  community.general.old_thing  removed in 2.0.0"
 
@@ -225,12 +223,93 @@ class TestListing:
 
         assert out(capsys)[1] == " ✗ module  community.general.old_thing  removed in 2.0.0"
 
+    def test_partial_match_leaves_out_aliases(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        assert find("-q", "docker_contain") == 0
+        assert "ansible.builtin.docker_container" not in capsys.readouterr().out
+        assert find("-q", "docker_contain", "-a") == 0
+        assert "ansible.builtin.docker_container" in capsys.readouterr().out
+
+    def test_alias_kept_when_its_target_is_not_listed(
+        self, project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        lines = [
+            plugin("a.a.foo1", routing={"redirect": "b.b.foo2"}),
+            plugin("b.b.foo2", routing={"redirect": "c.c.bar"}),
+            plugin("c.c.bar", since="1.0.0", short_description="bar"),
+        ]
+        monkeypatch.setenv("ALAI_DEFAULT_INDEX", make_index(tmp_path / "renamed", {"a.a": []}, plugins=lines))
+
+        assert find("-q", "foo") == 0
+        assert [" ".join(line.split()) for line in out(capsys)[1:]] == [
+            "↪ module a.a.foo1 → c.c.bar",
+            "↪ module b.b.foo2 → c.c.bar",
+        ]
+        # The glob matches c.c.bar too, so both aliases leading to it are left out.
+        assert find("-q", "*") == 0
+        listed = capsys.readouterr().out
+        assert "c.c.bar" in listed
+        assert "foo" not in listed
+
+    def test_status_says_why_not_how(
+        self, project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        deprecation = {"deprecation": {"removal_version": "3.0.0"}}
+        lines = [
+            plugin("a.a.old_say", since="1.0.0", until="2.0.0", routing={"redirect": "a.a.say"}),
+            plugin("a.a.old_kube", since="1.0.0", until="2.0.0", routing={"redirect": "b.b.kube", **deprecation}),
+            plugin("a.a.old_alias", routing={"redirect": "b.b.target", **deprecation}),
+            plugin("a.a.old_via", routing={"redirect": "a.a.old_kube"}),
+            plugin("a.a.old_bad", routing={"redirect": "nodots"}),
+            plugin("a.a.old_dead", routing={"redirect": "a.a.dead"}),
+            plugin("a.a.dead", since="1.0.0", until="2.0.0"),
+            plugin(
+                "a.a.old_gone",
+                since="1.0.0",
+                until="2.0.0",
+                routing={"redirect": "a.a.gone", "tombstone": {"removal_date": "2024-03-22"}},
+            ),
+            *[plugin(t, since="1.0.0") for t in ("a.a.say", "b.b.kube", "b.b.target", "a.a.gone")],
+        ]
+        monkeypatch.setenv("ALAI_DEFAULT_INDEX", make_index(tmp_path / "moved", {"a.a": []}, plugins=lines))
+
+        assert find("-q", "-a", "old_") == 0
+        assert {" ".join(line.split()) for line in out(capsys)[1:]} == {
+            "↪ module a.a.old_say → a.a.say",
+            "⚠ module a.a.old_kube → b.b.kube (deprecated)",
+            "⚠ module a.a.old_alias → b.b.target (deprecated)",
+            "⚠ module a.a.old_via → b.b.kube (deprecated)",
+            "✗ module a.a.old_gone removed in 2024-03-22, use a.a.gone",
+            "✗ module a.a.old_bad → nodots (not a full name)",
+            "✗ module a.a.old_dead → a.a.dead (removed)",
+        }
+
+    def test_removal_from_the_local_version(
+        self, project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        lines = [
+            plugin("community.general.gone_file", since="1.0.0", until="2.0.0"),
+            # Added after the local 2.5.0 and gone since, so the local version never had it.
+            plugin("community.general.gone_brief", since="3.0.0", until="4.0.0"),
+        ]
+        monkeypatch.setenv("ALAI_DEFAULT_INDEX", make_index(tmp_path / "gone", {"a.a": []}, plugins=lines))
+
+        assert find("-q", "-a", "gone_") == 0
+        assert [" ".join(line.split()) for line in out(capsys)[1:]] == [
+            "✗ module community.general.gone_brief removed in 4.0.0",
+            "✗ module community.general.gone_file removed in 2.0.0 (local 2.5.0)",
+        ]
+
+    def test_exact_name_keeps_aliases(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        assert find("-q", "docker_container") == 0
+
+        assert "ansible.builtin.docker_container" in capsys.readouterr().out
+
     def test_states(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        assert find("community.general.*", "--include-removed") == 0
+        assert find("community.general.*", "--all") == 0
 
         lines = [" ".join(line.split()) for line in out(capsys)]
-        assert "⚠ module community.general.going deprecated, removal in 4.0.0" in lines
-        assert "✗ module community.general.loop broken redirect: redirects to itself" in lines
+        assert "⚠ module community.general.going deprecated" in lines
+        assert "✗ module community.general.loop redirect loop" in lines
 
     def test_no_project(
         self, project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -260,7 +339,7 @@ class TestListing:
         assert find("-q", "copy") == 0
         assert out(capsys)[0] == section("Installed with ansible-core (1)")
         assert find("-q", "*") == 0
-        assert out(capsys)[0] == section("Installed with ansible-core and ansible-rulebook (3)")
+        assert out(capsys)[0] == section("Installed with ansible-core and ansible-rulebook (2)")
 
     def test_legend_on_a_terminal(
         self, project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -318,15 +397,68 @@ class TestDetail:
         assert find("community.general.docker_container") == 0
 
         assert out(capsys) == [
-            "╭─ community.general.docker_container " + "─" * 32 + " module ─╮",
+            "╭─ community.general.docker_container " + "─" * 31 + " module ─╮",
             "  Manage docker containers.",
             "",
             "  Installed  ↪ no: community.docker isn't installed",
-            "  Versions   0.1.0 to 2.0.0, removed in 2.0.0",
-            f"  Route      ✓ community.general.docker_container  removed in 2.0.0, 2.5.0 in {general(project)}",
-            "             ↪ community.docker.docker_container   manage Docker containers, community.docker isn't installed",
+            "  Versions   0.1.0 up to 2.0.0",
+            f"  Route      ✓ community.general.docker_container  this plugin, 2.5.0 in {general(project)}",
+            "             ↪ community.docker.docker_container   community.docker isn't installed",
+            "               Manage Docker containers.",
             "  Hint       install it with alai collection install community.docker",
-            "╰" + "─" * 78 + "╯",
+            "╰" + "─" * 77 + "╯",
+        ]
+
+    def test_warning_text_wraps_in_the_box(
+        self, project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        text = "Use the other plugin instead, as this one talks to a service that has been gone for years now."
+        lines = [plugin("a.a.old", since="1.0.0", routing={"deprecation": {"warning_text": text}})]
+        monkeypatch.setenv("ALAI_DEFAULT_INDEX", make_index(tmp_path / "long", {"a.a": []}, plugins=lines))
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+        monkeypatch.setenv("COLUMNS", "60")
+
+        assert find("--color", "never", "a.a.old") == 0
+
+        assert out(capsys)[1:4] == [
+            "  Use the other plugin instead, as this one talks to a",
+            "  service that has been gone for years now.",
+            "",
+        ]
+
+    def test_warning_text_markup(
+        self, project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        text = "Use C(b.b.new), from M(b.b.new)."
+        lines = [plugin("a.a.old", since="1.0.0", routing={"deprecation": {"warning_text": text}})]
+        monkeypatch.setenv("ALAI_DEFAULT_INDEX", make_index(tmp_path / "markup", {"a.a": []}, plugins=lines))
+
+        assert find("--color", "never", "a.a.old") == 0
+        assert out(capsys)[1] == "  Use b.b.new, from b.b.new."
+
+        assert find("--color", "always", "a.a.old") == 0
+        # The text's colour, with the code's cyan over it.
+        assert "\x1b[33;36mb.b.new\x1b[0m\x1b[33m, from \x1b[0m" in capsys.readouterr().out
+
+    def test_warning_text_on_a_step(
+        self, project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        deprecation = {"removal_version": "3.0.0", "warning_text": "Use b.b.new instead."}
+        lines = [
+            plugin("a.a.first", routing={"redirect": "b.b.old"}),
+            plugin(
+                "b.b.old", since="1.0.0", until="2.0.0", routing={"redirect": "b.b.new", "deprecation": deprecation}
+            ),
+            plugin("b.b.new", since="2.0.0"),
+        ]
+        monkeypatch.setenv("ALAI_DEFAULT_INDEX", make_index(tmp_path / "warned", {"a.a": []}, plugins=lines))
+
+        assert find("a.a.first") == 0
+
+        route = [line for line in out(capsys) if line.startswith(("  Route", "    "))]
+        assert route[1:3] == [
+            "             ↪ b.b.old    renamed in 2.0.0, old name deprecated, removal in 3.0.0, b.b isn't installed",
+            "               Use b.b.new instead.",
         ]
 
     def test_path_under_home(
@@ -337,7 +469,7 @@ class TestDetail:
         assert find("community.general.copy_thing") == 0
 
         assert (
-            "  Route      ✓ community.general.copy_thing  2.5.0 in ~/project/collections/ansible_collections/"
+            "  Route      ✓ community.general.copy_thing  this plugin, 2.5.0 in ~/project/collections/ansible_collections/"
             + "community/general"
         ) in out(capsys)
 
@@ -361,13 +493,42 @@ class TestDetail:
         assert find("community.general.old_thing") == 0
 
         lines = out(capsys)
-        assert lines[2:6] == [
-            "  Installed  ✗ no: removed in 2.0.0; 2.5.0 is installed",
-            "             Use community.general.new_thing.",
-            "  Versions   1.0.0 to 2.0.0, removed in 2.0.0",
-            f"  Route      ✗ community.general.old_thing  removed in 2.0.0, 2.5.0 in {general(project)}",
+        # The collection's own warning comes first, where a description would.
+        assert lines[1:6] == [
+            "  Use community.general.new_thing.",
+            "",
+            "  Installed  ✗ no: removed in 2.0.0 (local 2.5.0)",
+            "  Versions   1.0.0 up to 2.0.0",
+            f"  Route      ✗ community.general.old_thing  this plugin, 2.5.0 in {general(project)}",
         ]
         assert not any("Hint" in line for line in lines)
+
+    @pytest.mark.parametrize(
+        ("name", "verdict"),
+        [
+            ("community.general.gone_file", "✗ no: removed in 2.0.0 (local 2.5.0)"),
+            # Added after the local 2.5.0, so that version never had it.
+            ("community.general.gone_brief", "✗ no: removed in 4.0.0"),
+        ],
+    )
+    def test_removed_from_the_local_version(
+        self,
+        name: str,
+        verdict: str,
+        project: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        lines = [
+            plugin("community.general.gone_file", since="1.0.0", until="2.0.0"),
+            plugin("community.general.gone_brief", since="3.0.0", until="4.0.0"),
+        ]
+        monkeypatch.setenv("ALAI_DEFAULT_INDEX", make_index(tmp_path / "gone", {"a.a": []}, plugins=lines))
+
+        assert find(name) == 0
+
+        assert f"  Installed  {verdict}" in out(capsys)
 
     def test_broken(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         assert find("community.general.loop") == 0
@@ -391,10 +552,12 @@ class TestDetail:
         lines = captured.out.splitlines()
         assert lines[0].startswith("╭─ ansible.builtin.docker_container ")
         assert "  Versions   none: it's only in ansible-core's routing" in lines
-        assert (
-            "             ↪ community.docker.docker_container  manage Docker containers, community.docker isn't installed"
-            in lines
-        )
+        assert "             ↪ community.docker.docker_container  community.docker isn't installed" in lines
+
+    def test_removal_planned(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        assert find("community.general.going") == 0
+
+        assert "  Removal    planned in 4.0.0" in out(capsys)
 
     @pytest.mark.parametrize(
         ("name", "verdict"),
@@ -406,7 +569,7 @@ class TestDetail:
             ),
             ("ansible.legacy.copy", "✓ yes, if ansible-core is in your Ansible environment, which alai doesn't check"),
             ("community.general.copy_thing", "✓ yes"),
-            ("community.general.going", "⚠ yes, but it's deprecated, removal in 4.0.0"),
+            ("community.general.going", "⚠ yes, but deprecated"),
             ("community.general.new_thing", "↑ no: community.general 2.5.0 doesn't have it, it was added in 3.0.0"),
             ("community.docker.docker_container", "· no: community.docker isn't installed"),
         ],
@@ -446,9 +609,8 @@ class TestDetail:
         assert "  Installed  ↑ no: community.general 2.5.0 doesn't have it, it was added in 3.0.0" in lines
         assert "  Hint       upgrade it with alai collection install -P community.general" in lines
         assert [line for line in lines if line.startswith(" ↑ ")] == [
-            " ↑ module  community.general.disk_info  added in 3.0.0, installed 2.5.0",
-            " ↑ module  ansible.builtin.disk_info    → community.general.disk_info; added to community.general in "
-            + "3.0.0, installed 2.5.0",
+            " ↑ module  community.general.disk_info  needs 3.0.0 (local 2.5.0)",
+            " ↑ module  ansible.builtin.disk_info    → community.general.disk_info (needs 3.0.0, local 2.5.0)",
         ]
 
     def test_same_name(
@@ -495,14 +657,15 @@ class TestDetail:
         assert find("ansible.builtin.docker_container") == 0
 
         assert [line for line in out(capsys) if line.startswith(("  Route", "             "))] == [
-            "  Route      ✓ ansible.builtin.docker_container   with ansible-core",
-            "             ↪ community.docker.docker_container  manage Docker containers, community.docker isn't installed",
+            "  Route      ✓ ansible.builtin.docker_container   this plugin, with ansible-core",
+            "             ↪ community.docker.docker_container  community.docker isn't installed",
+            "               Manage Docker containers.",
         ]
 
     def test_route_step_too_old(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         assert find("community.general.new_thing") == 0
 
-        assert f"  Route      ↑ community.general.new_thing  needs 3.0.0, 2.5.0 in {general(project)}" in out(capsys)
+        assert f"  Route      ↑ community.general.new_thing  this plugin, 2.5.0 in {general(project)}" in out(capsys)
 
     def test_builtin_versions(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         assert find("ansible.builtin.copy") == 0

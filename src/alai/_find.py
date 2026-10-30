@@ -18,7 +18,7 @@ from alai_core.markup import parse as parse_markup
 from alai_core.semver import Version
 
 from . import _output
-from ._common import EXIT_NOT_FOUND, Error, home_path
+from ._common import EXIT_NOT_FOUND, Error, as_str, home_path
 from ._config import Settings
 from ._install import Installed, installed
 from ._output import (
@@ -60,8 +60,10 @@ from ._plugins import (
     cached_collections,
     cached_copies,
     has_file,
+    is_fqcn,
     rank,
     semver_or_none,
+    split_fqcn,
 )
 
 DEFAULT_LIMIT = 20
@@ -96,7 +98,7 @@ def find(
     query: Query,
     *,
     installed_only: bool = False,
-    include_removed: bool = False,
+    include_all: bool = False,
     limit: int | None = None,
     output_format: str = "text",
 ) -> int:
@@ -117,8 +119,19 @@ def find(
     catalog.preload_routes(matches)
     versions = {name: c.version for name, c in (installed or {}).items()}
     found = [assess(p, catalog, versions, query) for p in matches]
-    # A removed plugin is only listed when it was named: looking one up is how to find where it went.
-    found = [f for f in found if include_removed or f.exact or f.state not in (REMOVED, BROKEN)]
+    # A removed plugin is only listed when it was named: looking one up is how to find where it went. So is an alias
+    # whose route ends at a plugin that's listed anyway; one that renames is the way to find the new name.
+    keys = {f.plugin.key for f in found}
+    found = [
+        f
+        for f in found
+        if include_all
+        or f.exact
+        or (
+            f.state not in (REMOVED, BROKEN)
+            and not (f.route and _routing_only(f.plugin) and (f.plugin.type, as_builtin(f.route.final)) in keys)
+        )
+    ]
     if not found:
         suggestions = catalog.suggest(query)
         also = f"; did you mean {_or(suggestions)}?" if suggestions else ""
@@ -242,8 +255,8 @@ def _print_json(found: list[Found], hidden: int, installed: dict[str, Installed]
         entry.update({"fqcn": plugin.fqcn, "index": plugin.index, "matched": matched})
         plugins[plugin.key] = entry
         collections.add(plugin.collection)
-        if plugin.redirect is not None and plugin.redirect.count(".") == 2:
-            collections.add(as_builtin(plugin.redirect).rsplit(".", 1)[0])
+        if plugin.redirect is not None and is_fqcn(plugin.redirect):
+            collections.add(split_fqcn(as_builtin(plugin.redirect))[0])
 
     for item in found:
         add(item.plugin, matched=True)
@@ -306,7 +319,7 @@ class _Renderer(Renderer):
         plugin = item.plugin
         title = f" {plugin.fqcn} "
         kind = f" {plugin.type} "
-        rule = "─" * max(2, min(self.width, 100) - len(title) - len(kind) - 4)
+        rule = "─" * max(2, min(self.width - 1, 100) - len(title) - len(kind) - 4)
         print(
             self.s("╭─", DIM)
             + self.s(title, BOLD, BLUE)
@@ -318,19 +331,20 @@ class _Renderer(Renderer):
             print(f"  {self.rich(as_sentence(markup(plugin.short_description, role=plugin.type == 'role')))}")
         elif item.route and not item.route.problem and _routing_only(plugin):
             print(f"  Another name for {item.route.final}.")
+        for routing, warn_colour in ((plugin.tombstone, RED), (plugin.deprecation, YELLOW)):
+            if warning := _warning_text(routing):
+                for line in self._wrap(markup(warning, role=plugin.type == "role"), 2, warn_colour):
+                    print(f"  {line}")
         print()
 
         marker, colour, verdict = self._verdict(item)
         # A builtin is installed wherever its tool is, which alai doesn't look for: installed says Ansible can see
         # it, not that the tool is in the Python environment.
-        final = item.route.final.rsplit(".", 1)[0] if item.route and item.usable else plugin.collection
+        final = split_fqcn(item.route.final)[0] if item.route and item.usable else plugin.collection
         note = ""
         if item.usable and (tool := TOOL_OF.get(final)) is not None:
             note = self.s(f", if {tool} is in your Ansible environment, which alai doesn't check", DIM)
         self._field("Installed", self.s(f"{marker} {verdict}", colour) + note)
-        for routing in (plugin.tombstone, plugin.deprecation):
-            if text := _warning_text(routing):
-                self._field("", self.s(text, RED if routing is plugin.tombstone else YELLOW))
 
         if (tool := TOOL_OF.get(plugin.collection)) is not None:
             # Its since is the plugin's version_added, left out when that's "historical".
@@ -339,12 +353,17 @@ class _Renderer(Renderer):
             else:
                 versions = f"in {tool}, added in {plugin.since}" if plugin.since else f"in {tool}"
         elif plugin.until is not None:
-            versions = f"{plugin.since or '?'} to {plugin.until}, removed in {plugin.until}"
+            versions = f"{plugin.since or '?'} up to {plugin.until}"
         elif plugin.since is not None:
             versions = f"since {plugin.since}"
         else:
             versions = "none: it's only in the collection's routing"
         self._field("Versions", versions)
+        if (deprecation := plugin.deprecation) is not None and plugin.tombstone is None:
+            if version := deprecation.get("removal_version"):
+                self._field("Removal", self.s(f"planned in {version}", YELLOW))
+            elif date := deprecation.get("removal_date"):
+                self._field("Removal", self.s(f"planned on {date}", YELLOW))
 
         # The plugin, then each name its redirects lead to: whether each step's collection is installed, and where,
         # is what decides the verdict above, so it's shown on the step it applies to.
@@ -361,8 +380,20 @@ class _Renderer(Renderer):
             else:
                 mark, colour = "↪", CYAN if self._step_marker(step)[0] == "✓" else YELLOW
             text = self.s(name.ljust(width), BOLD) if last and i else name.ljust(width)
-            info = self._step(step, describe=last and i > 0)
+            info = (
+                self.s(", ", DIM).join([self.s("this plugin", DIM), *self._where(step)]) if i == 0 else self._step(step)
+            )
             self._field("Route" if i == 0 else "", f"{self.s(mark, colour)} {text}  {info}".rstrip())
+            # The plugin's own description and warnings are at the top.
+            if step is not None and i:
+                if last and step.short_description:
+                    description = as_sentence(markup(step.short_description, role=step.type == "role"))
+                    self._field("", "  " + self.rich(description))
+                # ansible-core warns at every step it passes.
+                for routing, warn_colour in ((step.tombstone, RED), (step.deprecation, YELLOW)):
+                    if warning := _warning_text(routing):
+                        for line in self._wrap(markup(warning, role=step.type == "role"), 15, warn_colour):
+                            self._field("", "  " + line)
 
         for i, other in enumerate(alternatives or []):
             mark, colour = self._marker(other)
@@ -396,13 +427,17 @@ class _Renderer(Renderer):
         if usable:
             via = f", as {route.final}" if route else ""
             if item.state == DEPRECATED:
-                return "⚠", YELLOW, f"yes{via}, but it's {self._notes(item, route=False)}"
+                return "⚠", YELLOW, f"yes{via}, but {self._notes(item)}"
             return "✓", GREEN, f"yes{via}"
         if item.state == BROKEN and route is not None:
             return "✗", RED, f"no: {route.problem}"
         if item.state == REMOVED:
-            installed = f"; {item.version} is installed" if item.version is not None else ""
-            return "✗", RED, f"no: {self._notes(item, route=False)}{installed}"
+            # The local version only when it's past the removal: before it, the local version never had the plugin.
+            tombstone = plugin.tombstone or {}
+            removed = semver_or_none(plugin.until) or semver_or_none(as_str(tombstone.get("removal_version")))
+            have = item.version
+            local = f" (local {have})" if have is not None and removed is not None and have >= removed else ""
+            return "✗", RED, f"no: {self._notes(item)}{local}"
         if not item.installed:
             return "·", DIM, f"no: {plugin.collection} isn't installed"
         if item.state == MISSING:
@@ -458,38 +493,80 @@ class _Renderer(Renderer):
             return "✗", RED
         return "✓", GREEN
 
-    def _step(self, step: Plugin | None, *, describe: bool) -> str:
-        """What's known about a route step: its description with ``describe`` (where a redirect leads; the plugin's
-        own is at the top), removal and deprecation, and its collection: where it's installed, or that it isn't, or is
-        too old."""
+    def _step(self, step: Plugin | None) -> str:
+        """What's known about a route step after the plugin: removal and deprecation, and its collection, where it's
+        installed, or that it isn't, or is too old."""
         if step is None:
             return self.s("not in the plugin index", YELLOW)
         bits: list[str] = []
-        if describe and step.short_description:
-            bits.append(self.rich(markup(step.short_description, role=step.type == "role")))
         if step.until is not None:
-            bits.append(self.s(f"removed in {step.until}", DIM))
-        if step.deprecation is not None:
-            bits.append(self.s("deprecated", YELLOW))
+            moved = _moved(step) if step.tombstone is None else None
+            bits.append(self.s(f"{moved or 'removed'} in {step.until}", DIM))
+        if (deprecation := step.deprecation) is not None:
+            what = "old name deprecated" if step.redirect is not None else "deprecated"
+            when = deprecation.get("removal_version") or deprecation.get("removal_date")
+            bits.append(self.s(f"{what}, removal in {when}" if when else what, YELLOW))
         if step.tombstone is not None and step.until is None:
             bits.append(self.s("tombstoned", RED))
-        collection = step.collection
-        mark = self._step_marker(step)[0]
-        if collection in BUILTINS:
-            bits.append(self.s(f"with {TOOL_OF[collection]}", DIM))
-        elif collection not in self.installed:
-            bits.append(self.s(f"{collection} isn't installed", YELLOW))
+        if step.collection not in BUILTINS and step.collection not in self.installed:
+            bits.append(self.s(f"{step.collection} isn't installed", YELLOW))
+        elif self._step_marker(step)[0] == "↑":
+            bits.append(self.s(f"needs {step.since}, {self._where(step)[0]}", YELLOW))
         else:
-            found = self.installed[collection]
-            version = str(found.version) if found.version is not None else "an unknown version"
-            where = f"{version} in {home_path(os.path.abspath(found.path))}"
-            bits.append(self.s(f"needs {step.since}, {where}", YELLOW) if mark == "↑" else self.s(where, DIM))
+            bits += [self.s(where, DIM) for where in self._where(step)]
         return self.s(", ", DIM).join(bits)
+
+    def _wrap(self, segments: list[Segment], indent: int, colour: str) -> list[str]:
+        """A description's pieces in ``colour``, their markup styled, as lines that fit inside the box from column
+        ``indent`` on a terminal, broken at spaces; elsewhere, as one line."""
+        room = min(self.width - 1, 100) - indent - 2 if self.terminal else None
+        # A word can span pieces, such as C(name) and the comma after it, so it's kept as its pieces.
+        words: list[list[Segment]] = [[]]
+        for text, kind, url in segments:
+            for part in re.split(r"(\s+)", text):
+                if part.isspace():
+                    if words[-1]:
+                        words.append([])
+                elif part:
+                    words[-1].append((part, kind, url))
+        lines: list[list[Segment]] = [[]]
+        used = 0
+        for word in (w for w in words if w):
+            size = sum(len(text) for text, _, _ in word)
+            if lines[-1] and room is not None and room >= 20 and used + 1 + size > room:
+                lines.append([])
+                used = 0
+            line = lines[-1]
+            pieces: list[Segment] = [(" ", None, None), *word] if line else word
+            used += size + (len(pieces) - len(word))
+            for text, kind, url in pieces:
+                # Pieces in the same style are joined, so a line isn't a run of escape codes per word.
+                if line and line[-1][1:] == (kind, url):
+                    line[-1] = (line[-1][0] + text, kind, url)
+                else:
+                    line.append((text, kind, url))
+        return [
+            self.pieces([(text, (colour, *_STYLES.get(kind or "", ())), url) for text, kind, url in line], None)
+            for line in lines
+        ]
+
+    def _where(self, step: Plugin | None) -> list[str]:
+        """Where a step's collection is, as one entry, or none if it isn't installed."""
+        if step is None:
+            return []
+        if step.collection in BUILTINS:
+            return [f"with {TOOL_OF[step.collection]}"]
+        if (found := self.installed.get(step.collection)) is None:
+            return []
+        version = str(found.version) if found.version is not None else "an unknown version"
+        return [f"{version} in {home_path(os.path.abspath(found.path))}"]
 
     def _section(self, title: str, count: int) -> None:
         label = f" {title} ({count}) "
         print(
-            self.s("──", DIM) + self.s(label, BOLD) + self.s("─" * max(2, min(self.width, 100) - len(label) - 2), DIM)
+            self.s("──", DIM)
+            + self.s(label, BOLD)
+            + self.s("─" * max(2, min(self.width - 1, 100) - len(label) - 2), DIM)
         )
 
     def _row(self, item: Found, type_width: int, name_width: int) -> None:
@@ -497,7 +574,7 @@ class _Renderer(Renderer):
         marker, colour = self._marker(item)
         head = f" {self.s(marker, colour)} {self.s(plugin.type.ljust(type_width), MAGENTA)}  "
         head += self._name(item) + " " * max(0, name_width - len(plugin.fqcn))
-        notes = self._notes(item, route=True)
+        notes = self._status(item)
         room = None
         if self.terminal:
             room = self.width - (4 + type_width + 2 + max(name_width, len(plugin.fqcn)) + 2) - 1
@@ -532,32 +609,75 @@ class _Renderer(Renderer):
         return collection + self.s(name[:at], BOLD) + self.s(name[at:end], BOLD, UNDERLINE) + self.s(name[end:], BOLD)
 
     def _marker(self, item: Found) -> tuple[str, str]:
+        """The verdict that matters most: can't use it, shouldn't, can once something's installed or upgraded, can by
+        another name, can. The notes give the rest."""
+        if item.state not in (REMOVED, BROKEN) and _deprecated(item):
+            return _MARKERS[DEPRECATED]
         if item.state == OK and item.installed:
             return "✓", GREEN
         return _MARKERS[item.state]
 
-    def _notes(self, item: Found, *, route: bool) -> str:
-        """Why the plugin isn't simply there to use, or an empty string if it is. ``route`` includes where its
-        redirects lead, which the details show hop by hop instead."""
+    def _status(self, item: Found) -> str:
+        """A row's text in place of the description, or an empty string if it's simply there to use: the reason for its
+        marker, or for a redirect ``→ target`` with what stands in the way in brackets. Its history, such as when it
+        moved or each step of its route, is for the details."""
+        plugin = item.plugin
+        route = item.route
+        version = item.version
+        if plugin.tombstone is not None:
+            when = plugin.tombstone.get("removal_version") or plugin.tombstone.get("removal_date")
+            text = f"removed in {when}" if when else "removed"
+            return text + (f", use {as_builtin(plugin.redirect)}" if plugin.redirect is not None else "")
+        if route is not None and route.problem is not None:
+            last = route.hops[-1][1] if route.hops else plugin
+            if last is not None and last.redirect is not None and not is_fqcn(last.redirect):
+                return f"→ {last.redirect} (not a full name)"
+            if route.final in (plugin.fqcn, *(name for name, _ in route.hops[:-1])):
+                return "redirect loop"
+            return f"→ {route.final} (removed)"
+        if route is None and item.state == REMOVED:
+            until = semver_or_none(plugin.until)
+            local = f" (local {version})" if version is not None and until is not None and version >= until else ""
+            return f"removed in {plugin.until}{local}"
+        why: list[str] = []
+        if _deprecated(item):
+            why.append("deprecated")
+        if item.state == MISSING:
+            why.append("not installed")
+        if item.state == NEWER:
+            collection, since = item.outdated[0] if item.outdated else (plugin.collection, plugin.since)
+            have = self.installed[collection].version if collection in self.installed else version
+            local = "" if have is None else f", local {have}" if route is not None else f" (local {have})"
+            why.append(f"needs {since}{local}")
+        if route is not None and route.unknown is not None:
+            why.append("not on the index")
+        if route is None:
+            return ", ".join(why)
+        return f"→ {route.final}" + (f" ({', '.join(why)})" if why else "")
+
+    def _notes(self, item: Found) -> str:
+        """Why the plugin isn't simply there to use, for the details' verdict, or an empty string if it is."""
         plugin = item.plugin
         notes: list[str] = []
         installed = f", installed {item.version}" if item.version is not None else ""
         if item.state == NEWER and not item.outdated:
             notes.append(f"added in {plugin.since}{installed}")
         tombstone = plugin.tombstone
+        # Removed only when the name fails: a file that went while its name still redirects was moved or renamed.
+        moved = _moved(plugin) if tombstone is None and item.route and not item.route.problem else None
         if tombstone is not None:
             when = tombstone.get("removal_version") or tombstone.get("removal_date")
             notes.append(f"removed in {when}" if when else "removed")
-        elif plugin.until is not None and item.state in (REMOVED, REDIRECT, MISSING):
-            notes.append(f"removed in {plugin.until}{installed if item.state == REMOVED else ''}")
+            if plugin.redirect is not None:
+                notes.append(f"use {as_builtin(plugin.redirect)}")
+        elif plugin.until is not None and item.state in (REMOVED, REDIRECT, MISSING) and not moved:
+            notes.append(f"removed in {plugin.until}")
         if item.route and tombstone is None:
+            lead = f"{moved} in {plugin.until} " if moved else ""
             if item.route.problem:
                 notes.append(f"broken redirect: {item.route.problem}")
-            elif route and item.route.unknown:
-                notes.append(f"→ {item.route.final} (not in the plugin index)")
-            elif route:
-                more = len(item.route.hops) - 1
-                notes.append(f"→ {item.route.final}" + (f" (via {more} more)" if more else ""))
+            elif moved:
+                notes.append(lead.rstrip())
         if item.state == MISSING:
             notes.append(f"{_and(item.missing)} {'is' if len(item.missing) == 1 else 'are'}n't installed")
         for collection, since in item.outdated if item.state == NEWER else ():
@@ -565,8 +685,8 @@ class _Renderer(Renderer):
             notes.append(f"added to {collection} in {since}, installed {have}")
         deprecation = plugin.deprecation
         if deprecation is not None and tombstone is None:
-            when = deprecation.get("removal_version") or deprecation.get("removal_date")
-            notes.append(f"deprecated, removal in {when}" if when else "deprecated")
+            # On a redirect it's the name that's deprecated, not the plugin it leads to.
+            notes.append("old name deprecated" if plugin.redirect is not None else "deprecated")
         return "; ".join(notes)
 
     def _legend(self, shown: list[Found]) -> None:
@@ -579,6 +699,21 @@ class _Renderer(Renderer):
 
     def _field(self, label: str, value: str) -> None:
         print(f"  {self.s(label.ljust(10), DIM)} {value}")
+
+
+def _deprecated(item: Found) -> bool:
+    """Whether ansible-core warns that it's deprecated when loading it by this name: at the plugin, or at any step of
+    its route."""
+    hops = item.route.hops if item.route else []
+    return item.plugin.deprecation is not None or any(s is not None and s.deprecation is not None for _, s in hops)
+
+
+def _moved(plugin: Plugin) -> str | None:
+    """``renamed`` or ``moved``, by whether it redirects within its collection, for a plugin removed in ``until``
+    whose name still redirects; None for one that wasn't removed or doesn't redirect."""
+    if plugin.until is None or plugin.redirect is None:
+        return None
+    return "renamed" if split_fqcn(as_builtin(plugin.redirect))[0] == plugin.collection else "moved"
 
 
 def _routing_only(plugin: Plugin) -> bool:

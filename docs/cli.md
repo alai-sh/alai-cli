@@ -306,7 +306,7 @@ Find plugins, roles and playbooks by name in the indexes' plugin indexes, with t
 
 [Finding plugins](casts/find.cast){ .alai-cast }
 
-`community.general` 11.0.0 is installed. Its `docker_container` was removed in 2.0.0, but it still redirects to `community.docker`'s, so a playbook that uses either name keeps working once `community.docker` is installed. `to_` matches part of each filter's name, underlined on a terminal.
+`community.general` 11.0.0 is installed. Its `docker_container` moved in 2.0.0: it redirects to `community.docker`'s, so a playbook that uses either name keeps working once `community.docker` is installed. `to_` matches part of each filter's name, underlined on a terminal.
 {: .alai-cast-description }
 
 [A plugin's details and where its redirects lead](casts/find-detail.cast){ .alai-cast }
@@ -328,7 +328,7 @@ $ alai find [OPTIONS] QUERY
 | `-t`, `--type TYPE` | Only this type, as ansible-doc `-t` names them (module, filter, lookup...), or role or playbook; can be repeated |
 | `-x`, `--exact` | Match whole names only, not names that contain QUERY |
 | `--installed` | Only plugins in installed collections and ansible.builtin |
-| `--include-removed` | List removed plugins that match part of a name too; ones named exactly always are |
+| `-a`, `--all` | List removed plugins and aliases to listed plugins that match part of a name too; ones named exactly always are |
 | `--limit N` | List at most N matches, installed ones first, 0 for all; 20 on a terminal, all when the output is piped or `--output-format` is json |
 | `--output-format {text,json}` | Text, the default, or json for scripts |
 
