@@ -62,7 +62,9 @@ searches locally is the reason the index has one.
   `~/.ansible/collections` or the `ansible` package's `site-packages`
   aren't counted, though plain `ansible-playbook` would load them.
   On disk: every collection under the project's
-  `collections_dir`, with its version from `MANIFEST.json`, found the way
+  `collections_dir`, with its version from `MANIFEST.json`, or for one
+  without, such as a checkout, its `galaxy.yml` (2026-10-30; `find` only,
+  as `sync` replaces a collection with no `MANIFEST.json` version), found the way
   `alai collection install` finds the project (an `alai.toml`, or
   `--collections-dir`), so it works
   without a lock. Outside any project, only `ansible.builtin` counts, and
@@ -342,6 +344,22 @@ searches locally is the reason the index has one.
   itself, as the details do; the order is the only judgement left. A
   `usable` per match could come back if scripts need the verdict. The
   first command with JSON output.
+- **Where each line came from** (decided with the user 2026-10-30, once
+  installed collections were read from disk). A plugin's `index` is the
+  index's URL, as the lock records an index source, and only on a line
+  read from an index. Without it, the line is from what its collection's
+  entry describes: the installed collection's files, or for the builtins
+  its `release` (`python_index`, `package`, `version`). An installed
+  collection has one copy and one source, so its entry has a `source`,
+  the lock's table for it when the installed version is the one locked,
+  else alai's install record, else none. A plugin can't come from disk
+  unless its collection is installed, so the only override is an index,
+  as for a plugin only a newer version has. Weighed and dropped: `from`
+  on every plugin (`{"installed": true}` says nothing the collection
+  doesn't), and collections keyed by a version and source that plugins
+  point to (an index's lines have no version, and nearly every plugin
+  would point at its collection's default). `index` was the index's
+  configured name, and the builtins' release as text, until then.
 
 ### Ranking
 
@@ -458,8 +476,9 @@ A step to a plugin with `until`, or a tombstone, breaks the route, unless
 its collection is installed at a version before the removal (`until`, or
 the tombstone's `removal_version`): that version still has the file, so
 the route ends there. Before, a removal broke the route whatever was
-installed, as only the index's latest facts were used. What that older
-version's own routing said is unknown, as the index only has the latest.
+installed, as only the index's latest facts were used. The installed
+version's own routing is read from disk now ([Installed
+collections](#installed-collections)).
 
 **Same name, as a guess at a successor** (2026-10-21). The index has 278
 routes broken at a step removed with no redirect onward, and 410 ending at
@@ -549,6 +568,57 @@ more, 168 of them changing a short name, and some have three
 - **Bad lines are skipped silently**: unreadable JSON, missing fields, or a
   newer `v`. It's a search aid, not something to resolve from.
 
+### Installed collections
+
+Done on 2026-10-30, on the plan of 2026-10-24, with alai-core's
+`extract_collection` in place of alai-plugin-extractor, so no new
+dependency and no gap on Python 3.10 and 3.11.
+
+- **Every installed collection is read from disk** (`_local_index` in
+  `_find.py`), with `docs=False`, and its lines written by `_builtin`'s
+  `render_lines`, as `ansible.builtin`'s are. That covers collections on
+  no index (checkouts, path, tarball and git sources) and a collection
+  project's own, which is linked into the collections directory, and the
+  installed version's routing, which is what ansible-core follows.
+- **Searched first, as one more plugin index named `installed`**, so a
+  local line wins over an index's for the same `(type, fqcn)`. An index's
+  lines for an installed collection aren't skipped: the ones the local
+  version lacks still say a newer version has it (`↑`), as
+  `ansible.windows.win_disk_info` with 3.8.0 installed. A local line has no
+  `since` or `until`: its file is there, so it's never `↑` or removed. The
+  cost is that the details' "since X" goes for an installed plugin, and an
+  index line for a plugin the installed version should have but doesn't
+  (an edited copy) still counts as installed.
+- **Cached by `MANIFEST.json`'s SHA-256**, in
+  `<cache_dir>/installed-v1/<name>/<sha256>.jsonl`. The manifest holds
+  `FILES.json`'s checksum, so it changes with any file. One without a
+  manifest, a checkout, is read every time rather than keyed by its files'
+  modification times as planned: measured 2026-10-30 on the development
+  machine, `community.general`'s checkout takes 0.15-0.3 s, and reading is
+  in threads, as the extractor releases the GIL (all 92 collections of the
+  `ansible` package: 1.5-2.8 s serially, 0.4-0.5 s in threads). A warm
+  `find copy` in that tree took 0.41-0.49 s, against 0.42-0.49 s before.
+  No progress is shown: the first search after an install is under a
+  second for the whole package. alai-core `eb18167` made extracting with
+  `docs=False` faster, with the same lines (all 92 compared): best of
+  three, warm, all 92 in threads 0.44 s to 0.24 s, `fortinet.fortios`
+  0.21 s to 0.12 s, `fortinet.fortimanager` 0.21 s to 0.10 s, and
+  `community.general` 0.10 s to 0.07 s.
+- **`--refresh` and `--no-index`, uv's names** (agreed 2026-10-30): uv
+  0.13.5's `--refresh` is "Refresh all cached data" and `--no-index`
+  "Ignore the registry index". `--refresh` re-reads every installed
+  collection and rewrites its cache, for one edited in place, which leaves
+  `MANIFEST.json` as it was; the plugin indexes are revalidated anyway and
+  the builtin lines are per release, so nothing else needs it. No
+  `--refresh-package`, as re-reading all 92 `ansible` package collections
+  takes about 0.45 s. `--no-index` reads no index's plugin index, so it
+  needs none configured to have one; the builtins are still read, as no
+  index has them. Different from `--installed`, which still uses the index's
+  lines for an installed collection's newer plugins.
+- **A collection that can't be read is a warning**, and its index lines are
+  used: a `MANIFEST.json` ansible-galaxy wouldn't build, or a `galaxy.yml`
+  that isn't YAML.
+
 ### ansible.builtin and eda.builtin
 
 - **Read from the sdists, not the index** (2026-10-30). The index's
@@ -607,40 +677,6 @@ more, 168 of them changing a short name, and some have three
   downloaded into the cache), something like
   `alai collection path NAME --output-format json`. Keep `find`'s JSON
   stable enough for it.
-- **Routing from installed collections.** Routing comes from the index,
-  so from each collection's latest version; an installed older version
-  may route differently. Reading `meta/runtime.yml` from disk for installed
-  collections would fix it. A documented limitation for now (2026-10-21).
-- **Installed collections that aren't on any index** (source checkouts,
-  path, tarball and git sources), and a collection project's own
-  collection, have no plugins listed. A documented limitation. The plan
-  (2026-10-24, weighed with the user and left for later), which takes
-  alai-plugin-extractor as a new dependency, or its code moved into alai:
-  - **List each local collection's plugins** with the extractor: installed
-    ones and the collection project's checkout, their names, types, short
-    descriptions and routing. Listing costs about what reading the docs
-    does, as parsing the Python is most of it (measured 2026-10-24:
-    `community.general` 0.9 s, `fortinet.fortios` 1.5 s, `ansible.posix`
-    0.05 s), against `find`'s 0.1-0.3 s.
-  - **Cache just those fields**, per collection, keyed by the installed
-    `MANIFEST.json`'s SHA-256: a cache of everything extracted, docs
-    included, would cost 10-30 ms a collection to load on every `find`. A
-    checkout has no `MANIFEST.json`, so key it by its plugin files' sizes
-    and modification times, or working in a large one (`community.general`
-    itself) costs about a second every time.
-  - **A second, small source in `Catalog`**, in Python beside the native
-    scan of `plugins.jsonl`, with the same search interface. A local
-    collection's lines replace the index's for it, as the installed
-    version is what runs, which also fixes routing from installed
-    collections (above).
-  - **Fit `find`'s rules**: ranking and markers read `since` and `until`,
-    so a local line's `since` is the installed version. On Python 3.10 and
-    3.11, which the extractor doesn't run on, local collections are
-    skipped, with a dim line saying so.
-  - The first `find` in a project with many installed collections reads
-    each once, several seconds where `find` now takes a fraction of one,
-    so it shows progress; after that, a few milliseconds each.
-  About 200-300 lines, and as much again in tests and docs.
 - **`ansible.builtin` is the latest ansible-core release's**, not the
   installed ansible-core's, and every line is counted as installed. With an
   older ansible-core, a plugin added since is marked `✓` though it's missing

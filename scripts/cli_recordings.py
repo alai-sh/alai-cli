@@ -224,7 +224,11 @@ def _record(recording: dict[str, object], home: pathlib.Path, env: dict[str, str
         rows = _rows_used("".join(data for _, data in events), columns)
 
     if rows > ROWS:
-        msg = f"{recording['name']}: needs {rows} rows, more than the {ROWS} recorded; shorten it or raise ROWS"
+        # The output, without escapes, says why: a warning or traceback only one machine prints is otherwise lost.
+        text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\r", "", "".join(d for _, d in events))
+        msg = (
+            f"{recording['name']}: needs {rows} rows, more than the {ROWS} recorded; shorten it or raise ROWS:\n{text}"
+        )
         raise RuntimeError(msg)
     # asciicast v3, which asg needs for a live recording's SVGs: each event's time is from the one before it.
     header: dict[str, object] = {

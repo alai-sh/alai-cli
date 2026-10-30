@@ -5,11 +5,14 @@ from __future__ import annotations
 
 import collections.abc as _c
 import json
+import os
 import re
 import sys
 from pathlib import Path
 
 import pytest
+from alai_core.semver import Version
+from artifact_data import manifest_json
 from index_data import make_index, plugin
 from index_server import IndexServer
 from python_index import make_python_index
@@ -17,7 +20,10 @@ from python_index import make_python_index
 from alai import _find
 from alai._cli import main
 from alai._common import EXIT_ERROR, EXIT_NOT_FOUND
+from alai._config import RawManifest
 from alai._find import as_sentence, markup, plain
+from alai._install import write_record
+from alai._lock import IndexSource, Lock, LockedCollection, lock_path, write_lock
 
 PLUGINS = [
     plugin("ansible.builtin.copy", short_description="Copy files to remote locations"),
@@ -64,12 +70,22 @@ def project(project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _
         yield project
 
 
-def install(project: Path, name: str, version: str) -> None:
+def install(project: Path, name: str, version: str | None) -> Path:
+    """A collection in the project's collections directory, with no ``MANIFEST.json`` when ``version`` is None, as a
+    checkout has."""
     namespace, short = name.split(".")
     path = project / "collections" / "ansible_collections" / namespace / short
     path.mkdir(parents=True)
-    info = {"namespace": namespace, "name": short, "version": version}
-    _ = (path / "MANIFEST.json").write_text(json.dumps({"collection_info": info}))
+    if version is not None:
+        _ = (path / "MANIFEST.json").write_bytes(manifest_json(name, version))
+    return path
+
+
+def add_module(collection: Path, name: str, short_description: str) -> None:
+    modules = collection / "plugins" / "modules"
+    modules.mkdir(parents=True, exist_ok=True)
+    docs = f"module: {name}\nshort_description: {short_description}\n"
+    _ = (modules / f"{name}.py").write_text(f"DOCUMENTATION = {docs!r}\n")
 
 
 def general(project: Path) -> Path:
@@ -392,6 +408,131 @@ class TestListing:
         assert "\x1b[1mto_\x1b[0m\x1b[1;4mseconds\x1b[0m" in line
 
 
+class TestInstalledCollections:
+    def test_plugin_only_on_disk(self, project: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        add_module(install(project, "my.coll", "1.0.0"), "frob", "Frob a widget")
+        add_module(install(project, "my.checkout", None), "frob", "Frob from a checkout")
+
+        assert find("frob") == 0
+        assert find("frob") == 0
+
+        lines = out(capsys)
+        assert lines[:3] == [
+            section("Installed (2)"),
+            " ✓ module  my.checkout.frob  Frob from a checkout",
+            " ✓ module  my.coll.frob      Frob a widget",
+        ]
+        # Only the one with a MANIFEST.json is cached; a checkout can change at any time.
+        cached = {p.parent.name for p in (tmp_path / "cache" / _find.LOCAL_LAYOUT).glob("*/*.jsonl")}
+        assert cached == {"community.general", "my.coll"}
+
+    def test_routing_from_disk(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        path = install(project, "my.coll", "1.0.0")
+        add_module(path, "frob", "Frob a widget")
+        (path / "meta").mkdir()
+        _ = (path / "meta" / "runtime.yml").write_text("plugin_routing: {modules: {old: {redirect: my.coll.frob}}}\n")
+
+        assert find("my.coll.old") == 0
+
+        assert "  Installed  ✓ yes, as my.coll.frob" in out(capsys)
+
+    def test_refresh(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        path = install(project, "my.coll", "1.0.0")
+        add_module(path, "frob", "Frob a widget")
+        assert find("frob") == 0
+        add_module(path, "frob", "Edited in place")
+
+        assert find("frob") == 0
+        assert find("frob", "--refresh") == 0
+        assert find("frob") == 0
+
+        rows = [line for line in out(capsys) if "my.coll.frob" in line]
+        # The edit leaves MANIFEST.json as it was, so it's only seen once refreshed, and is cached from then on.
+        assert [row.split("  ")[-1] for row in rows] == ["Frob a widget"] * 2 + ["Edited in place"] * 2
+
+    def test_no_index(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        add_module(install(project, "my.coll", "1.0.0"), "copy_thing", "A local copy_thing")
+
+        assert find("copy_thing", "--no-index") == 0
+
+        assert out(capsys) == [section("Installed (1)"), " ✓ module  my.coll.copy_thing  A local copy_thing"]
+
+    def test_no_index_needs_no_plugin_index(
+        self, project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setenv("ALAI_DEFAULT_INDEX", make_index(tmp_path / "bare", {"a.a": []}))
+
+        assert find("ansible.builtin.copy", "--no-index") == 0
+
+        assert "  Route      ✓ ansible.builtin.copy  this plugin, with ansible-core" in out(capsys)
+
+    def test_checkout_version_from_galaxy_yml(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        path = install(project, "my.checkout", None)
+        _ = (path / "galaxy.yml").write_text("namespace: my\nname: checkout\nversion: 0.3.0\n")
+        add_module(path, "frob", "Frob a widget")
+
+        assert find("my.checkout.frob") == 0
+
+        lines = out(capsys)
+        assert "  Versions   in the one installed" in lines
+        assert any(line.startswith("  Route      ✓ my.checkout.frob  this plugin, 0.3.0 in ") for line in lines)
+
+    def test_json_from_disk(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        path = install(project, "my.coll", "1.0.0")
+        add_module(path, "frob", "Frob a widget")
+        write_record(str(project / "collections"), "my.coll", {"source": {"directory": "../my.coll"}})
+
+        assert find("frob", "--output-format", "json") == 0
+
+        result = json.loads(capsys.readouterr().out)
+        # No index: the line is from the collection's entry, the installed copy.
+        assert "index" not in result["plugins"][0]
+        assert result["collections"]["my.coll"] == {
+            "installed": True,
+            "version": "1.0.0",
+            "path": str(path.resolve()),
+            "source": {"directory": "../my.coll"},
+        }
+
+    @pytest.mark.parametrize(("locked", "source"), [("2.5.0", {"index": "https://index.alai.sh/"}), ("2.4.0", None)])
+    def test_json_source_from_the_lock(
+        self, locked: str, source: dict[str, str] | None, project: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _ = (project / "alai.toml").write_text("[project]\n")
+        entry = LockedCollection(
+            "community.general", Version(locked), source=IndexSource("https://index.alai.sh/"), cksum="a" * 64, size=1
+        )
+        _ = write_lock(
+            lock_path(str(project)),
+            Lock(
+                RawManifest(
+                    "alai.toml",
+                    collections=[],
+                    requires_ansible=None,
+                    groups={},
+                    overrides={},
+                    ignore_requires_ansible=[],
+                    sources={},
+                ),
+                [entry],
+            ),
+        )
+
+        assert find("copy_thing", "--output-format", "json") == 0
+
+        # Only a lock entry for the version installed says where it came from.
+        assert json.loads(capsys.readouterr().out)["collections"]["community.general"].get("source") == source
+
+    def test_unreadable_uses_the_index(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        _ = (general(project) / "MANIFEST.json").write_text("[]")
+
+        assert find("copy_thing", "--installed") == 0
+
+        captured = capsys.readouterr()
+        assert captured.err.startswith(f"warning: can't read the plugins of community.general at {general(project)}")
+        assert " ✓ module  community.general.copy_thing  Copies things" in captured.out
+
+
 class TestDetail:
     def test_redirect(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         assert find("community.general.docker_container") == 0
@@ -681,6 +822,8 @@ class TestDetail:
 class TestJson:
     def test_output(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         assert find("docker_container", "--output-format", "json") == 0
+        index = os.environ["ALAI_DEFAULT_INDEX"]
+        pypi = os.environ["ALAI_PYTHON_INDEX"]
 
         assert json.loads(capsys.readouterr().out) == {
             "v": 1,
@@ -691,7 +834,6 @@ class TestJson:
                     "collection": "ansible.builtin",
                     "routing": {"redirect": "community.docker.docker_container"},
                     "fqcn": "ansible.builtin.docker_container",
-                    "index": "ansible-core 2.20.0",
                     "matched": True,
                 },
                 {
@@ -703,7 +845,7 @@ class TestJson:
                     "short_description": "manage docker containers",
                     "routing": {"redirect": "community.docker.docker_container"},
                     "fqcn": "community.general.docker_container",
-                    "index": "alai",
+                    "index": index,
                     "matched": True,
                 },
                 {
@@ -713,12 +855,17 @@ class TestJson:
                     "since": "1.0.0",
                     "short_description": "manage Docker containers",
                     "fqcn": "community.docker.docker_container",
-                    "index": "alai",
+                    "index": index,
                     "matched": True,
                 },
             ],
             "collections": {
-                "ansible.builtin": {"installed": True, "version": None, "path": None},
+                "ansible.builtin": {
+                    "installed": True,
+                    "version": None,
+                    "path": None,
+                    "release": {"python_index": pypi, "package": "ansible-core", "version": "2.20.0"},
+                },
                 "community.docker": {"installed": False, "version": None, "path": None},
                 "community.general": {"installed": True, "version": "2.5.0", "path": str(general(project))},
             },

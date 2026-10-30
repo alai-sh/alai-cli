@@ -7,12 +7,6 @@ finds collections you haven't installed, and lists the ones you have first.
 
 [Finding plugins](casts/find.cast){ .alai-cast }
 
-!!! note "Index-only plugins"
-
-    alai will only find collections present in the index and does not scan
-    collections stored locally. A future change will implement support for
-    finding plugins that are stored locally and not present in the index.
-
 ## What to search for
 
 | Query | Finds | Example |
@@ -227,17 +221,14 @@ following is the JSON output of
         "redirect": "community.docker.docker_container"
       },
       "fqcn": "ansible.builtin.docker_container",
-      "index": "ansible-core 2.21.5",
       "matched": true
     },
     {
       "type": "module",
       "name": "docker_container",
       "collection": "community.docker",
-      "since": "0.1.0",
       "short_description": "manage Docker containers",
       "fqcn": "community.docker.docker_container",
-      "index": "alai",
       "matched": false
     }
   ],
@@ -245,24 +236,97 @@ following is the JSON output of
     "ansible.builtin": {
       "installed": true,
       "version": null,
-      "path": null
+      "path": null,
+      "release": {
+        "python_index": "https://pypi.org/simple/",
+        "package": "ansible-core",
+        "version": "2.21.5"
+      }
     },
     "community.docker": {
       "installed": true,
       "version": "5.4.0",
-      "path": "/home/me/project/collections/ansible_collections/community/docker"
+      "path": "/home/me/project/collections/ansible_collections/community/docker",
+      "source": {
+        "index": "https://index.alai.sh/"
+      }
     }
   },
   "omitted": 0
 }
 ```
 
+In this case `community.docker.docker_container` was read from the
+collection installed in the project, so its entry has no `index` key.
+`ansible.builtin.docker_container` has none either, as it was read from the
+ansible-core release in its collection's `release`. The `community.docker`
+entry in `collections` still has a `source`, as that's where the installed
+collection came from, not where its plugins were read from.
+
+If an installed collection doesn't have a plugin, but a newer version on the
+index does, that plugin's entry comes from the index and has an `index` key.
+For example with `ansible.windows` 3.8.0 installed,
+`alai find 'ansible.windows.win_d[is]*' --output-format json` lists
+`win_dsc` from the installed files and `win_disk_info`, added in 3.9.1, from
+the index:
+
+```json
+{
+  "v": 1,
+  "plugins": [
+    {
+      "type": "module",
+      "name": "win_dsc",
+      "collection": "ansible.windows",
+      "short_description": "Invokes a PowerShell DSC configuration",
+      "fqcn": "ansible.windows.win_dsc",
+      "matched": true
+    },
+    {
+      "type": "module",
+      "name": "win_disk_info",
+      "collection": "ansible.windows",
+      "since": "3.9.1",
+      "short_description": "Gather disk, partition, and volume information on Windows",
+      "fqcn": "ansible.windows.win_disk_info",
+      "index": "https://index.alai.sh/",
+      "matched": true
+    }
+  ],
+  "collections": {
+    "ansible.windows": {
+      "installed": true,
+      "version": "3.8.0",
+      "path": "/home/me/project/collections/ansible_collections/ansible/windows",
+      "source": {
+        "index": "https://index.alai.sh/"
+      }
+    }
+  },
+  "omitted": 0
+}
+```
+
+The `ansible.windows` entry in `collections` still describes the installed
+collection. The `index` key on `win_disk_info` is what says it isn't in the
+installed version and was read from the index.
+
 | Field | |
 |---|---|
 | `v` | The format's version, which changes if a field is removed or changes meaning |
-| `plugins` | The same matches the text output lists, in the same order, then every plugin their redirects lead to that the index has, each listed once. Like the text output, it leaves out removed plugins and aliases unless they're named exactly or `-a`/`--all` is given |
-| `collections` | Every collection the plugins are in or redirect to, by name, with whether it's [installed](#whats-listed-first) and, if so, its `version` and the `path` of its directory. `ansible.builtin` and `eda.builtin` are always installed, with no version or path. `version` is `null` if it can't be read |
+| `plugins` | The same matches the text output lists, in the same order, then every plugin their redirects lead to that alai found, each listed once. Like the text output, it leaves out removed plugins and aliases unless they're named exactly or `-a`/`--all` is given |
+| `collections` | Every collection the plugins are in or redirect to, by name |
 | `omitted` | How many matches `--limit` left out |
+
+Each collection has:
+
+| Field | |
+|---|---|
+| `installed` | Whether it's [installed](#whats-listed-first). `ansible.builtin` and `eda.builtin` always are |
+| `version` | The installed version, from its `MANIFEST.json`, or its `galaxy.yml` if it has none. `null` if it isn't installed or neither can be read, and for `ansible.builtin` and `eda.builtin` |
+| `path` | The installed collection's directory. `null` if it isn't installed, and for `ansible.builtin` and `eda.builtin` |
+| `source` | Where the installed collection came from, as the lock writes it, such as `{"index": "https://index.alai.sh/"}` or `{"editable": "../my.tools"}`. Only if alai knows, from the lock or from installing it |
+| `release` | For `ansible.builtin` and `eda.builtin`, the release their plugins were read from: its `python_index`, `package` and `version` |
 
 Each plugin has:
 
@@ -271,16 +335,18 @@ Each plugin has:
 | `type` | Its type, as `-t` takes it, such as `module`, `filter` or `role` |
 | `name` | Its short name |
 | `collection` | The collection it's in, or `ansible.builtin` for ansible-core's own and `eda.builtin` for ansible-rulebook's |
-| `since` | The lowest version of its collection that has it. For `ansible.builtin` and `eda.builtin`, it's the ansible-core or ansible-rulebook version it was added in. Only if known |
-| `until` | The version of its collection it was removed in. Only if it was removed |
+| `since` | The lowest version of its collection that has it. For `ansible.builtin` and `eda.builtin`, it's the ansible-core or ansible-rulebook version it was added in. Only if known, so never for one read from an installed collection |
+| `until` | The version of its collection it was removed in. Only if it was removed, so never for one read from an installed collection |
 | `short_description` | One line from its documentation, with any [Ansible markup](https://docs.ansible.com/projects/ansible/latest/dev_guide/ansible_markup.html) such as `C(...)` as written. Only if it has one |
 | `routing` | Its entry in its collection's `meta/runtime.yml` `plugin_routing` (`redirect`, `deprecation`, `tombstone`), as the collection wrote it. Only if it has one |
 | `fqcn` | Its full name |
-| `index` | The name of the index it was found in, or for `ansible.builtin` and `eda.builtin`, the release it was read from, such as `ansible-core 2.21.5` |
+| `index` | The URL of the index whose list it was read from. Only if it was. Without it, the plugin was read from the installed collection's files, or for `ansible.builtin` and `eda.builtin`, from the `release` |
 | `matched` | Whether it matched the search, rather than being listed because a match redirects to it |
 
-Everything but `fqcn`, `index` and `matched` comes from the index, or for
-`ansible.builtin` and `eda.builtin`, from the release.
+Everything but `fqcn`, `index` and `matched` comes from the index, the
+installed collection, or for `ansible.builtin` and `eda.builtin`, the
+release. An installed collection's plugins are read from its files, but one
+only a newer version has comes from the index, with its `index`.
 
 Whether a plugin can be used, as the details' **Installed** line says, isn't
 in the JSON. alai uses the JSON facts, following each `routing.redirect` as
@@ -296,6 +362,24 @@ it, and its collection's routing for it, from `meta/runtime.yml`. With
 several [indexes](configuration.md#indexes), each one's list is searched, and
 where two have the same plugin, the first index's is used. An index without a
 list is skipped, and if none has one, `alai find` says so.
+
+## Installed collections
+
+alai also reads the plugins and routing of each installed collection from
+its files, without running anything in it, as the version installed is the
+one Ansible uses. So a collection that isn't on any index, such as a source
+checkout or the collection you're developing, is searched too, and a route
+is followed as the installed version's `meta/runtime.yml` has it. The index
+still says which plugins a newer version adds. alai keeps what it read in
+the cache for a collection with a `MANIFEST.json`, so only the first search
+after installing it reads its files. One without, such as a checkout, is
+read on every search. If you edit an installed collection's files by hand,
+`--refresh` reads them again.
+
+`--no-index` searches only what's installed, with `ansible.builtin` and
+`eda.builtin`, and leaves out every index's list. Nothing is then listed as
+not installed, and nothing says a newer version has a plugin. `--installed`
+still uses the index's lists, so it says that.
 
 ## ansible-core's own plugins
 

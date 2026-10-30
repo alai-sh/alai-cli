@@ -52,7 +52,7 @@ _COPY_MIN = 3
 class Plugin(Record):
     """One line of the plugin index."""
 
-    __slots__ = ("collection", "index", "line", "name", "routing", "short_description", "since", "type", "until")
+    __slots__ = ("collection", "line", "name", "routing", "short_description", "since", "source", "type", "until")
 
     def __init__(
         self,
@@ -64,7 +64,7 @@ class Plugin(Record):
         until: str | None = None,
         short_description: str | None = None,
         routing: dict[str, object] | None = None,
-        index: str = "",
+        source: dict[str, str] | None = None,
         line: bytes = b"",
     ) -> None:
         self.type = type
@@ -75,8 +75,8 @@ class Plugin(Record):
         self.short_description = short_description
         self.routing = routing or {}
         """The plugin's ``plugin_routing`` entry from the collection's ``meta/runtime.yml``, as the index copied it."""
-        self.index = index
-        """The name of the index it came from."""
+        self.source = source or {}
+        """Where its line was read from, as its ``PluginIndex`` says."""
         self.line = line
         """The line it was read from, or empty."""
 
@@ -155,8 +155,11 @@ class PluginIndex:
     ``skip`` are left out, always: any index's ``ansible.builtin`` and ``eda.builtin`` lines, which ``_builtin`` reads
     from the ansible-core and ansible-rulebook it downloads instead."""
 
-    def __init__(self, index: str, data: bytes, *, skip: _c.Container[str] = ()) -> None:
-        self.index = index
+    def __init__(self, source: dict[str, str], data: bytes, *, skip: _c.Container[str] = ()) -> None:
+        self.source = source
+        """Where the lines are from, a table as the lock gives a source: ``{"index": "<url>"}``, for ``ansible.builtin``
+        and ``eda.builtin`` the release, ``{"python_index": "<url>", "package": "ansible-core", "version": "2.21.0"}``,
+        or empty for the installed collections, read from their files."""
         self.skip = skip
         self._file = Plugins(data)
 
@@ -187,7 +190,7 @@ class PluginIndex:
                 until=e.until,
                 short_description=e.short_description,
                 routing=e.routing.raw if e.routing is not None else None,
-                index=self.index,
+                source=self.source,
                 line=e.line or b"",
             )
             for e in entries
@@ -417,8 +420,9 @@ def as_builtin(name: str) -> str:
 
 
 def has_file(plugin: Plugin) -> bool:
-    """Whether an ``ansible.builtin`` line is a plugin ansible-core ships, rather than only its routing: shipped ones
-    are documented or have no redirect or tombstone. ``ansible.legacy`` finds a file before it reads any routing."""
+    """Whether an ``ansible.builtin`` line, or one read from an installed collection, is a plugin with a file rather
+    than only its routing: those are documented or have no redirect or tombstone. ``ansible.legacy`` finds a file
+    before it reads any routing."""
     return plugin.short_description is not None or (plugin.redirect is None and plugin.tombstone is None)
 
 

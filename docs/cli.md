@@ -302,7 +302,7 @@ Also takes the [global options](#global-options).
 
 ## alai find
 
-Find plugins, roles and playbooks by name in the indexes' plugin indexes, with the ones in installed collections and ansible.builtin first. QUERY is part of a name (user finds win_user too), a glob ('*_info', 'community.general.*'), or a FQCN, which shows that plugin's details: where its redirects lead, and how to install it.
+Find plugins, roles and playbooks by name in the installed collections, read from their files, and in the indexes' plugin lists, with the ones in installed collections and ansible.builtin first. QUERY is part of a name (user finds win_user too), a glob ('*_info', 'community.general.*'), or a FQCN, which shows that plugin's details: where its redirects lead, and how to install it.
 
 [Finding plugins](casts/find.cast){ .alai-cast }
 
@@ -329,6 +329,8 @@ $ alai find [OPTIONS] QUERY
 | `-x`, `--exact` | Match whole names only, not names that contain QUERY |
 | `--installed` | Only plugins in installed collections and ansible.builtin |
 | `-a`, `--all` | List removed plugins and aliases to listed plugins that match part of a name too; ones named exactly always are |
+| `--no-index` | Search only installed collections, ansible.builtin and eda.builtin, not the indexes' plugin lists |
+| `--refresh` | Read the installed collections' plugins again, rather than from the cache, as after editing one |
 | `--limit N` | List at most N matches, installed ones first, 0 for all; 20 on a terminal, all when the output is piped or `--output-format` is json |
 | `--output-format {text,json}` | Text, the default, or json for scripts |
 

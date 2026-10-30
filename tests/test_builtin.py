@@ -47,6 +47,10 @@ def load(tmp_path: Path, environ: dict[str, str], url: str, *, offline: bool = F
         return load_builtin(settings, fetcher, task), task
 
 
+def released(indexes: list[PluginIndex]) -> list[str]:
+    return [f"{i.source['package']} {i.source['version']}" for i in indexes]
+
+
 def lines(indexes: list[PluginIndex], collection: str) -> dict[str, dict[str, object]]:
     """Each line of ``collection`` as JSON, by ``type name``."""
     found: dict[str, dict[str, object]] = {}
@@ -60,7 +64,7 @@ class TestLines:
     def test_from_the_sdists(self, tmp_path: Path, environ: dict[str, str], pypi: IndexServer) -> None:
         indexes, _ = load(tmp_path, environ, pypi.url)
 
-        assert [i.index for i in indexes] == ["ansible-core 2.20.0", "ansible-rulebook 1.2.0"]
+        assert released(indexes) == ["ansible-core 2.20.0", "ansible-rulebook 1.2.0"]
         # since is version_added, left out when it's historical; routing with no plugin is a line of its own.
         assert lines(indexes, "ansible.builtin") == {
             "module copy": {
@@ -134,7 +138,7 @@ class TestRelease:
         with IndexServer(root) as server:
             indexes, _ = load(tmp_path, environ, server.url)
 
-        assert indexes[0].index == "ansible-core 2.21.0"
+        assert released(indexes)[0] == "ansible-core 2.21.0"
 
     def test_cached_lines_reused(self, tmp_path: Path, environ: dict[str, str], pypi: IndexServer) -> None:
         _ = load(tmp_path, environ, pypi.url)
@@ -143,7 +147,7 @@ class TestRelease:
         indexes, _ = load(tmp_path, environ, pypi.url)
 
         # The pages are revalidated; the sdists aren't downloaded again.
-        assert [i.index for i in indexes] == ["ansible-core 2.20.0", "ansible-rulebook 1.2.0"]
+        assert released(indexes) == ["ansible-core 2.20.0", "ansible-rulebook 1.2.0"]
         assert [r.path for r in pypi.requests[before:]] == ["/ansible-core/", "/ansible-rulebook/"]
 
     def test_offline_from_the_cache(self, tmp_path: Path, environ: dict[str, str], pypi: IndexServer) -> None:
@@ -151,7 +155,7 @@ class TestRelease:
 
         indexes, _ = load(tmp_path, environ, pypi.url, offline=True)
 
-        assert [i.index for i in indexes] == ["ansible-core 2.20.0", "ansible-rulebook 1.2.0"]
+        assert released(indexes) == ["ansible-core 2.20.0", "ansible-rulebook 1.2.0"]
 
     def test_newest_cached_when_unreachable(
         self, tmp_path: Path, environ: dict[str, str], pypi: IndexServer, capsys: pytest.CaptureFixture[str]
@@ -165,7 +169,7 @@ class TestRelease:
 
         indexes, _ = load(tmp_path, environ, pypi.url)
 
-        assert [i.index for i in indexes] == ["ansible-core 2.20.0", "ansible-rulebook 1.2.0"]
+        assert released(indexes) == ["ansible-core 2.20.0", "ansible-rulebook 1.2.0"]
         err = capsys.readouterr().err
         assert f"warning: {pypi.url} has no ansible-core; using ansible-core 2.20.0 from the cache\n" in err
         assert "using ansible-rulebook 1.2.0 from the cache" in err
@@ -194,7 +198,7 @@ class TestProblems:
         with IndexServer(root) as server:
             indexes, _ = load(tmp_path, environ, server.url)
 
-        assert [i.index for i in indexes] == ["ansible-core 2.20.0"]
+        assert released(indexes) == ["ansible-core 2.20.0"]
         assert (
             f"warning: eda.builtin isn't searchable: {server.url} has no ansible-rulebook\n" in capsys.readouterr().err
         )
@@ -206,7 +210,7 @@ class TestProblems:
 
         indexes, _ = load(tmp_path, environ, pypi.url)
 
-        assert [i.index for i in indexes] == ["ansible-rulebook 1.2.0"]
+        assert released(indexes) == ["ansible-rulebook 1.2.0"]
         assert "isn't a PEP 691 JSON page, as a Python simple index serves" in capsys.readouterr().err
 
     def test_only_wheels(self, tmp_path: Path, environ: dict[str, str], capsys: pytest.CaptureFixture[str]) -> None:
@@ -231,7 +235,7 @@ class TestProblems:
 
         indexes, _ = load(tmp_path, environ, pypi.url)
 
-        assert [i.index for i in indexes] == ["ansible-rulebook 1.2.0"]
+        assert released(indexes) == ["ansible-rulebook 1.2.0"]
         assert f"/files/{name} doesn't match the index: its SHA-256 is " in capsys.readouterr().err
 
     def test_without_a_checksum(self, tmp_path: Path, environ: dict[str, str]) -> None:
@@ -245,7 +249,7 @@ class TestProblems:
         with IndexServer(root) as server:
             indexes, _ = load(tmp_path, environ, server.url)
 
-        assert [i.index for i in indexes] == ["ansible-core 2.20.0", "ansible-rulebook 1.2.0"]
+        assert released(indexes) == ["ansible-core 2.20.0", "ansible-rulebook 1.2.0"]
 
     def test_not_ansible_core(
         self, tmp_path: Path, environ: dict[str, str], pypi: IndexServer, capsys: pytest.CaptureFixture[str]
@@ -255,7 +259,7 @@ class TestProblems:
 
         indexes, _ = load(tmp_path, environ, pypi.url)
 
-        assert [i.index for i in indexes] == ["ansible-rulebook 1.2.0"]
+        assert released(indexes) == ["ansible-rulebook 1.2.0"]
         assert (
             "warning: ansible.builtin isn't searchable: can't extract ansible-core 2.20.0: " in capsys.readouterr().err
         )

@@ -37,7 +37,7 @@ from alai._plugins import (
 
 def parse_line(line: bytes) -> Plugin | None:
     entry = PluginEntry.parse(line)
-    return None if entry is None else _plugins.PluginIndex("", b"")._plugins([entry])[0]
+    return None if entry is None else _plugins.PluginIndex({}, b"")._plugins([entry])[0]
 
 
 EXAMPLE = Path(__file__).parent / "data" / "index" / "plugins.jsonl"
@@ -48,7 +48,7 @@ def data(*lines: dict[str, object]) -> bytes:
 
 
 def catalog(*lines: dict[str, object], copies: dict[str, Copy] | None = None) -> Catalog:
-    return Catalog([PluginIndex("test", data(*lines))], copies)
+    return Catalog([PluginIndex({"index": "test"}, data(*lines))], copies)
 
 
 def names(found: list[Plugin]) -> list[str]:
@@ -57,12 +57,17 @@ def names(found: list[Plugin]) -> list[str]:
 
 class TestParseLine:
     def test_example(self) -> None:
-        plugins = list(PluginIndex("alai", EXAMPLE.read_bytes()).with_tokens())
+        plugins = list(PluginIndex({"index": "alai"}, EXAMPLE.read_bytes()).with_tokens())
 
         assert len(plugins) == 7
         old = next(p for p in plugins if p.name == "old_thing")
         assert old.fqcn == "alai_example.demo.old_thing"
-        assert (old.since, old.until, old.redirect, old.index) == ("0.1.0", "0.2.0", "alai_example.demo.thing", "alai")
+        assert (old.since, old.until, old.redirect, old.source) == (
+            "0.1.0",
+            "0.2.0",
+            "alai_example.demo.thing",
+            {"index": "alai"},
+        )
 
     @pytest.mark.parametrize(
         "line",
@@ -107,7 +112,7 @@ class TestParseLine:
 
 class TestPluginIndex:
     def test_every_token_once(self) -> None:
-        index = PluginIndex("test", data(plugin("a.a.user_user"), plugin("a.a.user"), plugin("b.b.other")))
+        index = PluginIndex({"index": "test"}, data(plugin("a.a.user_user"), plugin("a.a.user"), plugin("b.b.other")))
 
         found = index.with_tokens([b"user_user", b"a.a"])
 
@@ -117,19 +122,19 @@ class TestPluginIndex:
     def test_named(self) -> None:
         lines = data(plugin("a.a.user"), plugin("a.a.ping"), plugin("b.b.users"))
         spaced = b'{"v": 1, "type": "module", "name" :\t"user", "collection": "c.c"}\n'
-        index = PluginIndex("test", lines + spaced)
+        index = PluginIndex({"index": "test"}, lines + spaced)
 
         assert [p.fqcn for p in index.named({"user", "nope"})] == ["a.a.user", "c.c.user"]
         assert index.named(set()) == []
 
     def test_names(self) -> None:
         escaped = b'{"v": 1, "type": "module", "name": "a\\"b", "collection": "c.c"}\n'
-        index = PluginIndex("test", data(plugin("a.a.user"), plugin("b.b.ping")) + escaped + b"not json\n")
+        index = PluginIndex({"index": "test"}, data(plugin("a.a.user"), plugin("b.b.ping")) + escaped + b"not json\n")
 
         assert index.names() == {"user", "ping"}
 
     def test_raw_read_when_asked(self) -> None:
-        [found] = PluginIndex("test", data(plugin("a.a.user") | {"extra": [1, 2]})).with_tokens()
+        [found] = PluginIndex({"index": "test"}, data(plugin("a.a.user") | {"extra": [1, 2]})).with_tokens()
 
         assert found.line.startswith(b"{")
         assert found.raw["extra"] == [1, 2]
@@ -177,7 +182,9 @@ class TestQuery:
 
     def test_escaped_name_still_found(self) -> None:
         # JSON may write a name with escapes, which the raw bytes don't contain as typed, so it's parsed instead.
-        index = Catalog([PluginIndex("t", b'{"v":1,"type":"module","name":"caf\\u00e9","collection":"a.a"}\n')])
+        index = Catalog(
+            [PluginIndex({"index": "t"}, b'{"v":1,"type":"module","name":"caf\\u00e9","collection":"a.a"}\n')]
+        )
 
         assert names(index.search(Query("café"))) == ["module:a.a.café"]
 
@@ -208,12 +215,14 @@ class TestQuery:
 
 class TestCatalog:
     def test_first_index_wins(self) -> None:
-        first = PluginIndex("first", data(plugin("a.a.thing", short_description="first")))
-        second = PluginIndex("second", data(plugin("a.a.thing", short_description="second"), plugin("b.b.thing")))
+        first = PluginIndex({"index": "first"}, data(plugin("a.a.thing", short_description="first")))
+        second = PluginIndex(
+            {"index": "second"}, data(plugin("a.a.thing", short_description="second"), plugin("b.b.thing"))
+        )
 
         found = Catalog([first, second]).search(Query("thing"))
 
-        assert [(p.fqcn, p.index) for p in found] == [("a.a.thing", "first"), ("b.b.thing", "second")]
+        assert [(p.fqcn, p.source["index"]) for p in found] == [("a.a.thing", "first"), ("b.b.thing", "second")]
 
     def test_get(self) -> None:
         index = catalog(plugin("a.a.thing"), plugin("a.a.thing", "filter"), plugin("a.a.thing_two"))
