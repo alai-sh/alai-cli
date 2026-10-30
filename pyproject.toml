@@ -160,6 +160,7 @@ ignore = [
 "src/alai/_commands/**" = ["T201"]
 "src/alai/_find.py" = ["T201"]
 "src/alai/_list.py" = ["T201"]
+"src/alai/_locate.py" = ["T201"]
 "src/alai/_output.py" = ["T201"]
 
 # typing and collections.abc are imported as modules, so annotations read _t.Any and _c.Mapping rather than

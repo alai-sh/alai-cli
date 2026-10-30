@@ -318,14 +318,17 @@ class IndexClient:
         """Where ``url``'s response is cached: its path under the index's own cache directory."""
         if root.startswith("file:"):
             return None  # Already on disk.
-        parts = urllib.parse.urlsplit(root)
-        host = re.sub(r"[^A-Za-z0-9.-]", "_", parts.hostname or "index")
-        directory = f"{host}-{hashlib.sha256(root.encode()).hexdigest()[:16]}"
         segments = url[len(root) :].split("/") if url.startswith(root) else []
         # urljoin drops '..' from a path, but not from a query or fragment, which config.json can give.
         if not segments or any(s in ("", ".", "..") or "?" in s or "#" in s for s in segments):
             segments = ["_other", hashlib.sha256(url.encode()).hexdigest()]
-        return os.path.join(self._cache_dir, "index", directory, *segments)
+        return os.path.join(self._cache_dir, "index", url_dir(root), *segments)
+
+
+def url_dir(root: str) -> str:
+    """The cache directory name for the index at ``root``: its host, for a reader, and a hash of the whole URL."""
+    host = re.sub(r"[^A-Za-z0-9.-]", "_", urllib.parse.urlsplit(root).hostname or "index")
+    return f"{host}-{hashlib.sha256(root.encode()).hexdigest()[:16]}"
 
 
 def parse_config(data: bytes, root: str, url: str) -> tuple[IndexConfig, str | None]:

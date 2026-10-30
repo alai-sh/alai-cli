@@ -17,6 +17,7 @@ from python_index import ansible_core_files, ansible_rulebook_files, make_python
 from alai._builtin import load_builtin
 from alai._config import Overrides, load_settings
 from alai._fetch import Fetcher
+from alai._index import url_dir
 from alai._plugins import PluginIndex, Query
 from alai._progress import Task
 
@@ -106,7 +107,7 @@ class TestLines:
                 "short_description": "Generate events",
             }
         }
-        assert (tmp_path / "cache" / "builtin-v1" / "ansible-core" / "2.20.0.jsonl").is_file()
+        assert (tmp_path / "cache" / "python-index-v1" / url_dir(pypi.url) / "ansible-core" / "2.20.0.jsonl").is_file()
 
     def test_action_routing_left_out(self, tmp_path: Path, environ: dict[str, str]) -> None:
         # ansible-core's action routing mirrors its modules': an action plugin isn't named in a play.
@@ -150,6 +151,17 @@ class TestRelease:
         assert released(indexes) == ["ansible-core 2.20.0", "ansible-rulebook 1.2.0"]
         assert [r.path for r in pypi.requests[before:]] == ["/ansible-core/", "/ansible-rulebook/"]
 
+    def test_cached_by_index(self, tmp_path: Path, environ: dict[str, str], pypi: IndexServer) -> None:
+        # Another index's release of the same version is its own, not the first one's from the cache.
+        _ = load(tmp_path, environ, pypi.url)
+        make_python_index(tmp_path / "other", [plugin("ansible.builtin.fetch"), *LINES[4:]])
+
+        with IndexServer(tmp_path / "other") as other:
+            indexes, _ = load(tmp_path, environ, other.url)
+
+        assert released(indexes) == ["ansible-core 2.20.0", "ansible-rulebook 1.2.0"]
+        assert list(lines(indexes, "ansible.builtin")) == ["module fetch"]
+
     def test_offline_from_the_cache(self, tmp_path: Path, environ: dict[str, str], pypi: IndexServer) -> None:
         _ = load(tmp_path, environ, pypi.url)
 
@@ -162,7 +174,9 @@ class TestRelease:
     ) -> None:
         _ = load(tmp_path, environ, pypi.url)
         # An older run's lines, which the newest cached beats.
-        _ = (tmp_path / "cache" / "builtin-v1" / "ansible-core" / "2.19.0.jsonl").write_bytes(b"")
+        _ = (tmp_path / "cache" / "python-index-v1" / url_dir(pypi.url) / "ansible-core" / "2.19.0.jsonl").write_bytes(
+            b""
+        )
         # Gone from the index (a 5xx is retried, so it would be served again).
         pypi.responses["/ansible-core/"] = [(404, {}, b"gone")]
         pypi.responses["/ansible-rulebook/"] = [(404, {}, b"gone")]
