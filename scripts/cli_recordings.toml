@@ -607,7 +607,7 @@ name = "find-search"
 columns = 100
 title = "Searching by part of a name, or the whole name"
 files = { "alai.toml" = "[project]\n" }
-setup = ["alai add -q community.general"]
+setup = ["alai add -q cisco.ios"]
 commands = ["alai find user", "alai find -x user", "alai find --installed user"]
 
 [[recording]]

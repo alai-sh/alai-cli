@@ -37,9 +37,6 @@
   does, without installing its collection first.
 - **Index tool**: a separate tool for setting up an index locally or building
   the required files that a custom index would require.
-- **More from installed collections in `alai find`**: listing the plugins
-  of installed collections that aren't on an index, such as source
-  checkouts, and reading routing from the version installed.
 - **Checking installed collections** against the checksums each one
   carries for its files, and **cleaning the cache**.
 

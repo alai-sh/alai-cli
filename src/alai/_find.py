@@ -1,7 +1,7 @@
 # Copyright: (c) 2026, Jordan Borean (@jborean93) <jborean93@gmail.com>
 # MIT License (see LICENSE or https://opensource.org/licenses/MIT)
 
-"""``alai find``: plugins by name from the indexes' plugin indexes, with the project's installed collections first.
+"""``alai find``: plugins by name from the indexes' plugin indexes and the installed collections, installed ones first.
 
 Results go to stdout, a list of matches or, for a FQCN, the plugin's details; everything else to stderr. The design is
 in ``design/find.md``.
@@ -9,6 +9,7 @@ in ``design/find.md``.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -18,7 +19,7 @@ from alai_core.markup import parse as parse_markup
 from alai_core.semver import Version
 
 from . import _output
-from ._common import EXIT_NOT_FOUND, Error, as_str, home_path
+from ._common import EXIT_NOT_FOUND, Error, as_str, home_path, write_atomic
 from ._config import Settings
 from ._install import Installed, installed
 from ._output import (
@@ -99,11 +100,13 @@ def find(
     *,
     installed_only: bool = False,
     include_all: bool = False,
+    no_index: bool = False,
+    refresh: bool = False,
     limit: int | None = None,
     output_format: str = "text",
 ) -> int:
-    catalog = load_catalog(settings)
     installed = installed_collections(settings)
+    catalog = load_catalog(settings, installed or {}, no_index=no_index, refresh=refresh)
     if installed is None and output_format == "text" and not query.fqcn:
         status(_output.styled(f"No project found, so only {_and(sorted(BUILTINS))} count as installed", DIM))
     if query.legacy and output_format == "text":
@@ -156,7 +159,7 @@ def find(
     hidden = sum(totals) - len(mine) - len(others)
 
     if output_format == "json":
-        _print_json(mine + others, hidden, installed or {})
+        _print_json(mine + others, hidden, installed or {}, installed_sources(settings, installed or {}))
     elif query.fqcn:
         for item in mine + others:
             alternatives = same_name(item, catalog, versions, settings.cache_dir)
@@ -197,10 +200,14 @@ def _warning_text(routing: dict[str, object] | None) -> str | None:
     return text.strip() or None if isinstance(text, str) else None
 
 
-def load_catalog(settings: Settings) -> Catalog:
+def load_catalog(
+    settings: Settings, installed: dict[str, Installed], *, no_index: bool = False, refresh: bool = False
+) -> Catalog:
     """The plugin index of every configured index that has one, fetched or revalidated, and ansible-core's and
     ansible-rulebook's own plugins from the Python index (``_builtin``), which an index's lines for them don't
-    replace."""
+    replace. The ``installed`` collections' own plugins come first, so they win over an index's lines for the same
+    plugin, and with ``no_index`` are all there is besides the builtins. ``refresh`` reads them again rather than from
+    the cache."""
     from ._builtin import PROJECTS, load_builtin
     from ._fetch import open_fetcher
     from ._index import IndexClient
@@ -208,37 +215,122 @@ def load_catalog(settings: Settings) -> Catalog:
 
     indexes: list[PluginIndex] = []
     copies: dict[str, Copy] = {}
+    searched = () if no_index else settings.indexes
     with (
         open_fetcher(settings) as fetcher,
-        Live(Task("Fetching plugin indexes...", total=len(settings.indexes) + len(PROJECTS))) as task,
+        Live(Task("Fetching plugin indexes...", total=len(searched) + len(PROJECTS))) as task,
     ):
-        for index in settings.indexes:
+        for index in searched:
             task.show(index.name)
             client = IndexClient(index, fetcher, settings.cache_dir, prefetch="plugins")
             data = client.plugins()
             url = client.config().plugins_url
             if data is not None and url is not None:
-                indexes.append(PluginIndex(index.name, data, skip=BUILTINS))
+                indexes.append(PluginIndex({"index": index.url}, data, skip=BUILTINS))
                 for name, copy in cached_copies(settings.cache_dir, url, data).items():
                     copies.setdefault(name, copy)
             else:
                 debug(f"index '{index.name}' ({index.url}) has no plugin index")
             task.advance()
-        if not indexes:
+        if not indexes and not no_index:
             raise Error("none of the configured indexes has a plugin index to search ('plugins' in its config.json)")
         builtin = load_builtin(settings, fetcher, task)
-    return Catalog([*builtin, *indexes], copies)
+    local = _local_index(settings.cache_dir, installed, refresh=refresh)
+    return Catalog([*local, *builtin, *indexes], copies)
+
+
+LOCAL_LAYOUT = "installed-v1"
+"""The cache directory installed collections' lines are kept in, under ``cache_dir``."""
+
+
+def _local_index(cache_dir: str, installed: dict[str, Installed], *, refresh: bool = False) -> list[PluginIndex]:
+    """The installed collections' plugins and routing, read from disk by alai-core's extractor as plugin index lines,
+    as what's installed is what runs. An index's lines for them still count for what they don't have, so a plugin added
+    in a newer version is still found. Cached by ``MANIFEST.json``'s SHA-256; one without, such as a checkout, is read
+    every time, as is every one with ``refresh``, which rewrites its cache."""
+    import concurrent.futures
+    import hashlib
+
+    from alai_core import extract
+
+    from ._builtin import render_lines
+
+    def lines(collection: Installed) -> bytes:
+        try:
+            with open(os.path.join(collection.path, "MANIFEST.json"), "rb") as f:
+                digest = hashlib.sha256(f.read()).hexdigest()
+            path = os.path.join(cache_dir, LOCAL_LAYOUT, collection.name, f"{digest}.jsonl")
+        except OSError:
+            path = None
+        if path is not None and not refresh:
+            try:
+                with open(path, "rb") as f:
+                    return f.read()
+            except OSError:
+                pass
+        try:
+            data = render_lines(extract.extract(collection.path), collection.name)
+        except (OSError, ValueError) as e:
+            warn(
+                f"can't read the plugins of {collection.name} at {collection.path}, so only an index's lines for it, "
+                + f"if any, are listed: {e}"
+            )
+            return b""
+        if path is not None:
+            try:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                write_atomic(path, data)
+            except OSError as e:
+                debug(f"can't cache {collection.name}'s plugins at {path}: {e.strerror or e}")
+        return data
+
+    # The extractor releases the GIL, so the collections are read in parallel.
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        data = b"".join(pool.map(lines, installed.values()))
+    return [PluginIndex({}, data, skip=BUILTINS)] if data else []
 
 
 def installed_collections(settings: Settings) -> dict[str, Installed] | None:
     """The project's installed collections, or None if there's no project: with no collections directory, only
-    ``ansible.builtin`` is installed."""
+    ``ansible.builtin`` is installed. One with no ``MANIFEST.json``, a checkout, has its ``galaxy.yml``'s version."""
+    from ._galaxy import galaxy_metadata
+
     if settings.project.config_file is None and not settings.collections_dir_set:
         return None
-    return installed(settings.collections_dir)
+    found = installed(settings.collections_dir)
+    for collection in found.values():
+        if collection.version is None:
+            with contextlib.suppress(Error, ValueError):
+                collection.version = galaxy_metadata(os.path.join(collection.path, "galaxy.yml")).get_version()
+    return found
 
 
-def _print_json(found: list[Found], hidden: int, installed: dict[str, Installed]) -> None:
+def installed_sources(settings: Settings, installed: dict[str, Installed]) -> dict[str, dict[str, str]]:
+    """Where each installed collection came from, a source table as the lock writes it: the lock's entry when the
+    version installed is the one locked, else alai's record of installing it from a source other than an index. One
+    with neither, such as one alai didn't install, has none."""
+    from ._lock import lock_path, read_lock
+
+    lock = None
+    if settings.project.config_file is not None:
+        try:
+            lock = read_lock(lock_path(settings.project.root))
+        except Error as e:
+            debug(f"can't read the lock, so collections' sources aren't given: {e}")
+    sources: dict[str, dict[str, str]] = {}
+    for name, collection in installed.items():
+        if lock is not None and lock.root is not None and lock.root.name == name:
+            sources[name] = {"editable": lock.root.path}
+        elif lock is not None and (entry := lock.get(name)) is not None and entry.version == collection.version:
+            sources[name] = entry.source.table()
+        elif collection.record is not None and isinstance(source := collection.record.get("source"), dict):
+            sources[name] = {str(k): str(v) for k, v in source.items()}  # pyright: ignore[reportUnknownVariableType]
+    return sources
+
+
+def _print_json(
+    found: list[Found], hidden: int, installed: dict[str, Installed], sources: dict[str, dict[str, str]]
+) -> None:
     """The matches as facts, for scripts to draw their own conclusions: each plugin's index line, the matches in ranked
     order then every plugin their redirects reach, each once, and whether each collection mentioned is installed.
 
@@ -247,14 +339,21 @@ def _print_json(found: list[Found], hidden: int, installed: dict[str, Installed]
     """
     plugins: dict[tuple[str, str], dict[str, object]] = {}
     collections: set[str] = set()
+    releases: dict[str, dict[str, str]] = {}
 
     def add(plugin: Plugin, *, matched: bool) -> None:
         if plugin.key in plugins:
             return
         entry = {k: v for k, v in plugin.raw.items() if k != "v"}
-        entry.update({"fqcn": plugin.fqcn, "index": plugin.index, "matched": matched})
+        entry["fqcn"] = plugin.fqcn
+        # Only an index's line says so: any other is from what its collection's entry describes.
+        if "index" in plugin.source:
+            entry["index"] = plugin.source["index"]
+        entry["matched"] = matched
         plugins[plugin.key] = entry
         collections.add(plugin.collection)
+        if plugin.collection in BUILTINS and plugin.source:
+            releases[plugin.collection] = plugin.source
         if plugin.redirect is not None and is_fqcn(plugin.redirect):
             collections.add(split_fqcn(as_builtin(plugin.redirect))[0])
 
@@ -267,11 +366,16 @@ def _print_json(found: list[Found], hidden: int, installed: dict[str, Installed]
 
     def collection(name: str) -> dict[str, object]:
         have = installed.get(name)
-        return {
+        entry: dict[str, object] = {
             "installed": name in BUILTINS or have is not None,
             "version": str(have.version) if have is not None and have.version is not None else None,
             "path": os.path.abspath(have.path) if have is not None else None,
         }
+        if name in sources:
+            entry["source"] = sources[name]
+        if name in releases:
+            entry["release"] = releases[name]
+        return entry
 
     result = {
         "v": 1,
@@ -352,6 +456,9 @@ class _Renderer(Renderer):
                 versions = f"none: it's only in {tool}'s routing"
             else:
                 versions = f"in {tool}, added in {plugin.since}" if plugin.since else f"in {tool}"
+        elif not plugin.source:
+            # Read from the installed collection's files, which say nothing of other versions.
+            versions = "in the one installed" if has_file(plugin) else "none: it's only in the collection's routing"
         elif plugin.until is not None:
             versions = f"{plugin.since or '?'} up to {plugin.until}"
         elif plugin.since is not None:
@@ -718,7 +825,8 @@ def _moved(plugin: Plugin) -> str | None:
 
 def _routing_only(plugin: Plugin) -> bool:
     """Whether the line is only its collection's routing, with no plugin file in any version: another name."""
-    if plugin.collection in BUILTINS:
+    # A builtin's or an installed collection's line has no versions to tell by.
+    if plugin.collection in BUILTINS or not plugin.source:
         return not has_file(plugin)
     return plugin.since is None and plugin.until is None
 

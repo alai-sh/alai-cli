@@ -96,7 +96,9 @@ def load_builtin(settings: Settings, fetcher: Fetcher, task: Task) -> list[Plugi
             version, data = cached
             warn(f"{e}; using {project.name} {version} from the cache")
         debug(f"{project.collection} is {project.name} {version}'s")
-        indexes.append(PluginIndex(f"{project.name} {version}", data))
+        indexes.append(
+            PluginIndex({"python_index": settings.python_index, "package": project.name, "version": version}, data)
+        )
         task.advance()
     return indexes
 

@@ -1,7 +1,8 @@
 # Copyright: (c) 2026, Jordan Borean (@jborean93) <jborean93@gmail.com>
 # MIT License (see LICENSE or https://opensource.org/licenses/MIT)
 
-"""``alai find``: find plugins, roles and playbooks by name in the indexes' plugin indexes."""
+"""``alai find``: find plugins, roles and playbooks by name in the installed collections and the indexes' plugin
+indexes."""
 
 from __future__ import annotations
 
@@ -38,8 +39,9 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
     find = commands.add_parser(
         "find",
         help="find which collections have a plugin, role or playbook",
-        description="Find plugins, roles and playbooks by name in the indexes' plugin indexes, with the ones in "
-        + "installed collections and ansible.builtin first. QUERY is part of a name (user finds win_user too), a glob "
+        description="Find plugins, roles and playbooks by name in the installed collections, read from their files, "
+        + "and in the indexes' plugin lists, with the ones in installed collections and ansible.builtin first. QUERY "
+        + "is part of a name (user finds win_user too), a glob "
         + "('*_info', 'community.general.*'), or a FQCN, which shows that plugin's details: where its redirects "
         + "lead, and how to install it.",
         formatter_class=HelpFormatter,
@@ -72,6 +74,16 @@ def register(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         + "always are",
     )
     find.add_argument(
+        "--no-index",
+        action="store_true",
+        help="search only installed collections, ansible.builtin and eda.builtin, not the indexes' plugin lists",
+    )
+    find.add_argument(
+        "--refresh",
+        action="store_true",
+        help="read the installed collections' plugins again, rather than from the cache, as after editing one",
+    )
+    find.add_argument(
         "--limit",
         metavar="N",
         type=_count,
@@ -101,6 +113,8 @@ def run(args: argparse.Namespace) -> int:
         query,
         installed_only=args.installed,
         include_all=args.include_all,
+        no_index=args.no_index,
+        refresh=args.refresh,
         limit=args.limit,
         output_format=args.output_format,
     )
