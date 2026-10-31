@@ -344,13 +344,19 @@ def _print_json(
     def add(plugin: Plugin, *, matched: bool) -> None:
         if plugin.key in plugins:
             return
-        entry = {k: v for k, v in plugin.raw.items() if k != "v"}
-        entry["fqcn"] = plugin.fqcn
-        # Only an index's line says so: any other is from what its collection's entry describes.
-        if "index" in plugin.source:
-            entry["index"] = plugin.source["index"]
-        entry["matched"] = matched
-        plugins[plugin.key] = entry
+        plugins[plugin.key] = {
+            "type": plugin.type,
+            "name": plugin.name,
+            "collection": plugin.collection,
+            "since": plugin.since,
+            "until": plugin.until,
+            "short_description": plugin.short_description,
+            "routing": plugin.routing or None,
+            "fqcn": plugin.fqcn,
+            # Only an index's line says so: any other is from what its collection's entry describes.
+            "index": plugin.source.get("index"),
+            "matched": matched,
+        }
         collections.add(plugin.collection)
         if plugin.collection in BUILTINS and plugin.source:
             releases[plugin.collection] = plugin.source
@@ -366,16 +372,13 @@ def _print_json(
 
     def collection(name: str) -> dict[str, object]:
         have = installed.get(name)
-        entry: dict[str, object] = {
+        return {
             "installed": name in BUILTINS or have is not None,
             "version": str(have.version) if have is not None and have.version is not None else None,
             "path": os.path.abspath(have.path) if have is not None else None,
+            "source": sources.get(name),
+            "release": releases.get(name),
         }
-        if name in sources:
-            entry["source"] = sources[name]
-        if name in releases:
-            entry["release"] = releases[name]
-        return entry
 
     result = {
         "v": 1,
@@ -383,7 +386,7 @@ def _print_json(
         "collections": {name: collection(name) for name in sorted(collections)},
         "omitted": hidden,
     }
-    json.dump(result, sys.stdout, indent=2)
+    sys.stdout.write(json.dumps(result, indent=2))
     print()
 
 

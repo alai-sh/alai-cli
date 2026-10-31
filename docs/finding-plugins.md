@@ -217,18 +217,26 @@ following is the JSON output of
       "type": "module",
       "name": "docker_container",
       "collection": "ansible.builtin",
+      "since": null,
+      "until": null,
+      "short_description": null,
       "routing": {
         "redirect": "community.docker.docker_container"
       },
       "fqcn": "ansible.builtin.docker_container",
+      "index": null,
       "matched": true
     },
     {
       "type": "module",
       "name": "docker_container",
       "collection": "community.docker",
+      "since": null,
+      "until": null,
       "short_description": "manage Docker containers",
+      "routing": null,
       "fqcn": "community.docker.docker_container",
+      "index": null,
       "matched": false
     }
   ],
@@ -237,6 +245,7 @@ following is the JSON output of
       "installed": true,
       "version": null,
       "path": null,
+      "source": null,
       "release": {
         "python_index": "https://pypi.org/simple/",
         "package": "ansible-core",
@@ -249,7 +258,8 @@ following is the JSON output of
       "path": "/home/me/project/collections/ansible_collections/community/docker",
       "source": {
         "index": "https://index.alai.sh/"
-      }
+      },
+      "release": null
     }
   },
   "omitted": 0
@@ -257,14 +267,14 @@ following is the JSON output of
 ```
 
 In this case `community.docker.docker_container` was read from the
-collection installed in the project, so its entry has no `index` key.
-`ansible.builtin.docker_container` has none either, as it was read from the
+collection installed in the project, so its `index` is `null`.
+`ansible.builtin.docker_container`'s is `null` too, as it was read from the
 ansible-core release in its collection's `release`. The `community.docker`
 entry in `collections` still has a `source`, as that's where the installed
 collection came from, not where its plugins were read from.
 
 If an installed collection doesn't have a plugin, but a newer version on the
-index does, that plugin's entry comes from the index and has an `index` key.
+index does, that plugin's entry comes from the index and has its `index` set.
 For example with `ansible.windows` 3.8.0 installed,
 `alai find 'ansible.windows.win_d[is]*' --output-format json` lists
 `win_dsc` from the installed files and `win_disk_info`, added in 3.9.1, from
@@ -278,8 +288,12 @@ the index:
       "type": "module",
       "name": "win_dsc",
       "collection": "ansible.windows",
+      "since": null,
+      "until": null,
       "short_description": "Invokes a PowerShell DSC configuration",
+      "routing": null,
       "fqcn": "ansible.windows.win_dsc",
+      "index": null,
       "matched": true
     },
     {
@@ -287,7 +301,9 @@ the index:
       "name": "win_disk_info",
       "collection": "ansible.windows",
       "since": "3.9.1",
+      "until": null,
       "short_description": "Gather disk, partition, and volume information on Windows",
+      "routing": null,
       "fqcn": "ansible.windows.win_disk_info",
       "index": "https://index.alai.sh/",
       "matched": true
@@ -300,7 +316,8 @@ the index:
       "path": "/home/me/project/collections/ansible_collections/ansible/windows",
       "source": {
         "index": "https://index.alai.sh/"
-      }
+      },
+      "release": null
     }
   },
   "omitted": 0
@@ -308,7 +325,7 @@ the index:
 ```
 
 The `ansible.windows` entry in `collections` still describes the installed
-collection. The `index` key on `win_disk_info` is what says it isn't in the
+collection. The `index` set on `win_disk_info` is what says it isn't in the
 installed version and was read from the index.
 
 | Field | |
@@ -318,6 +335,9 @@ installed version and was read from the index.
 | `collections` | Every collection the plugins are in or redirect to, by name |
 | `omitted` | How many matches `--limit` left out |
 
+Every plugin and collection has all of its fields, `null` where one doesn't
+apply.
+
 Each collection has:
 
 | Field | |
@@ -325,8 +345,8 @@ Each collection has:
 | `installed` | Whether it's [installed](#whats-listed-first). `ansible.builtin` and `eda.builtin` always are |
 | `version` | The installed version, from its `MANIFEST.json`, or its `galaxy.yml` if it has none. `null` if it isn't installed or neither can be read, and for `ansible.builtin` and `eda.builtin` |
 | `path` | The installed collection's directory. `null` if it isn't installed, and for `ansible.builtin` and `eda.builtin` |
-| `source` | Where the installed collection came from, as the lock writes it, such as `{"index": "https://index.alai.sh/"}` or `{"editable": "../my.tools"}`. Only if alai knows, from the lock or from installing it |
-| `release` | For `ansible.builtin` and `eda.builtin`, the release their plugins were read from: its `python_index`, `package` and `version` |
+| `source` | Where the installed collection came from, as the lock writes it, such as `{"index": "https://index.alai.sh/"}` or `{"editable": "../my.tools"}`. `null` unless alai knows, from the lock or from installing it |
+| `release` | For `ansible.builtin` and `eda.builtin`, the release their plugins were read from: its `python_index`, `package` and `version`. `null` for any other |
 
 Each plugin has:
 
@@ -335,12 +355,12 @@ Each plugin has:
 | `type` | Its type, as `-t` takes it, such as `module`, `filter` or `role` |
 | `name` | Its short name |
 | `collection` | The collection it's in, or `ansible.builtin` for ansible-core's own and `eda.builtin` for ansible-rulebook's |
-| `since` | The lowest version of its collection that has it. For `ansible.builtin` and `eda.builtin`, it's the ansible-core or ansible-rulebook version it was added in. Only if known, so never for one read from an installed collection |
-| `until` | The version of its collection it was removed in. Only if it was removed, so never for one read from an installed collection |
-| `short_description` | One line from its documentation, with any [Ansible markup](https://docs.ansible.com/projects/ansible/latest/dev_guide/ansible_markup.html) such as `C(...)` as written. Only if it has one |
-| `routing` | Its entry in its collection's `meta/runtime.yml` `plugin_routing` (`redirect`, `deprecation`, `tombstone`), as the collection wrote it. Only if it has one |
+| `since` | The lowest version of its collection that has it. For `ansible.builtin` and `eda.builtin`, it's the ansible-core or ansible-rulebook version it was added in. `null` if unknown, so always for one read from an installed collection |
+| `until` | The version of its collection it was removed in. `null` unless it was removed, so always for one read from an installed collection |
+| `short_description` | One line from its documentation, with any [Ansible markup](https://docs.ansible.com/projects/ansible/latest/dev_guide/ansible_markup.html) such as `C(...)` as written. `null` if it has none |
+| `routing` | Its entry in its collection's `meta/runtime.yml` `plugin_routing` (`redirect`, `deprecation`, `tombstone`), as the collection wrote it. `null` if it has none |
 | `fqcn` | Its full name |
-| `index` | The URL of the index whose list it was read from. Only if it was. Without it, the plugin was read from the installed collection's files, or for `ansible.builtin` and `eda.builtin`, from the `release` |
+| `index` | The URL of the index whose list it was read from, or `null`. When `null`, the plugin was read from the installed collection's files, or for `ansible.builtin` and `eda.builtin`, from the `release` |
 | `matched` | Whether it matched the search, rather than being listed because a match redirects to it |
 
 Everything but `fqcn`, `index` and `matched` comes from the index, the
