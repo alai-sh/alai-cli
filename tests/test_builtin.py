@@ -53,11 +53,12 @@ def released(indexes: list[PluginIndex]) -> list[str]:
 
 
 def lines(indexes: list[PluginIndex], collection: str) -> dict[str, dict[str, object]]:
-    """Each line of ``collection`` as JSON, by ``type name``."""
+    """Each plugin of ``collection``, its fields that are set, by ``type name``."""
     found: dict[str, dict[str, object]] = {}
     for index in indexes:
-        for found_plugin in index.search(Query(f"{collection}.*")):
-            found[f"{found_plugin.type} {found_plugin.name}"] = found_plugin.raw
+        for p in index.search(Query(f"{collection}.*")):
+            fields = ("type", "name", "collection", "since", "until", "short_description", "routing")
+            found[f"{p.type} {p.name}"] = {k: v for k in fields if (v := getattr(p, k))}
     return found
 
 
@@ -69,14 +70,12 @@ class TestLines:
         # since is version_added, left out when it's historical; routing with no plugin is a line of its own.
         assert lines(indexes, "ansible.builtin") == {
             "module copy": {
-                "v": 1,
                 "type": "module",
                 "name": "copy",
                 "collection": "ansible.builtin",
                 "short_description": "Copy files",
             },
             "module iptables": {
-                "v": 1,
                 "type": "module",
                 "name": "iptables",
                 "collection": "ansible.builtin",
@@ -84,14 +83,12 @@ class TestLines:
                 "short_description": "Modify iptables rules",
             },
             "module docker_container": {
-                "v": 1,
                 "type": "module",
                 "name": "docker_container",
                 "collection": "ansible.builtin",
                 "routing": {"redirect": "community.docker.docker_container"},
             },
             "filter ipmath": {
-                "v": 1,
                 "type": "filter",
                 "name": "ipmath",
                 "collection": "ansible.builtin",
@@ -100,7 +97,6 @@ class TestLines:
         }
         assert lines(indexes, "eda.builtin") == {
             "event_source range": {
-                "v": 1,
                 "type": "event_source",
                 "name": "range",
                 "collection": "eda.builtin",

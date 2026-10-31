@@ -1000,3 +1000,36 @@ where PyYAML keeps the last silently. An editor that keeps `galaxy.yml`'s
 formatting, for `alai add` in a collection project, can build on core's
 parser marks later
 ([collection-development.md](collection-development.md#not-done-yet)).
+
+## JSON output
+
+Measured 2026-11-01 on `alai find '*' -a --limit 0 --output-format json
+--offline`, 35 MB of output from the 106k-line plugin index, on Python 3.15.
+The machine's speed drifted through the day, so each row is against the one
+above it, run back to back:
+
+| | `_print_json` | Whole command |
+|---|---|---|
+| `json.dump` | 818 ms | 1.66–1.72 s |
+| `json.dumps`, then one write | 441 ms | 1.30–1.32 s |
+| `json.dumps` (a later run) | 403–440 ms | 1.16–1.31 s |
+| and each plugin built from its fields | 201–248 ms | 0.94–1.16 s |
+
+- `json.dump` always uses the pure Python encoder. `json.dumps` uses the C
+  one, which handles `indent` since 3.13, so it's about eight times faster
+  there. On 3.10 it's slower (161 ms against 118 ms on a 6.4 MB test).
+  `json.dumps` holds the whole string, about 70 MB more peak memory for
+  this output.
+- Each plugin was its index line parsed again with `json.loads`, 158 ms for
+  106k lines. Built from the fields core already read, it's ~200 ms less
+  in `_print_json` ([find.md](find.md)). A `PluginEntry.raw` in core,
+  turning core's parse into a dict, saved only 60–75 ms.
+- Writing straight to the file descriptor from Rust gave `json.dump`'s
+  memory at near `json.dumps`'s speed (79 ms against 60 ms to encode).
+  It wasn't kept, as it gains nothing on speed.
+- Every key is now always set, `null` where it doesn't apply, which adds
+  ~236k `null`s to this output, 35 MB to 41 MB, with no change in time.
+- The indent barely matters. Compact output is 27 MB against 35 MB and
+  encodes within 10% of `indent=2`.
+- Joining every line into one `json.loads` was slower in place, by about
+  100 ms, though faster in a micro-benchmark.

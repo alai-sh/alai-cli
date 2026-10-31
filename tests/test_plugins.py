@@ -96,12 +96,11 @@ class TestParseLine:
         assert parsed is not None
         assert (parsed.since, parsed.short_description) == (None, None)
 
-    def test_unknown_fields_kept(self) -> None:
+    def test_unknown_type_kept(self) -> None:
         parsed = parse_line(b'{"v": 1, "type": "new_type", "name": "a", "collection": "a.a", "extra": 1}')
 
         assert parsed is not None
         assert parsed.type == "new_type"
-        assert parsed.raw["extra"] == 1
 
     def test_routing_not_a_table(self) -> None:
         parsed = parse_line(b'{"v": 1, "type": "module", "name": "a", "collection": "a.a", "routing": "x"}')
@@ -132,12 +131,6 @@ class TestPluginIndex:
         index = PluginIndex({"index": "test"}, data(plugin("a.a.user"), plugin("b.b.ping")) + escaped + b"not json\n")
 
         assert index.names() == {"user", "ping"}
-
-    def test_raw_read_when_asked(self) -> None:
-        [found] = PluginIndex({"index": "test"}, data(plugin("a.a.user") | {"extra": [1, 2]})).with_tokens()
-
-        assert found.line.startswith(b"{")
-        assert found.raw["extra"] == [1, 2]
 
 
 class TestQuery:

@@ -486,12 +486,13 @@ class TestInstalledCollections:
 
         result = json.loads(capsys.readouterr().out)
         # No index: the line is from the collection's entry, the installed copy.
-        assert "index" not in result["plugins"][0]
+        assert result["plugins"][0]["index"] is None
         assert result["collections"]["my.coll"] == {
             "installed": True,
             "version": "1.0.0",
             "path": str(path.resolve()),
             "source": {"directory": "../my.coll"},
+            "release": None,
         }
 
     @pytest.mark.parametrize(("locked", "source"), [("2.5.0", {"index": "https://index.alai.sh/"}), ("2.4.0", None)])
@@ -832,8 +833,12 @@ class TestJson:
                     "type": "module",
                     "name": "docker_container",
                     "collection": "ansible.builtin",
+                    "since": None,
+                    "until": None,
+                    "short_description": None,
                     "routing": {"redirect": "community.docker.docker_container"},
                     "fqcn": "ansible.builtin.docker_container",
+                    "index": None,
                     "matched": True,
                 },
                 {
@@ -853,7 +858,9 @@ class TestJson:
                     "name": "docker_container",
                     "collection": "community.docker",
                     "since": "1.0.0",
+                    "until": None,
                     "short_description": "manage Docker containers",
+                    "routing": None,
                     "fqcn": "community.docker.docker_container",
                     "index": index,
                     "matched": True,
@@ -864,10 +871,23 @@ class TestJson:
                     "installed": True,
                     "version": None,
                     "path": None,
+                    "source": None,
                     "release": {"python_index": pypi, "package": "ansible-core", "version": "2.20.0"},
                 },
-                "community.docker": {"installed": False, "version": None, "path": None},
-                "community.general": {"installed": True, "version": "2.5.0", "path": str(general(project))},
+                "community.docker": {
+                    "installed": False,
+                    "version": None,
+                    "path": None,
+                    "source": None,
+                    "release": None,
+                },
+                "community.general": {
+                    "installed": True,
+                    "version": "2.5.0",
+                    "path": str(general(project)),
+                    "source": None,
+                    "release": None,
+                },
             },
             "omitted": 0,
         }
@@ -889,7 +909,7 @@ class TestJson:
         # A route that loops back lists each plugin once.
         assert [p["fqcn"] for p in result["plugins"]] == ["community.general.loop"]
 
-    def test_unknown_fields_passed_on(
+    def test_unknown_fields_left_out(
         self, project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         lines = [plugin("a.a.thing", since="1.0.0", future={"x": 1})]
@@ -897,7 +917,9 @@ class TestJson:
 
         assert find("thing", "--output-format", "json") == 0
 
-        assert json.loads(capsys.readouterr().out)["plugins"][0]["future"] == {"x": 1}
+        [found] = json.loads(capsys.readouterr().out)["plugins"]
+        assert "future" not in found
+        assert found["since"] == "1.0.0"
 
     def test_no_default_limit(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         assert find("copy", "-x", "--output-format", "json") == 0

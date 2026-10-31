@@ -268,7 +268,7 @@ def _print_json(rows: list[Row], cdir: str, path: str | None) -> None:
             if r.name.endswith(".*")
         ],
     }
-    json.dump(result, sys.stdout, indent=2)
+    sys.stdout.write(json.dumps(result, indent=2))
     print()
 
 

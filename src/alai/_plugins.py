@@ -19,7 +19,6 @@ import hashlib
 import json
 import os
 import re
-import typing as _t
 
 from alai_core.plugins import PluginEntry, Plugins
 from alai_core.semver import Version
@@ -52,7 +51,7 @@ _COPY_MIN = 3
 class Plugin(Record):
     """One line of the plugin index."""
 
-    __slots__ = ("collection", "line", "name", "routing", "short_description", "since", "source", "type", "until")
+    __slots__ = ("collection", "name", "routing", "short_description", "since", "source", "type", "until")
 
     def __init__(
         self,
@@ -65,7 +64,6 @@ class Plugin(Record):
         short_description: str | None = None,
         routing: dict[str, object] | None = None,
         source: dict[str, str] | None = None,
-        line: bytes = b"",
     ) -> None:
         self.type = type
         self.name = name
@@ -77,14 +75,6 @@ class Plugin(Record):
         """The plugin's ``plugin_routing`` entry from the collection's ``meta/runtime.yml``, as the index copied it."""
         self.source = source or {}
         """Where its line was read from, as its ``PluginIndex`` says."""
-        self.line = line
-        """The line it was read from, or empty."""
-
-    @property
-    def raw(self) -> dict[str, object]:
-        """The line as JSON, for JSON output, which passes on what the index says, unknown fields included. Parsed
-        when asked for, as only what's shown needs it."""
-        return _t.cast("dict[str, object]", json.loads(self.line)) if self.line else {}
 
     @property
     def fqcn(self) -> str:
@@ -191,7 +181,6 @@ class PluginIndex:
                 short_description=e.short_description,
                 routing=e.routing.raw if e.routing is not None else None,
                 source=self.source,
-                line=e.line or b"",
             )
             for e in entries
             if e.collection not in self.skip

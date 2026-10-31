@@ -332,9 +332,14 @@ searches locally is the reason the index has one.
 - **`--output-format json` gives facts, not conclusions** (2026-10-21):
   `{"v": 1, "plugins": [...], "collections": {...}, "omitted": N}`.
   `plugins` is the matches in ranked order, then every plugin their
-  redirects reach that the index has, each once: the index's line as given
-  (unknown fields included, `v` dropped) plus `fqcn`, `index` and
-  `matched`. `collections` has every collection those plugins are in or
+  redirects reach that the index has, each once: the fields alai reads
+  from the index's line (`type`, `name`, `collection`, `since`, `until`,
+  `short_description` and `routing`) plus `fqcn`, `index` and `matched`.
+  Fields alai doesn't read are left out. Every key is always there, `null`
+  where it doesn't apply, in `collections` too (`source`, `release`), so
+  the shape is fixed (both decided with the user, 2026-11-01). The output isn't the index's line, so a new
+  field is shown once alai supports it. That also saves parsing each line
+  a second time ([performance.md](performance.md#json-output)). `collections` has every collection those plugins are in or
   redirect to, with `installed`, `version` and `path`. A first version
   carried alai's conclusions on each match (`status`, `usable`, `route`,
   `route_problem`, `route_not_installed`, `probable_copy_of`, and

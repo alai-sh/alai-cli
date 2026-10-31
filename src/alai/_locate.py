@@ -235,5 +235,5 @@ def _print_json(project: str | None, found: dict[str, Located | str | None]) -> 
         }
 
     result = {"v": 1, "project": project, "collections": {name: entry(item) for name, item in found.items()}}
-    json.dump(result, sys.stdout, indent=2)
+    sys.stdout.write(json.dumps(result, indent=2))
     print()
