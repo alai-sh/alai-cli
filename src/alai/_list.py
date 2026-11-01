@@ -17,7 +17,7 @@ from . import _output
 from ._common import ConfigError, Record, home_path
 from ._config import Settings
 from ._install import Installed, installed, namespace_links
-from ._lock import IndexSource, Lock, LockedCollection, LockedRoot, lock_path, read_lock
+from ._lock import IndexSource, Lock, LockedCollection, LockedRoot, lock_path, read_lock, record_source
 from ._manifest import parse_manifest
 from ._output import BLUE, BOLD, CYAN, DIM, GREEN, RED, YELLOW, Piece, Renderer, status, styled
 
@@ -179,8 +179,8 @@ def _source_version(path: str) -> Version | None:
 
 
 def _record_source(record: dict[str, object] | None) -> dict[str, object] | None:
-    source = record.get("source") if record is not None else None
-    return source if isinstance(source, dict) else None  # pyright: ignore[reportUnknownVariableType]
+    source = record_source(record)
+    return dict(source) if source is not None else None
 
 
 def _lock_table(entry: LockedCollection | LockedRoot) -> dict[str, str]:

@@ -335,20 +335,24 @@ searches locally is the reason the index has one.
   redirects reach that the index has, each once: the fields alai reads
   from the index's line (`type`, `name`, `collection`, `since`, `until`,
   `short_description` and `routing`) plus `fqcn`, `index` and `matched`.
-  Fields alai doesn't read are left out. Every key is always there, `null`
-  where it doesn't apply, in `collections` too (`source`, `release`), so
-  the shape is fixed (both decided with the user, 2026-11-01). The output isn't the index's line, so a new
-  field is shown once alai supports it. That also saves parsing each line
-  a second time ([performance.md](performance.md#json-output)). `collections` has every collection those plugins are in or
-  redirect to, with `installed`, `version` and `path`. A first version
-  carried alai's conclusions on each match (`status`, `usable`, `route`,
-  `route_problem`, `route_not_installed`, `probable_copy_of`, and
-  installed fields repeated per plugin); the user found that too magical
-  for a machine format, as a script couldn't tell fact from alai's
-  reading. Now a script follows `routing.redirect` and compares versions
-  itself, as the details do; the order is the only judgement left. A
-  `usable` per match could come back if scripts need the verdict. The
-  first command with JSON output.
+  Fields alai doesn't read are left out. `routing` is the exception
+  inside: it's the collection's own `plugin_routing` entry, which could
+  hold anything, so it's passed on as written. Every key is always
+  there, `null` where it doesn't apply, in `collections` too (`source`,
+  `release`), so the shape is fixed (both decided with the user,
+  2026-11-01). The output isn't the index's line, so a new field is
+  shown once alai supports it. That also saves parsing each line a
+  second time ([performance.md](performance.md#json-output)).
+  `collections` has every collection those plugins are in or redirect
+  to, with `installed`, `version`, `path`, `source` and `release`. A
+  first version carried alai's conclusions on each match (`status`,
+  `usable`, `route`, `route_problem`, `route_not_installed`,
+  `probable_copy_of`, and installed fields repeated per plugin); the
+  user found that too magical for a machine format, as a script couldn't
+  tell fact from alai's reading. Now a script follows `routing.redirect`
+  and compares versions itself, as the details do; the order is the only
+  judgement left. A `usable` per match could come back if scripts need
+  the verdict. The first command with JSON output.
 - **Where each line came from** (decided with the user 2026-10-30, once
   installed collections were read from disk). A plugin's `index` is the
   index's URL, as the lock records an index source, and only on a line
@@ -357,14 +361,15 @@ searches locally is the reason the index has one.
   its `release` (`python_index`, `package`, `version`). An installed
   collection has one copy and one source, so its entry has a `source`,
   the lock's table for it when the installed version is the one locked,
-  else alai's install record, else none. A plugin can't come from disk
-  unless its collection is installed, so the only override is an index,
-  as for a plugin only a newer version has. Weighed and dropped: `from`
-  on every plugin (`{"installed": true}` says nothing the collection
-  doesn't), and collections keyed by a version and source that plugins
-  point to (an index's lines have no version, and nearly every plugin
-  would point at its collection's default). `index` was the index's
-  configured name, and the builtins' release as text, until then.
+  else alai's install record's, read as the lock reads a source, else
+  none. A plugin can't come from disk unless its collection is
+  installed, so the only override is an index, as for a plugin only a
+  newer version has. Weighed and dropped: `from` on every plugin
+  (`{"installed": true}` says nothing the collection doesn't), and
+  collections keyed by a version and source that plugins point to (an
+  index's lines have no version, and nearly every plugin would point at
+  its collection's default). `index` was the index's configured name,
+  and the builtins' release as text, until then.
 
 ### Ranking
 

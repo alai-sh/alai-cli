@@ -171,7 +171,7 @@ Each collection has:
 | `name` | Its full name, `namespace.name` |
 | `version` | Its version, or `null` if it isn't installed or its version can't be read |
 | `path` | Its directory, absolute, or `null` if it isn't installed |
-| `source` | Where it was installed from, or `null` for an index's: `directory` or `path` for a directory or a tarball on disk, absolute; `url` for a tarball's URL; `git`, `commit` and, if set, `subdirectory` for a git repository; `directory` for an editable link's target |
+| `source` | Where it was installed from, or `null` for an index's, or one alai can't read: `directory` or `path` for a directory or a tarball on disk, absolute; `url` for a tarball's URL; `git`, `commit` and, if set, `subdirectory` for a git repository; `directory` for an editable link's target |
 | `editable` | Whether it's a link to a directory, so edits there are seen |
 | `lock` | How it compares with `alai.lock`, or `null` without one: its `status`, and the `version` and `source` the lock has for it, `null` when the lock doesn't list it |
 
