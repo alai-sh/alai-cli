@@ -108,10 +108,12 @@ installed with `uv pip install` (2026-10-22):
   which alai doesn't manage, though `find` counts it as installed.
 - **`--output-format text|json`**, as `find` has it, rather than uv's
   `--format columns|freeze|json`: `v`, the directory, the lock's path or
-  null, each collection's name, version, absolute path, source as its
-  install record has it (`{"directory": ...}` for a link), whether it's
-  editable, and `lock` (null with no lock, else status, version and the
-  lock's source table), then the namespace links.
+  null, each collection's name, version, absolute path, its install
+  record's source read as the lock reads one, or null if this alai can't
+  read it (`{"directory": ...}` for a link; decided with the user,
+  2026-11-01, so a record's format doesn't decide the output), whether
+  it's editable, and `lock` (null with no lock, else status, version and
+  the lock's source table), then the namespace links.
 - **No freeze format.** It would read as a `requirements.yml` that
   ansible-galaxy could install from, which it couldn't be relied on to be:
   alai's index isn't Galaxy's API, and other sources may follow. The same

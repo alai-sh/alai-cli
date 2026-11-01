@@ -732,23 +732,7 @@ def _parse_collection(entry: object, where: str) -> LockedCollection | LockedRoo
 
     if set(source_table) == {"editable"} and source_table["editable"] == ".":
         return LockedRoot(name, version, requires_ansible=requires_ansible, dependencies=names)
-    source: LockedSource
-    if "git" in source_table:
-        source = _git_source(source_table, where)
-    else:
-        kinds = {
-            "index": IndexSource,
-            "directory": DirectorySource,
-            "editable": EditableSource,
-            "path": ArchiveSource,
-            "url": ArchiveUrlSource,
-        }
-        kind = next(iter(source_table)) if len(source_table) == 1 else None
-        value = source_table.get(kind) if kind is not None else None
-        if not isinstance(value, str) or not value or kind not in kinds:
-            given = ", ".join(sorted(source_table)) or "none"
-            raise LockError(f"{where}: unknown source ({given}); it may need a newer alai")
-        source = kinds[kind](value)
+    source = parse_source(source_table, where)
 
     cksum = size = None
     if isinstance(source, (IndexSource, ArchiveSource, ArchiveUrlSource)):
@@ -771,6 +755,36 @@ def _parse_collection(entry: object, where: str) -> LockedCollection | LockedRoo
         requirements=requirements,
         dependencies=names,
     )
+
+
+def parse_source(table: _c.Mapping[str, object], where: str) -> LockedSource:
+    """A collection's ``source`` table, as the lock and alai's install records write one."""
+    if "git" in table:
+        return _git_source(table, where)
+    kinds = {
+        "index": IndexSource,
+        "directory": DirectorySource,
+        "editable": EditableSource,
+        "path": ArchiveSource,
+        "url": ArchiveUrlSource,
+    }
+    kind = next(iter(table)) if len(table) == 1 else None
+    value = table.get(kind) if kind is not None else None
+    if not isinstance(value, str) or not value or kind not in kinds:
+        given = ", ".join(sorted(table)) or "none"
+        raise LockError(f"{where}: unknown source ({given}); it may need a newer alai")
+    return kinds[kind](value)
+
+
+def record_source(record: _c.Mapping[str, object] | None) -> dict[str, str] | None:
+    """An install record's ``source`` as the lock writes one, or None if it has none this alai can read."""
+    table = as_table(record.get("source")) if record is not None else None
+    if table is None:
+        return None
+    try:
+        return parse_source(table, "install record").table()
+    except LockError:
+        return None
 
 
 def _git_source(table: _c.Mapping[str, object], where: str) -> GitCommitSource:

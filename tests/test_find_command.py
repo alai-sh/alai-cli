@@ -477,6 +477,15 @@ class TestInstalledCollections:
         assert "  Versions   in the one installed" in lines
         assert any(line.startswith("  Route      ✓ my.checkout.frob  this plugin, 0.3.0 in ") for line in lines)
 
+    def test_json_record_source_unreadable(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        path = install(project, "my.coll", "1.0.0")
+        add_module(path, "frob", "Frob a widget")
+        write_record(str(project / "collections"), "my.coll", {"source": {"directory": "../my.coll", "extra": "x"}})
+
+        assert find("frob", "--output-format", "json") == 0
+
+        assert json.loads(capsys.readouterr().out)["collections"]["my.coll"]["source"] is None
+
     def test_json_from_disk(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
         path = install(project, "my.coll", "1.0.0")
         add_module(path, "frob", "Frob a widget")

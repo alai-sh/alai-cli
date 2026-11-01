@@ -590,6 +590,14 @@ class TestCollectionInstall:
         assert main(["collection", "uninstall", "https://example.com/x.tar.gz"]) == EXIT_ERROR
         assert "nothing installed is from https://example.com/x.tar.gz" in capsys.readouterr().err
 
+        # A record this alai can't read names no source.
+        path = project / "collections" / "ansible_collections" / ".alai" / "ns.src.json"
+        record = json.loads(path.read_text())
+        record["source"]["future"] = "x"
+        _ = path.write_text(json.dumps(record))
+        assert main(["collection", "uninstall", f"git+{repo.url}@main"]) == EXIT_ERROR
+        assert f"nothing installed is from git+{repo.url}@main" in capsys.readouterr().err
+
 
 class TestParse:
     @pytest.mark.parametrize(

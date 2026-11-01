@@ -16,6 +16,7 @@ from helpers import Repo, collection_source
 from alai import _output
 from alai._cli import main
 from alai._common import EXIT_ERROR
+from alai._install import write_record
 from alai._list import Row, _Renderer
 
 # The index (conftest's COLLECTIONS): a.a 1.0.0 and 2.0.0 (which needs b.b>=1.0.0), b.b 1.0.0 and 1.1.0, c.c and d.d.
@@ -386,6 +387,25 @@ class TestJson:
         assert result["namespace_links"] == [
             {"namespace": "ns", "path": str(cdir(project) / "ns"), "target": str(tmp_path / "elsewhere")}
         ]
+
+    @pytest.mark.parametrize(
+        ("recorded", "shown"),
+        [
+            ({"directory": "/src/c"}, {"directory": "/src/c"}),
+            ({"directory": "/src/c", "extra": "x"}, None),
+            ({"future": "/src/c"}, None),
+        ],
+    )
+    def test_record_source_read_as_the_lock(
+        self, project: Path, capsys: pytest.CaptureFixture[str], recorded: dict[str, str], shown: dict[str, str] | None
+    ) -> None:
+        _ = (project / "alai.toml").write_text("")
+        assert main(["collection", "install", "c.c"]) == 0
+        write_record(str(project / "collections"), "c.c", {"source": recorded})
+
+        out, _ = listing(capsys, "--output-format", "json")
+
+        assert json.loads("\n".join(out))["collections"][0]["source"] == shown
 
 
 def terminal(monkeypatch: pytest.MonkeyPatch, columns: int = 80) -> None:

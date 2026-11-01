@@ -309,7 +309,7 @@ def installed_sources(settings: Settings, installed: dict[str, Installed]) -> di
     """Where each installed collection came from, a source table as the lock writes it: the lock's entry when the
     version installed is the one locked, else alai's record of installing it from a source other than an index. One
     with neither, such as one alai didn't install, has none."""
-    from ._lock import lock_path, read_lock
+    from ._lock import lock_path, read_lock, record_source
 
     lock = None
     if settings.project.config_file is not None:
@@ -323,8 +323,8 @@ def installed_sources(settings: Settings, installed: dict[str, Installed]) -> di
             sources[name] = {"editable": lock.root.path}
         elif lock is not None and (entry := lock.get(name)) is not None and entry.version == collection.version:
             sources[name] = entry.source.table()
-        elif collection.record is not None and isinstance(source := collection.record.get("source"), dict):
-            sources[name] = {str(k): str(v) for k, v in source.items()}  # pyright: ignore[reportUnknownVariableType]
+        elif (source := record_source(collection.record)) is not None:
+            sources[name] = source
     return sources
 
 

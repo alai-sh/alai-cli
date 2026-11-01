@@ -10,11 +10,11 @@ from __future__ import annotations
 import collections.abc as _c
 import os
 import time
-import typing as _t
 
 from ._common import ConfigError, home_path
 from ._config import Settings, no_project
 from ._install import Installed, installed, remove
+from ._lock import record_source
 from ._manifest import (
     Manifest,
     PathSource,
@@ -174,8 +174,8 @@ def _by_source(present: _c.Mapping[str, Installed], given: str) -> str | None:
         if os.path.islink(collection.path):
             found: tuple[str, ...] | None = ("path", os.path.realpath(collection.path))
         else:
-            source = collection.record.get("source") if collection.record is not None else None
-            found = source_key(_t.cast("dict[str, object]", source), "/") if isinstance(source, dict) else None
+            source = record_source(collection.record)
+            found = source_key(dict(source), "/") if source is not None else None
         if found == key:
             names.append(name)
     if not names:
